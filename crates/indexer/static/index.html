@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>index.dsp.fyi</title>
+<style>
+  :root { --fg:#1a1a1a; --mute:#666; --line:#e4e4e4; --bg:#fafafa; --card:#fff; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --bg:#141414; --card:#1c1c1c; } }
+  body { font: 15px/1.55 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 2rem 1rem; }
+  main { max-width: 44rem; margin: 0 auto; } h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: .6rem 0; }
+  .mute { color: var(--mute); } code { font-size: .9em; } table { border-collapse: collapse; width: 100%; } td { padding: .3rem .3rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  input { font: inherit; padding: .4rem .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 100%; box-sizing: border-box; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: .85rem; }
+</style>
+<main>
+  <h1>index.dsp.fyi</h1>
+  <p class="mute">A reverse index over the browserid-pay database <code>{{REPO}}</code>, read from <code>{{DAEMON}}</code>. An acceleration, never an authority: every answer carries the object references, so re-fetch them from the daemon and verify yourself.</p>
+  <div class="card"><table>
+    <tr><td><code>GET /v1/agreements?party=&lt;identity&gt;</code></td><td>agreements where the identity is proposer, acceptor, payer, payee, adjudicator or custodian; state derived from chain order</td></tr>
+    <tr><td><code>GET /v1/agreements/&lt;id&gt;</code></td><td>one agreement</td></tr>
+    <tr><td><code>GET /v1/attestations?subject=&lt;identity&gt;[&amp;type=…]</code></td><td>attestations about a subject (issuer-namespace storage, reversed here)</td></tr>
+    <tr><td><code>GET /v1/providers/custodians</code> · <code>/adjudicators</code></td><td>provider listings (discovery)</td></tr>
+    <tr><td><code>GET /v1/contribution</code></td><td>the chain's suggested ecosystem contribution</td></tr>
+    <tr><td><code>GET /v1/reputation?subject=&lt;identity&gt;</code></td><td>non-normative: this indexer's subjective counts</td></tr>
+  </table></div>
+  <div class="card"><input id="q" placeholder="identity, e.g. alice@example.com — look up agreements, attestations, reputation"><pre id="out" class="mute">state: <span id="state">…</span></pre></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+fetch('/v1/providers/adjudicators').then(r => r.json()).then(j => { $('state').textContent = j.state_root ? `indexed at block ${j.state_root.block} (${j.indexed_at ? new Date(j.indexed_at*1000).toLocaleString() : ''})` : 'not indexed yet (the daemon may not follow this repo yet)'; }).catch(() => { $('state').textContent = 'unreachable'; });
+$('q').addEventListener('change', async () => {
+  const s = encodeURIComponent($('q').value.trim()); if (!s) return;
+  const [a, t, r] = await Promise.all(['/v1/agreements?party=' + s, '/v1/attestations?subject=' + s, '/v1/reputation?subject=' + s].map(u => fetch(u).then(x => x.json())));
+  $('out').textContent = JSON.stringify({ agreements: a.results, attestations: t.results, reputation: r }, null, 2);
+});
+</script>

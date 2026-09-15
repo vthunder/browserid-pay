@@ -13,7 +13,7 @@ HOST ?= dokku@sandmill.org
 SSH  := ssh -i $(HOME)/.ssh/mini-ops -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
 LT   := ssh localtest 'cd ~/src/browserid-pay &&
 
-.PHONY: build test release-pay watch dev-pay
+.PHONY: build test release-pay release-index watch dev-pay
 
 build:
 	$(LT) cargo build --workspace 2>&1 | sed "s/\x1b\[[0-9;]*m//g" | grep -E "^(error|warning)" -A5; true'
@@ -26,6 +26,9 @@ watch:
 
 release-pay:
 	-$(SSH) $(HOST) git:from-image pay $(REG)/custodian:$(SHA)
+
+release-index:
+	-$(SSH) $(HOST) git:from-image index $(REG)/indexer:$(SHA)
 
 dev-pay:
 	PAY_DEV=1 PAY_PORT=3300 ADMIN_TOKEN=dev DATABASE_PATH=/tmp/custodian-dev.db \
