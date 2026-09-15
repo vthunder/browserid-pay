@@ -73,3 +73,6 @@ genesis-verify:
 
 dnssec-refresh: build-genesis
 	$(ENV) $(GENESIS) dnssec-refresh --daemon $(DAEMON) browserid.me
+
+release-judge:
+	-$(SSH) $(HOST) git:from-image judge $(REG)/judge:$(SHA)

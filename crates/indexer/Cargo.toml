@@ -1,0 +1,20 @@
+[package]
+name = "indexer"
+description = "browserid-pay indexer (index.dsp.fyi): agreements by party, attestations by subject — a reverse index over the browserid-pay SBO database"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest.workspace = true
+async-trait = "0.1"
+tower-http = { version = "0.5", features = ["trace", "cors"] }

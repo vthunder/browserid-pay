@@ -5,3 +5,4 @@
 browserid-core = { path = "../browserid-ng/browserid-core" }
 browserid-rp = { path = "../browserid-ng/browserid-rp" }
 browserid-dnssec = { path = "../browserid-ng/browserid-dnssec" }
+browserid-agent = { path = "../browserid-ng/browserid-agent" }
