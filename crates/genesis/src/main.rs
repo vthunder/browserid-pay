@@ -440,8 +440,14 @@ async fn main() -> Result<()> {
                     };
                     if got.as_ref() == Some(&want) {
                         let block = o.get("block").cloned().unwrap_or(serde_json::Value::Null);
-                        println!("✓ /sys/policies/root now serves the new policy (block {block}; submission {sub})");
-                        break;
+                        // The daemon serves an accepted write from its overlay
+                        // before the DA batch lands; wait for the confirmed copy.
+                        if o.get("confirmed").and_then(|c| c.as_bool()) == Some(false) {
+                            println!("  … accepted (overlay, block {block}); waiting for on-chain confirmation");
+                        } else {
+                            println!("✓ /sys/policies/root now serves the new policy (confirmed, block {block}; submission {sub})");
+                            break;
+                        }
                     }
                 }
                 if started.elapsed() > std::time::Duration::from_secs(900) {
