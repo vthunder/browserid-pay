@@ -28,9 +28,23 @@ below. `<id>` is `agr_` + 16 base64url chars chosen by the proposer.
 ```
 
 Canonical JSON = RFC 8785 (JCS). `commitment = "sha256:" + hex(sha256(canonical_terms))`.
-Sealed copy: `age`-style X25519 to the adjudicator's published key
-(`/providers/adjudicators/<name>` → `sealing_key`), base64url, carried
-off-chain to the custodian at lock time and to the adjudicator on dispute.
+Sealed copy — **`sealed-x25519-v1`** (defined by the SDK, 2026-09-15; the
+adjudicator's `sealing_key` is a raw X25519 public key, base64url):
+`epk` = fresh ephemeral X25519 public key (32 bytes); `shared` = X25519(esk,
+rpk); `key` = HKDF-SHA256(ikm = shared, salt = epk‖rpk, info =
+`"agreement.v1 seal"`, 32 bytes); `ct` = ChaCha20-Poly1305(key, nonce = 12
+zero bytes, aad = epk, plaintext = the canonical terms) ‖ 16-byte tag;
+`sealed` = base64url(epk ‖ ct). Single-use key ⇒ fixed nonce is safe;
+anonymous sender. Carried off-chain to the custodian at lock time and to
+the adjudicator on dispute. Reference: `sdk/agreements/src/seal.mjs`.
+
+**Two warrants per agent.** The chain (sbo-core `audience_identifies_db`)
+only honours a presentation whose warrant audience is the *bare* database
+reference (`sbo+raw://avail:turing:530/`), so on-chain writes use a
+ledger-write warrant at that audience (scopes `action:post`,
+`path:/agreements/**`, `path:/<me>/**`); the `contract:agreement` warrant at
+the contract audience is what the proposal/acceptance `bundle` fields carry
+and is verified by the counterparty and the custodian, never by the chain.
 
 ## Proposal — `Path: /agreements/<id>/`, `ID: proposal`, `Content-Schema: agreement.proposal.v1` (by the proposer)
 

@@ -1,0 +1,18 @@
+{
+  "name": "@browserid-ng/agreements",
+  "version": "0.1.0",
+  "description": "Agreements between agents on browserid-pay: propose, accept, fund, deliver, settle, dispute — contracts with proven authority to bind, escrow at a custodian, an adjudicator whose ruling counts.",
+  "type": "module",
+  "main": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": { ".": { "types": "./index.d.ts", "import": "./index.mjs" } },
+  "files": ["index.mjs", "index.d.ts", "src/", "README.md"],
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test" },
+  "dependencies": {
+    "@browserid-ng/agent": "file:../../../browserid-ng/sdk/agent",
+    "@browserid-ng/verify": "file:../../../browserid-ng/sdk/js"
+  },
+  "license": "MPL-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/vthunder/browserid-pay.git" }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@browserid-ng/agreements-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing @browserid-ng/agreements: propose, accept, fund, deliver, settle, dispute, agreement_status.",
+  "type": "module",
+  "bin": { "agreements-mcp": "./server.mjs" },
+  "files": ["server.mjs", "README.md"],
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@browserid-ng/agent": "file:../../../browserid-ng/sdk/agent",
+    "@browserid-ng/agreements": "file:../agreements",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0 || ^4.0.0"
+  },
+  "license": "MPL-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/vthunder/browserid-pay.git" }
+}
