@@ -72,6 +72,20 @@ consent card reads: "let agent@… enter agreements up to $50 with anyone at
 acme.example". Revocation kills the agent's next signing, not standing
 contracts — a signed acceptance is a record, not a live grant.
 
+**Two warrants per agent (build finding, 2026-09-15).** The SBO
+Authorization spec requires a chain-write warrant's audience to be the
+*bare* database reference (a path in the audience is rejected by
+`audience_identifies_db`), so the per-contract warrant can never authorize
+the on-chain post itself. Each agent therefore holds (a) one **standing
+ledger-write warrant** at `sbo+raw://avail:turing:530/` with `action:post`
+and `path:` scopes covering `/agreements/**` and its own namespace, which
+attributes every object it posts, and (b) one **`contract:agreement`
+warrant per contract** at the contract audience, carried inside the
+proposal/acceptance `bundle` and verified by the counterparty and the
+custodian. The "one warrant per agent" default from the 2026-09-15
+build-plan discussion is superseded; the consent cards are one standing
+card plus one per agreement.
+
 ## Flow 1 — agree
 
 1. Agents negotiate off chain (MCP, A2A, whatever they already speak).
