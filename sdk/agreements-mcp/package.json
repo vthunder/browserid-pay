@@ -7,7 +7,7 @@
   "files": ["server.mjs", "README.md"],
   "engines": { "node": ">=18" },
   "dependencies": {
-    "@browserid-ng/agent": "file:../../../browserid-ng/sdk/agent",
+    "@browserid-ng/agent": "^0.6.0",
     "@browserid-ng/agreements": "file:../agreements",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0 || ^4.0.0"

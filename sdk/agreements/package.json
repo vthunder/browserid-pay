@@ -10,8 +10,8 @@
   "engines": { "node": ">=18" },
   "scripts": { "test": "node --test" },
   "dependencies": {
-    "@browserid-ng/agent": "file:../../../browserid-ng/sdk/agent",
-    "@browserid-ng/verify": "file:../../../browserid-ng/sdk/js"
+    "@browserid-ng/agent": "^0.6.0",
+    "@browserid-ng/verify": "^0.3.1"
   },
   "license": "MPL-2.0",
   "repository": { "type": "git", "url": "git+https://github.com/vthunder/browserid-pay.git" }
