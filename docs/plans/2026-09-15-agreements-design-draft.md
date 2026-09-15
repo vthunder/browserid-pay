@@ -13,7 +13,9 @@ at the end names its escape hatch.
 ## The one idea
 
 browserid and SBO already supply what agent-contract schemes usually lack:
-**accountable parties** (every agent traces to a human or organization),
+**named parties** (every agent traces to a browserid identity, and every
+delegation names who authorized it — whether an identity is a person, an
+organization, or another program the protocol cannot say, principles §5),
 **bounded authority to bind** (a warrant can cap what an agent may agree
 to, and the counterparty can verify that cap at signing time), and an
 **ordered record verifiable forever offline** (the notary). What is missing
@@ -26,22 +28,28 @@ teeth are; everything else is evidence.
 
 | object | where | signed by | contains |
 |---|---|---|---|
-| **proposal** | off chain (shared between parties); commitment on chain | proposer's agent | typed terms (below) + the proposer's presentation bundle |
-| **acceptance** | on chain | acceptor's agent | proposal commitment + the acceptor's presentation bundle |
+| **proposal** | on chain, **first** — as a commitment (default) or in the clear (`mode: public`, for tenders) | proposer's agent | commitment (or terms) + the proposer's presentation bundle + offer expiry |
+| **acceptance** | on chain, referencing the proposal | acceptor's agent | proposal ref + the acceptor's presentation bundle |
+| **escrow lock** | on chain | the escrow custodian | contract ref only — no amount |
 | **evidence** | on chain | either party | delivery commitment, acknowledgement, deadline attestation — each referencing the contract |
 | **ruling** | on chain | the named adjudicator | contract ref, outcome, fee allocation |
 | **completion / dispute attestation** | on chain | counterparties, custodian, adjudicator | reputation input (Attestation spec shape) |
 
-The **contract** is the pair (proposal, acceptance). Its identifier is the
-proposal commitment — `sha256` over the canonical terms plus a salt the
+The **contract** is the pair (proposal, acceptance), and it exists **iff the
+proposal precedes the acceptance in chain order and the acceptance
+references it**. An acceptance with no preceding proposal is dangling paper
+every reader ignores; a proposal nobody accepts lapses at its offer
+expiry. Its identifier is the proposal commitment — `sha256` over the canonical terms plus a salt the
 parties share — so the chain carries the identifier, the parties, the
 adjudicator, and the escrow custodian, and never the terms. Terms are
 revealed only to the adjudicator, on dispute. (Dan: parties may want
 contracts private; this is the answer.)
 
-**Terms** (`agreement.v1`, typed): parties, obligations with deadlines,
-price and currency, escrow custodian, adjudicator and its fee, evidence
-rules (what counts as delivered), expiry of the offer. Human-readable text
+**Terms** (`agreement.v1`, typed): parties with **roles** (`payer`,
+`payee`; either may be the proposer — "I pay X if you do Y" and "I do Y if
+you pay X" are the same object), obligations with deadlines, price and
+currency, escrow custodian and **its fee**, adjudicator and its fee,
+evidence rules (what counts as delivered), expiry of the offer. Human-readable text
 is a field, marked unverified, exactly like `message` on the consent card.
 
 ## Authority to bind: the `contract:` scope
@@ -68,23 +76,25 @@ contracts — a signed acceptance is a record, not a live grant.
 
 1. Agents negotiate off chain (MCP, A2A, whatever they already speak).
 2. Proposer's agent builds the terms, chooses adjudicator and escrow
-   custodian (see discovery, below), commits, and sends the proposal with
-   its bundle to the acceptor.
+   custodian (see discovery, below), **posts the proposal** (commitment or
+   clear) with its bundle, and sends the terms to the acceptor off chain.
 3. Acceptor's agent verifies the proposer's bundle and cap against the
-   price, then posts the acceptance (commitment + own bundle) to SBO.
-4. Proposer's agent posts the commitment object. The contract now exists on
-   chain: id, two parties with proven authority, adjudicator, custodian.
-5. The payer's agent presents a `pay:escrow` warrant to the custodian
-   naming the contract; the custodian locks price + adjudicator fee against
-   it. Escrow is a payment warrant with a **release condition** — a new
-   condition type at the (already stateful) custodian, not a new component.
+   price, then posts the acceptance (proposal ref + own bundle). The
+   contract now **binds**: id, two parties with proven authority,
+   adjudicator, custodian.
+4. Whichever party is `payer` presents a `pay:escrow` warrant to the
+   custodian naming the contract; the custodian locks price + both fees
+   and posts the **escrow lock**. The contract is now **active**; the
+   performer waits for the lock, not the acceptance. Escrow is a payment
+   warrant with a **release condition** — a new condition type at the
+   (already stateful) custodian, not a new component.
 
 ## Flow 2 — deliver and settle
 
 1. The performing agent posts a delivery commitment (hash of the
    deliverable, or the deliverable itself when public).
 2. The paying agent posts an acknowledgement. The custodian releases the
-   price to the performer and returns the adjudicator fee. Both agents post
+   price to the payee less its own fee, and returns the adjudicator fee. Both agents post
    completion attestations.
 3. No acknowledgement by the deadline ⇒ the performer may open a dispute;
    no delivery by the deadline ⇒ the payer may. Either way, Flow 3.
@@ -110,6 +120,18 @@ escrowed up front with the principal, paid only if a dispute is filed,
 otherwise returned. Loser-pays and filing fees are contract options, not
 defaults (an AI's mistake should not cost the wronged party).
 
+## Fees
+
+Three, all disclosed in the terms before acceptance, all published under
+the provider's name (discovery, below):
+
+- **Custodian fee** — for escrow; taken at release.
+- **Adjudicator fee** — escrowed; paid only on dispute (above).
+- **Maintenance contribution** — an *optional line item in our custodian's
+  published price*, funding browserid-pay. Never a protocol rule: a
+  protocol-level fee fails principles §2 (no gatekeepers); a custodian-level
+  one passes because any other custodian may omit it and the terms show it.
+
 ## Discovery (custodians and adjudicators)
 
 Nothing is hardcoded in the SDK. A proposer's agent finds custodians and
@@ -120,12 +142,32 @@ source*, not a default party. The counterparty sees the chosen custodian
 and adjudicator in the terms and may counter. Choosing them is part of the
 agreement.
 
+## The chain
+
+browserid-pay runs its **own SBO database** (own Avail app id, own genesis)
+— governance differs from mingo's, and mingo's `deploy/GENESIS.md` is the
+runbook to copy, lessons included: back up the sys and domain keys before
+anything else; emit `/sys/dnssec/<domain>` at genesis so writes work from
+block one; automate the DNSSEC evidence refresh. Paths:
+
+| path | who may write | what |
+|---|---|---|
+| `/sys/*` | sys key | names, root policy, trust anchors, dnssec evidence (as mingo) |
+| `/agreements/<id>/` | create: any attributed identity; `evidence/`: the two parties; `ruling`: the named adjudicator; `lock`: the named custodian | proposal, acceptance, lock, evidence, ruling |
+| `/providers/custodians/<name>`, `/providers/adjudicators/<name>` | the named identity | self-describing listings: price, rails, conformance version — the discovery source |
+| `/attest/…` | per the Attestation spec | completion, dispute, ruling attestations |
+
+Governance: the sys key holds the root policy; the root policy grants
+creation broadly and restricts by role inside each agreement (party,
+adjudicator, custodian are named in the proposal, so policy variables can
+bind them).
+
 ## What we build
 
 An SDK / MCP toolset with five verbs — `propose`, `accept`, `deliver`,
 `settle`, `dispute` — over: the `agreement.v1` schema and commitment rule,
 the `contract:` scope, escrow release conditions at the custodian, the
-discovery step, and a reference AI adjudicator. The demo: two agents agree
+discovery step, a reference AI adjudicator, and the live chain above. The demo: two agents agree
 a paid task; run one delivers and settles; run two disputes and the
 adjudicator rules.
 
@@ -149,12 +191,14 @@ Every default that could harden into a gate, with its escape hatch:
 - Legal enforceability: not claimed; the pitch is self-enforcing where
   money is involved, evidenced everywhere else.
 
-## Open questions for review
+## Settled in review (2026-09-15)
 
-1. Should the proposal itself ever be on chain in the clear (public
-   tenders), or is commitment-only the sole mode for v1?
-2. Who holds the salt and terms if a party's agent disappears? Probably
-   the custodian receives a sealed copy at escrow time, readable only by the
-   adjudicator — worth deciding before the schema is fixed.
-3. Does the acceptor's bundle need a fresh access cert per contract, or
-   can the same presentation cover several contracts with one proposer?
+- Proposal precedes acceptance on chain; dangling acceptances are ignored.
+- Payment runs either direction via `payer`/`payee` roles.
+- Proposals may be public (`mode: public`); commitment is the default.
+- The custodian receives a sealed copy of the terms at lock time, readable
+  only by the named adjudicator, so a vanished agent cannot strand a
+  dispute. (Schema detail to fix before build.)
+- Access-cert validity follows the base spec; nothing contract-specific.
+- Custodian charges a fee; maintenance contribution is custodian-level and
+  optional.
