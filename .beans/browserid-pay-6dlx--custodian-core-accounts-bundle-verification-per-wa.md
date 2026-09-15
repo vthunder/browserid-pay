@@ -1,11 +1,11 @@
 ---
 # browserid-pay-6dlx
 title: 'Custodian core: accounts, bundle verification, per-warrant caps, ledger'
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-15T14:32:06Z
-updated_at: 2026-09-15T14:52:49Z
+updated_at: 2026-09-15T16:03:50Z
 parent: browserid-pay-h1f5
 ---
 
@@ -17,4 +17,8 @@ Rust (axum + SQLite), depends on browserid-ng crates by git. Accounts keyed by g
 - [x] accounts, admin credit, ledger + receipts
 - [x] ledger UI (login with browserid)
 - [x] tests (7 unit/integration, pinned-issuer path)
-- [ ] deploy to pay.dsp.fyi (blocked: CI image needs browserid-ng scope params on GitHub main; deploy key needs root ssh-keys:add — Dan)
+- [x] deployed to pay.dsp.fyi 2026-09-15 (released by image; CI key pending Dan)
+
+## Summary of Changes
+
+crates/custodian: axum + SQLite; /api/pay with per-warrant caps over rolling windows; escrow (y48h) added on top; ledger UI; admin test credit. Live at https://pay.dsp.fyi.
