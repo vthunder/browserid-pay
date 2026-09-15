@@ -174,7 +174,8 @@ async fn capture_proof(daemon: &str, domain: &str, repo: Option<&str>, force: bo
     let needed_by = if force { now + 365 * 24 * 3600 } else { now };
     let mut url = format!("{}/v1/dnssec?domain={domain}&needed_by={needed_by}&margin=3600", daemon.trim_end_matches('/'));
     if let Some(r) = repo {
-        url.push_str(&format!("&repo={r}"));
+        // `+` in a query string decodes to a space; the repo selector carries one.
+        url.push_str(&format!("&repo={}", r.replace('+', "%2B")));
     }
     let v: serde_json::Value = reqwest::Client::new().get(&url).send().await?.error_for_status()?.json().await?;
     if !v["needs_refresh"].as_bool().unwrap_or(true) {
