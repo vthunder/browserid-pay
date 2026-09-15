@@ -1,0 +1,13 @@
+{
+  "name": "browserid-pay-demo",
+  "private": true,
+  "type": "module",
+  "description": "Local end-to-end demo: two agents agree, settle; then dispute and ruling — against a throwaway IdP, the real custodian and judge binaries, and a stub daemon.",
+  "scripts": {
+    "local": "node run-local.mjs"
+  },
+  "dependencies": {
+    "@browserid-ng/agent": "^0.6.0",
+    "@browserid-ng/agreements": "file:../sdk/agreements"
+  }
+}

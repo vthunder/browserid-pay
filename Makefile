@@ -13,7 +13,7 @@ HOST ?= dokku@sandmill.org
 SSH  := ssh -i $(HOME)/.ssh/mini-ops -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
 LT   := ssh localtest 'cd ~/src/browserid-pay &&
 
-.PHONY: build test release-pay release-index watch dev-pay
+.PHONY: build test release-pay release-index watch dev-pay demo-local
 
 build:
 	$(LT) cargo build --workspace 2>&1 | sed "s/\x1b\[[0-9;]*m//g" | grep -E "^(error|warning)" -A5; true'
@@ -29,6 +29,13 @@ release-pay:
 
 release-index:
 	-$(SSH) $(HOST) git:from-image index $(REG)/indexer:$(SHA)
+
+# Local end-to-end demo / test (demo/README.md): builds the custodian, judge
+# and demo-idp, then runs two contracts (settle; dispute + ruling) against
+# them with a stub daemon. Exits non-zero on any failed assertion.
+demo-local:
+	$(LT) cargo build -p custodian -p judge -p demo-idp 2>&1 | sed "s/\x1b\[[0-9;]*m//g" | grep -E "^error" -A5; test $${PIPESTATUS[0]} -eq 0'
+	$(LT) cd demo && (test -d node_modules || npm install --silent) && node run-local.mjs'
 
 dev-pay:
 	PAY_DEV=1 PAY_PORT=3300 ADMIN_TOKEN=dev DATABASE_PATH=/tmp/custodian-dev.db \
