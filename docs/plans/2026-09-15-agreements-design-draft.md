@@ -127,10 +127,19 @@ the provider's name (discovery, below):
 
 - **Custodian fee** — for escrow; taken at release.
 - **Adjudicator fee** — escrowed; paid only on dispute (above).
-- **Maintenance contribution** — an *optional line item in our custodian's
-  published price*, funding browserid-pay. Never a protocol rule: a
-  protocol-level fee fails principles §2 (no gatekeepers); a custodian-level
-  one passes because any other custodian may omit it and the terms show it.
+- **Ecosystem contribution** — an optional `contribution` **term** in
+  `agreement.v1` (recipient identity + amount or percentage): just another
+  payee, paid by whichever custodian escrows, at release. The **chain
+  publishes a suggested baseline** (`/sys/contribution`: recipient +
+  percentage); SDKs read it at discovery and fill the default in, so the
+  nudge comes from the chain the parties chose, not from our code. The
+  consent card shows the line; either party may zero it or change the
+  recipient before accepting. Never a protocol rule — the chain has no
+  value primitive and a mandatory fee fails principles §2 — but because
+  contributions are terms in on-chain agreements they are attributable,
+  and the recipient may issue a *supporter* attestation indexers can weigh.
+  Our custodian may also route a share of its own fee to the same
+  recipient; that needs no protocol support.
 
 ## Discovery (custodians and adjudicators)
 
@@ -155,7 +164,19 @@ block one; automate the DNSSEC evidence refresh. Paths:
 | `/sys/*` | sys key | names, root policy, trust anchors, dnssec evidence (as mingo) |
 | `/agreements/<id>/` | create: any attributed identity; `evidence/`: the two parties; `ruling`: the named adjudicator; `lock`: the named custodian | proposal, acceptance, lock, evidence, ruling |
 | `/providers/custodians/<name>`, `/providers/adjudicators/<name>` | the named identity | self-describing listings: price, rails, conformance version — the discovery source |
-| `/attest/…` | per the Attestation spec | completion, dispute, ruling attestations |
+| `/<issuer>/attestations/<subject>/<type>` | the issuer (Attestation spec layout) | completion, dispute, ruling, supporter attestations |
+| `/sys/contribution` | sys key | the suggested ecosystem contribution (recipient, percentage) |
+
+**Indexing by identity.** Follows the Attestation spec's decision:
+storage is keyed by writer authority (neutral `/agreements/<id>/`, since
+two parties write into one agreement; attestations under the issuer), and
+the **reverse index by identity is the indexer's job**. The proposal names
+parties, adjudicator, and custodian, so party→agreements is built from it;
+subjects resolve to controllers, so a handle and the email behind it
+aggregate. Reputation scores stay off chain and subjective. We build the
+browserid-pay indexer with two verifiable queries (Indexer spec):
+*agreements by party* and *attestations by subject*; anyone may run
+another and score differently from the same facts.
 
 Governance: the sys key holds the root policy; the root policy grants
 creation broadly and restricts by role inside each agreement (party,
@@ -200,5 +221,6 @@ Every default that could harden into a gate, with its escape hatch:
   only by the named adjudicator, so a vanished agent cannot strand a
   dispute. (Schema detail to fix before build.)
 - Access-cert validity follows the base spec; nothing contract-specific.
-- Custodian charges a fee; maintenance contribution is custodian-level and
-  optional.
+- Custodian charges a fee. Ecosystem contribution is a contract term with a
+  chain-published default (Dan: beyond a custodian pass-through).
+- Identity indexing is the indexer's job, per the Attestation spec.
