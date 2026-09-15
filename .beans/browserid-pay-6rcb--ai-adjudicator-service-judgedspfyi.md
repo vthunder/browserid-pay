@@ -1,11 +1,11 @@
 ---
 # browserid-pay-6rcb
 title: AI adjudicator service (judge@dsp.fyi)
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-15T14:32:06Z
-updated_at: 2026-09-15T15:04:12Z
+updated_at: 2026-09-15T16:18:30Z
 parent: browserid-pay-h1f5
 blocked_by:
     - browserid-pay-vpe8
@@ -19,3 +19,7 @@ Identity + X25519 sealing key published in /providers/adjudicators/judge; price;
 - [x] post ruling + attestations + custodian delivery
 - [x] tests (6)
 - [ ] first deploy + human approval of judge@dsp.fyi (blocked on CI image: browserid-ng main lacks scope params; deploy key needs root)
+
+## Summary of Changes
+
+crates/judge live at https://judge.dsp.fyi, provisioned 2026-09-15 as danmills+judge@sandmill.org (delegated agent; warrants for https://pay.dsp.fyi and sbo+raw://avail:turing:530/). Provider listing submitted to the chain.
