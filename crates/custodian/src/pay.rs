@@ -180,7 +180,7 @@ pub async fn pay(verify: &Verify, db: &Db, deployment_currency: &str, req: PayRe
     .map_err(|e| PayError::detail("internal", e.to_string()))?
 }
 
-fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     use rand::RngCore;
     let mut b = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut b);

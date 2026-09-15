@@ -75,6 +75,17 @@ pub fn validate(raw: &Value, contract_id: &str, terms: &Value) -> Result<Ruling>
     Ok(Ruling { v: 1, id: contract_id.to_string(), outcome, split, fee, reasoning: reasoning.chars().take(4000).collect() })
 }
 
+/// Dev/demo ruler: returns a fixed JSON ruling (`JUDGE_FAKE_RULING`), so the
+/// whole dispute path runs without a model. Never set in production.
+pub struct StaticRuler(pub Value);
+
+#[async_trait]
+impl Ruler for StaticRuler {
+    async fn rule(&self, _case: &CaseFile) -> Result<Value> {
+        Ok(self.0.clone())
+    }
+}
+
 pub struct ClaudeRuler {
     pub api_key: String,
     pub model: String,

@@ -108,7 +108,7 @@ adjudicator, delivered to it by that adjudicator's own presentation
 
 | route | who | body |
 |---|---|---|
-| `POST /api/escrow/lock` | payer's agent | `{ presentation (contract audience), proposal: <proposal payload>, price, fees, contribution, sealed_terms }` → `{ lock }` |
+| `POST /api/escrow/lock` | payer's agent | `{ presentation (contract audience), proposal: <proposal payload>, price, fees, contribution, sealed_terms }` → `{ lock }` — money fields are decimal strings or `{ amount, currency }` (the terms' shape) |
 | `POST /api/escrow/<id>/acknowledge` | payer's agent | `{ presentation (contract audience) }` → releases to payee, pays fees + contribution, returns adjudicator fee |
 | `POST /api/escrow/<id>/dispute` | either party's agent | `{ presentation (contract audience) }` → freezes; returns `{ sealed_terms }` for the adjudicator |
 | `POST /api/escrow/<id>/ruling` | the adjudicator | `{ presentation (custodian audience, identity = named adjudicator), ruling }` → settles per ruling |

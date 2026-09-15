@@ -123,6 +123,32 @@ impl ChainWriter for TurboWriter {
     }
 }
 
+/// Dev/demo writer: POST the raw wire to a URL (a stub daemon's `/v1/submit`).
+/// Selected by `JUDGE_SUBMIT_URL`; never set in production.
+pub struct HttpWriter {
+    url: String,
+    http: reqwest::Client,
+}
+
+impl HttpWriter {
+    pub fn from_env() -> Option<Self> {
+        let url = std::env::var("JUDGE_SUBMIT_URL").ok()?;
+        Some(Self { url, http: reqwest::Client::builder().no_proxy().build().expect("http client") })
+    }
+}
+
+#[async_trait]
+impl ChainWriter for HttpWriter {
+    async fn submit(&self, wire: Vec<u8>) -> Result<String> {
+        let resp = self.http.post(&self.url).header("Content-Type", "application/octet-stream").body(wire).send().await?;
+        if !resp.status().is_success() {
+            bail!("submit to {} failed ({}): {}", self.url, resp.status(), resp.text().await.unwrap_or_default());
+        }
+        let v: Value = resp.json().await.unwrap_or(Value::Null);
+        Ok(v["submission_id"].as_str().unwrap_or("submitted").to_string())
+    }
+}
+
 /// Dev/test writer: logs and drops.
 pub struct LogWriter;
 #[async_trait]

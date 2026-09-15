@@ -57,9 +57,17 @@ async fn main() -> anyhow::Result<()> {
     let cases = Cases::open(data.join("cases.db").to_str().unwrap())?;
     let seal = seal::SealKey::load_or_create(&data.join("judge-seal-key.json"))?;
     let identity = Arc::new(Identity::new(data.join("judge-credential.json")));
-    let writer: Arc<dyn ChainWriter> = match chain::TurboWriter::from_env() {
-        Some(w) => Arc::new(w),
-        None => Arc::new(chain::LogWriter),
+    let writer: Arc<dyn ChainWriter> = match (chain::TurboWriter::from_env(), chain::HttpWriter::from_env()) {
+        (Some(w), _) => Arc::new(w),
+        (None, Some(w)) if cfg.dev => Arc::new(w),
+        _ => Arc::new(chain::LogWriter),
+    };
+    let ruler: Arc<dyn Ruler> = match std::env::var("JUDGE_FAKE_RULING") {
+        Ok(j) if cfg.dev => {
+            tracing::warn!("JUDGE_FAKE_RULING set: rulings are canned (dev only)");
+            Arc::new(llm::StaticRuler(serde_json::from_str(&j).expect("JUDGE_FAKE_RULING must be JSON")))
+        }
+        _ => Arc::new(llm::ClaudeRuler::new(cfg.anthropic_api_key.clone(), cfg.anthropic_model.clone())),
     };
     let app = App {
         cfg: Arc::new(cfg.clone()),
@@ -69,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
         identity: identity.clone(),
         reader: Arc::new(chain::DaemonReader::new(&cfg.daemon, &cfg.chain_audience)),
         writer,
-        ruler: Arc::new(llm::ClaudeRuler::new(cfg.anthropic_api_key.clone(), cfg.anthropic_model.clone())),
+        ruler,
         http: reqwest::Client::builder().no_proxy().build()?,
     };
 

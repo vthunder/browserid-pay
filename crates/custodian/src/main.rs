@@ -230,7 +230,7 @@ async fn admin_credit(State(app): State<App>, headers: HeaderMap, Json(body): Js
     let currency = app.cfg.currency.clone();
     let memo = body.memo.clone();
     let res = app.db.with(|c| {
-        let id = format!("dep_{}", db::now());
+        let id = format!("dep_{}", pay::random_id());
         let bal = Db::adjust(c, &identity, &currency, minor as i64, "credit", Some(&id))?;
         Db::insert_receipt(
             c,

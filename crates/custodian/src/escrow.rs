@@ -153,8 +153,13 @@ fn covers(counterparties: &Option<Vec<String>>, other: &str) -> bool {
     list.iter().any(|c| c == other || c == "*" || c.strip_prefix("*@").is_some_and(|d| d.eq_ignore_ascii_case(domain)))
 }
 
+/// A money field: a decimal string, or `{ "amount": "50.00", "currency": … }`
+/// (the terms' own shape, which the SDK forwards verbatim).
 fn money(v: &Value, what: &str) -> Result<i64, EscrowError> {
-    let s = v.as_str().ok_or_else(|| err("bad_request", format!("{what} must be a decimal string")))?;
+    let s = v
+        .as_str()
+        .or_else(|| v.get("amount").and_then(|a| a.as_str()))
+        .ok_or_else(|| err("bad_request", format!("{what} must be a decimal string or {{amount}}")))?;
     Ok(parse_money_minor(s).ok_or_else(|| err("bad_request", format!("{what} malformed")))? as i64)
 }
 

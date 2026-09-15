@@ -240,7 +240,10 @@ export class Agreements {
     if (adjudicator?.origin) {
       const st = this.terms.get(id);
       const sealed_terms = frozen?.sealed_terms || (st && adjudicator.sealing_key ? seal(canonicalize(st.terms), adjudicator.sealing_key) : null);
-      const jp = await this.agent.assertionFor(adjudicator.origin).catch(() => null);
+      // Filing needs a presentation for the judge's own audience — one more
+      // (login-shaped) card for the human the first time this judge is used.
+      if (!this.agent.warrantedAudiences().includes(adjudicator.origin)) await this.obtainWarrant(adjudicator.origin, ["dispute"]);
+      const jp = await this.agent.assertionFor(adjudicator.origin);
       filed = await this.#json(`${adjudicator.origin.replace(/\/+$/, "")}/api/dispute`, { presentation: jp, contract_id: id, sealed_terms, note });
     }
     return { ...ev, frozen, filed };
