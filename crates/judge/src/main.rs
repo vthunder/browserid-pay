@@ -10,6 +10,7 @@ mod chain;
 mod config;
 mod identity;
 mod llm;
+mod provision;
 mod seal;
 mod verify;
 

@@ -1,12 +1,13 @@
 //! The judge's own identity: a browserid agent device credential provisioned
-//! once (a human approves at the broker), plus the warrants that approval
-//! bundled — one for the SBO database (chain writes) and one per custodian
+//! once (a human approves at the broker; the judge becomes its own delegated
+//! identity — grantee `*`, handle `judge` — see `provision.rs`), plus the
+//! warrants that approval bundled (grantor = the approver, grantee = the judge) — one for the SBO database (chain writes) and one per custodian
 //! (ruling delivery). Chain writes are signed with the ACCESS key the access
 //! cert certifies and carry the four-object presentation as `Auth-Cert`,
 //! exactly like mingo's `sign_as_logged_in_user`.
 
 use anyhow::{anyhow, Context, Result};
-use browserid_agent::{request_provision, DeviceAgent, DeviceCredential, GrantRequest, PendingProvision};
+use browserid_agent::{DeviceAgent, DeviceCredential, GrantRequest};
 use sbo_core::crypto::{ContentHash, Signature, SigningKey};
 use sbo_core::message::{Action, Id, Message, ObjectType, Path};
 use sbo_core::wire;
@@ -110,14 +111,12 @@ impl Identity {
         for c in custodians {
             grants.push(GrantRequest { audience: c.clone(), scopes: vec!["ruling".into()] });
         }
-        let pending: PendingProvision = request_provision(
+        let pending = crate::provision::request(
             broker,
-            Some(handle),
-            Some("services"),
+            handle,
             &grants,
-            Some("browserid-pay adjudicator"),
-            Some("The AI adjudicator for browserid-pay agreements: it posts rulings to the dsp.fyi database and delivers them to the escrow custodian. Approve as the identity you want rulings attributed to (judge@dsp.fyi if you have it)."),
-            Some("self"),
+            "browserid-pay adjudicator",
+            "The AI adjudicator for browserid-pay agreements: it posts rulings to the dsp.fyi database and delivers them to the escrow custodian. Name it (the handle it asks for is `judge`) and pick which of your identities delegates; it acts as its own identity, attributed to you.",
         )
         .await
         .map_err(|e| anyhow!("provisioning request at {broker}: {e}"))?;

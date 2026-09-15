@@ -31,8 +31,13 @@ shapes: `docs/specs/agreement-v1.md`.
 ## Identity and provisioning (one-time, needs a human)
 
 On first boot with no `judge-credential.json` in `JUDGE_DATA_DIR`, the judge
-starts a **merged provisioning request** at `BROKER` (browserid.me): one
-approval covers the identity and the bundled warrants —
+starts a **merged provisioning request** at `BROKER` (browserid.me) as a
+**delegated agent**: `grantee: "*"` (the approver mints/names the judge's
+own identity; requested handle `judge`), no grantor pin (the approver picks
+which of their identities delegates — grantor = approver, grantee = judge).
+It is not an as-you grant and not `grantor: self` (the broker refuses that
+pair as contradictory). One approval covers the identity and the bundled
+warrants —
 
 - audience `sbo+raw://avail:turing:530/` with scopes `action:post`,
   `path:/agreements/**`, `path:/providers/adjudicators/**`,
@@ -42,9 +47,11 @@ approval covers the identity and the bundled warrants —
 
 The approval URL, user code, and key fingerprint are logged and served at
 `GET /api/setup`. Open the URL signed in as the identity rulings should be
-attributed to (`judge@dsp.fyi` if that mailbox exists; otherwise whatever
-identity approves becomes the judge's, and the provider listing id follows
-it). The pickup is persisted (mode 600) and the service provisions the
+delegate from. The judge's identity string is whatever the approval names
+(e.g. `judge@browserid.me`-style handle or a subaddress of the approver); it
+is recorded in `judge-credential.json`, shown at `GET /api/setup` and `/`,
+and is the id of the provider listing `/providers/adjudicators/<identity>` —
+proposals must name exactly that string as `adjudicator`. The pickup is persisted (mode 600) and the service provisions the
 provider listing `/providers/adjudicators/<identity>` on the chain.
 
 Chain writes are signed with the ephemeral **access key** the IdP certifies
