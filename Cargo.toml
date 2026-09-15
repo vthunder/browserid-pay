@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = ["crates/custodian"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+repository = "https://github.com/vthunder/browserid-pay"
+
+[workspace.dependencies]
+# browserid-ng crates, pinned by git rev (bump to adopt changes). During
+# development against a local checkout, use the [patch] section below.
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", branch = "main" }
+browserid-rp = { git = "https://github.com/vthunder/browserid-ng", branch = "main" }
+browserid-dnssec = { git = "https://github.com/vthunder/browserid-ng", branch = "main" }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", features = ["json"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+
+# Local development: point the browserid-ng crates at the sibling checkout.
+# Comment out to build against the pinned git source (what CI does).
+[patch."https://github.com/vthunder/browserid-ng"]
+browserid-core = { path = "../browserid-ng/browserid-core" }
+browserid-rp = { path = "../browserid-ng/browserid-rp" }
+browserid-dnssec = { path = "../browserid-ng/browserid-dnssec" }
