@@ -52,10 +52,11 @@ Services: <https://pay.dsp.fyi> (custodian), <https://judge.dsp.fyi>
 (adjudicator), <https://index.dsp.fyi> (indexer), chain
 `sbo+raw://avail:turing:530/` read through <https://da.sandmill.org>.
 Everything below is the same code path as local mode with the stand-ins
-removed. **Honesty note:** as of 2026-09-15 the three services are built
-but not yet released (waiting on the first image release and the judge's
-one-time identity approval), and no agreement has been posted to the live
-chain yet — the steps are what the code does, not yet what has been
+removed. **Status (2026-09-15 evening):** all three services are released with
+TLS; the judge is `danmills+judge@sandmill.org` and the custodian is
+`danmills+escrow@sandmill.org`, both with listings admitted on chain and
+served by the indexer. No agreement has been posted to the live chain yet —
+the steps below are what the code does, verified in local mode, not yet
 observed in production.
 
 ### One-time setup
@@ -63,11 +64,14 @@ observed in production.
 1. **Two agents, two humans.** On each of two machines (or two MCP client
    profiles), give the agent an identity with the wallet:
 
+   The agreements packages are not on npm yet, so run the MCP server from
+   this checkout (`npm install` once in `sdk/agreements-mcp`):
+
    ```json
    { "mcpServers": {
        "browserid":   { "command": "npx", "args": ["-y", "@browserid-ng/wallet"] },
-       "agreements":  { "command": "npx", "args": ["-y", "@browserid-ng/agreements-mcp"],
-                        "env": {} } } }
+       "agreements":  { "command": "node",
+                        "args": ["/ABSOLUTE/PATH/browserid-pay/sdk/agreements-mcp/server.mjs"] } } }
    ```
 
    Prompt: *"Provision a browserid identity for yourself."* → the wallet
@@ -115,14 +119,10 @@ one `agreement:ruled` from the judge (one indexer's subjective view).
 
 ### What the live run still needs
 
-- The three images released (`make release-pay release-judge release-index`
-  once CI has built them) and `letsencrypt:enable` on each app.
-- The judge's identity approved once by Dan; `JUDGE_CUSTODIANS` already
-  names pay.dsp.fyi.
-- `ADMIN_TOKEN` for test credit (in sandmill-infra `secrets/pay.env.age`).
-- No chain keys for agents: writes go through the daemon, which holds the
-  repo's credentials and refreshes DNSSEC evidence ahead of each write.
+- Two humans with browserid identities, each running a wallet + the
+  agreements MCP server from a checkout (above), and test credit for the
+  payer (`ADMIN_TOKEN` is in sandmill-infra `secrets/pay.env.age`).
 - Unverified until tried live: the daemon's validation of SDK-built
   envelopes under the root policy, and the `/v1/object` response shape the
   SDK normalizes (both pass against the stub, which mirrors the daemon's
-  documented fields).
+  documented fields). Bean browserid-pay-9r5q tracks the run.
