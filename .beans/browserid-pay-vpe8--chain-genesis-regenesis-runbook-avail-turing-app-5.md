@@ -5,7 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-15T14:32:06Z
-updated_at: 2026-09-15T14:53:16Z
+updated_at: 2026-09-15T15:10:38Z
 parent: browserid-pay-h1f5
 ---
 
@@ -14,7 +14,7 @@ Own SBO database. Genesis: /sys/domains/dsp.fyi, sys + names, /sys/trust/brokers
 - [x] genesis builder + wire
 - [x] runbook + Makefile
 - [x] submit + verify on turing (B=3885219; daemon-side verification pending the mingo deploy)
-- [ ] da.sandmill.org follows app 530 (mingo commit 864229a, not pushed)
+- [x] da.sandmill.org follows app 530 (mingo 1d8c562, deployed 2026-09-15) (mingo commit 864229a, not pushed)
 - [ ] dnssec refresh automation (make dnssec-refresh exists; cron not scheduled)
 - [ ] _sbo.dsp.fyi record (Dan)
 
