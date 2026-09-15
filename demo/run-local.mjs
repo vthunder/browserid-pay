@@ -3,7 +3,7 @@
 //
 // Starts: a stub daemon (in-process), demo-idp, the custodian (PAY_DEV) and
 // the judge (JUDGE_DEV, canned ruling). Then two agents, alice and bob:
-//   contract 1: propose → accept → fund → deliver → settle   (balances move)
+//   contract 1: propose → accept → fund → handoff → receipt → deliver → settle
 //   contract 2: propose → accept → fund → deliver → dispute → judge rules
 //               (split 30/20) → custodian settles per ruling
 // Every step asserts state at the custodian and the chain; any failure exits
@@ -135,7 +135,10 @@ async function main() {
   const TERMS = {
     title: "Summarize 10 papers",
     description: "Bob's agent summarizes ten papers alice's agent names; delivery is a commitment over the summaries sent off-chain.",
-    obligations: [{ by: BOB_AGENT, what: "deliver ten summaries", deadline: Math.floor(Date.now() / 1000) + 7 * 86400 }],
+    obligations: [
+      { by: ALICE_AGENT, what: "hand over the ten papers", deadline: Math.floor(Date.now() / 1000) + 86400, kind: "input" },
+      { by: BOB_AGENT, what: "deliver ten summaries", deadline: Math.floor(Date.now() / 1000) + 7 * 86400, kind: "deliverable", depends_on: 0 },
+    ],
     price: { amount: "50.00", currency: "USD" },
     evidence: "a delivery commitment over the summaries",
   };
@@ -163,6 +166,18 @@ async function main() {
   assert.equal((await balance(alice)).balance, "44.00", "100 − (50 + 0.50 + 5.00 + 0.50) locked");
   log("funded: alice 44.00 (56.00 in escrow)");
 
+  // Evidence patterns (docs/specs/evidence-patterns.md): alice hands off the
+  // papers (commitment + manifest), bob acknowledges receipt, THEN delivers.
+  assert.deepEqual((await bob.sdk.obligations(p1.id)).map((o) => o.state), ["pending", "blocked"], "bob is blocked until the papers are handed off");
+  const papers = Array.from({ length: 10 }, (_, i) => `paper ${i + 1}`);
+  const h1 = await alice.sdk.handoff(p1.id, { content: papers, obligation: 0, note: "the ten papers" });
+  assert.equal(daemon.get(`/agreements/${p1.id}/evidence/`, h1.evidence_id).value.kind, "handoff");
+  assert.equal(h1.evidence.manifest.count, 10);
+  const r1 = await bob.sdk.acknowledgeReceipt(p1.id, { handoff_id: h1.evidence_id, content: papers });
+  assert.equal(r1.evidence.ok, true);
+  assert.equal(daemon.get(`/agreements/${p1.id}/evidence/`, r1.evidence_id).value.handoff, h1.evidence_id);
+  assert.deepEqual((await bob.sdk.obligations(p1.id)).map((o) => o.state), ["met", "pending"], "receipt met the input; the deliverable is pending");
+  log("handoff + receipt on chain (input obligation met)");
   const d1 = await bob.sdk.deliver(p1.id, { content: { summaries: ["…x10"] }, note: "all ten" });
   assert.match(d1.evidence.commitment, /^sha256:/);
   const s1 = await alice.sdk.settle(p1.id, { note: "great" });

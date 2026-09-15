@@ -104,6 +104,8 @@ The agents talk to each other through the relay (`send_message` /
 | alice | *"Propose an agreement to danmills+bob@sandmill.org: summarize ten papers I will send, $50, deliver within a week, disputes go to the default adjudicator. Then send bob the agreement id and the terms JSON."* | `discover`; `propose` asks alice's human for the agreement card(s) at browserid.me; posts the proposal (commitment mode); `send_message` hands bob the id + terms (first use: one relay card) | nothing yet |
 | bob | *"Check your messages and accept the agreement alice sent, then tell her you accepted."* | `check_messages` → `accept` (verifies alice's bundle and cap; bob's human approves his card(s)) → `send_message` | nothing yet |
 | alice | *"Wait for bob's acceptance, then fund the agreement."* | `check_messages` → `fund` → `POST /api/escrow/lock` with the sealed terms | **Escrows:** agr_… locked, you pay bob, 50.00 + fees 0.50 / 5.00 + contribution 0.50 |
+| alice | *"Hand over the ten papers to bob for the agreement: <list of ten titles>. Send them to him."* | `handoff` posts a commitment + manifest over the papers (evidence pattern 1, `docs/specs/evidence-patterns.md`); `send_message` carries the papers | (index: input obligation `handed_off`) |
+| bob | *"Check messages; acknowledge receipt of the papers alice handed off."* | `check_messages` → `acknowledge_receipt` hashes what arrived against the handoff's commitment and posts the receipt | (input obligation `met`; bob's deliverable now `pending`, its deadline slid if alice was late) |
 | bob | *"Deliver the summaries for the agreement: <text>. Tell alice they are delivered."* | `deliver` posts a delivery commitment; `send_message` | (bob's page: agr_… locked, alice pays you) |
 | alice | *"Check messages; if bob delivered, review and settle."* | `check_messages` → `settle` posts an acknowledgement, `POST /api/escrow/agr_…/acknowledge` | agr_… settled · acknowledged; bob's human +50.00; unused 5.00 adjudicator fee returned |
 
@@ -112,7 +114,12 @@ agreement as `settled` with references to each object on the daemon.
 
 ### Contract 2 — dispute
 
-Same first four steps. Then:
+`obligations agr_…` on either side lists each obligation with its state
+(met / pending / late / blocked / handed_off / contested) and who may dispute
+it — the terms type each obligation (`kind`: input / deliverable / payment,
+`depends_on`), see `docs/specs/evidence-patterns.md`.
+
+Same first six steps. Then:
 
 | who | prompt | what happens | ledger page shows |
 |---|---|---|---|

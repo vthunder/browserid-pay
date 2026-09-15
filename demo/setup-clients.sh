@@ -48,8 +48,18 @@ JSON
 
 You act for a human through browserid. Two MCP servers are configured:
 \`browserid\` (your identity: \`provision\`, \`identity\`, \`authorize\`) and
-\`agreements\` (\`discover\`, \`propose\`, \`accept\`, \`fund\`, \`deliver\`,
-\`settle\`, \`dispute\`, \`agreement_status\`).
+\`agreements\` (\`discover\`, \`propose\`, \`accept\`, \`fund\`, \`handoff\`,
+\`acknowledge_receipt\`, \`deliver\`, \`settle\`, \`dispute\`, \`obligations\`,
+\`agreement_status\`).
+
+Evidence patterns (what counts in a dispute — a note proves nothing):
+- Inputs you owe the other side: \`handoff\` (commits to them on the ledger)
+  then send them; the receiver posts \`acknowledge_receipt\` with what it got.
+- Your deliverable: \`deliver\` (a commitment) and send it; keep the content —
+  you may have to reveal it in a dispute.
+- \`obligations\` shows who is late, blocked or contested, and who may dispute.
+- When drafting terms, type each obligation: kind input / deliverable / payment,
+  and \`depends_on\` for anything that needs an input first.
 
 Rules:
 - If you have no identity yet, call \`provision\` and show the human the

@@ -20,7 +20,8 @@ below. `<id>` is `agr_` + 16 base64url chars chosen by the proposer.
 ```json
 { "v": 1, "id": "agr_…", "salt": "<32 bytes base64url>",
   "title": "…", "description": "… (unverified prose)",
-  "obligations": [ { "by": "b@y", "what": "…", "deadline": 1760000000 } ],
+  "obligations": [ { "by": "a@x", "what": "hand over the ten papers", "deadline": 1759000000, "kind": "input" },
+                   { "by": "b@y", "what": "deliver the summaries", "deadline": 1760000000, "kind": "deliverable", "depends_on": 0 } ],
   "price": { "amount": "50.00", "currency": "USD" },
   "fees": { "custodian": "0.50", "adjudicator": "5.00" },
   "evidence": "what counts as delivered, in words",
@@ -110,7 +111,29 @@ window and whether a response exists; `GET /api/cases?party=<identity>`
 lists a party's cases. A commitment opened in a matching reveal is judged
 as delivered content; a mismatching reveal counts against the revealer; an
 unanswered window counts against the non-responder only where the terms
-obliged them.
+obliged them. Every evidence object also carries `at` (writer-claimed
+unix time; chain order is the truth).
+
+**Typed obligations** (`docs/specs/evidence-patterns.md`): each obligation
+MAY carry `kind` — `"input"` (something a party must hand over first, met by
+a receipt), `"deliverable"` (default, met by a delivery), `"payment"` (met by
+the escrow lock) — and `depends_on` (index of the obligation it needs; its
+deadline slides by that one's lateness). Missing `kind` = deliverable,
+missing `depends_on` = none.
+
+Two more evidence kinds serve the input handoff pattern:
+
+```json
+{ "v": 1, "id": "agr_…", "kind": "handoff", "by": "a@x", "at": 1759000000,
+  "commitment": "sha256:…", "manifest": { "count": 10, "items": [ { "name": "…", "size": 1234 } ] },
+  "obligation": 0, "note": "… (unverified)" }
+{ "v": 1, "id": "agr_…", "kind": "receipt", "by": "b@y", "at": 1759000100,
+  "handoff": "<evidence id of the handoff>", "ok": true, "obligation": 0 }
+```
+`handoff`: the provider's commitment over the inputs it sent off-chain (plus
+a manifest for the reader). `receipt`: the receiver's answer — `ok: true`
+when the received content hashes to the commitment, `ok: false` with
+`reason` when it does not or nothing usable arrived (contested).
 
 ## Ruling — `ID: ruling` (by the adjudicator named in the proposal)
 

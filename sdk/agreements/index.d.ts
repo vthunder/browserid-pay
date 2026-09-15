@@ -58,3 +58,13 @@ export function commitment(v: any): string;
 export function seal(plaintext: string | Buffer, recipientPublicKeyB64: string): string;
 export function open(sealed: string, recipientSecretKeyB64: string): Buffer;
 export function generateSealingKey(): { publicKey: string; secretKey: string };
+
+// ---- evidence patterns (docs/specs/evidence-patterns.md) ----
+export type ObligationKind = "input" | "deliverable" | "payment";
+export interface Obligation { by: string; what: string; deadline?: number; kind?: ObligationKind; depends_on?: number }
+export interface ObligationState extends Obligation {
+  index: number; kind: ObligationKind; effective_deadline: number | null;
+  state: "met" | "pending" | "late" | "blocked" | "handed_off" | "contested"; met_at: number | null; dispute_right: string | null;
+}
+export function contentCommitment(content: unknown): string;
+export function deriveObligations(obligations: Obligation[], ctx: { evidence?: any[]; lock?: boolean; now?: number; parties?: any; roles?: any }): ObligationState[];

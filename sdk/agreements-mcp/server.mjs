@@ -105,7 +105,11 @@ const server = new McpServer({ name: "browserid-agreements", version: "0.1.0" })
 const TERMS = {
   title: z.string().optional(),
   description: z.string().optional(),
-  obligations: z.array(z.object({ by: z.string(), what: z.string(), deadline: z.number().optional() })),
+  obligations: z.array(z.object({
+    by: z.string(), what: z.string(), deadline: z.number().optional(),
+    kind: z.enum(["input", "deliverable", "payment"]).optional().describe("input = something a party must hand over first (met by a receipt); deliverable (default) = met by a delivery; payment = met by the escrow lock"),
+    depends_on: z.number().optional().describe("index of the obligation this one needs first; its deadline slides by that one's lateness"),
+  })),
   price: z.object({ amount: z.string(), currency: z.string() }),
   fees: z.object({ custodian: z.string().optional(), adjudicator: z.string().optional() }).optional(),
   evidence: z.string().optional(),
@@ -210,6 +214,26 @@ server.registerTool("check_messages", {
   for (const m of j.messages || []) lastSeen = Math.max(lastSeen, m.id);
   return j;
 }));
+
+
+// ---- evidence patterns (docs/specs/evidence-patterns.md) ---------------------
+server.registerTool("handoff", {
+  title: "Hand over inputs",
+  description: "Commit to inputs you owe the other party (the papers, the brief, the data) on the ledger, then send them off-chain (e.g. send_message). The other side answers with acknowledge_receipt. `obligation` = index of the input obligation in the terms.",
+  inputSchema: { id: z.string(), content: z.any().optional(), commitment: z.string().optional(), manifest: z.any().optional(), obligation: z.number().optional(), note: z.string().optional() },
+}, ({ id, ...o }) => run((a) => a.handoff(id, o)));
+
+server.registerTool("acknowledge_receipt", {
+  title: "Acknowledge (or contest) received inputs",
+  description: "After receiving a handoff's inputs, post a receipt: pass the received `content` and it is hashed against the handoff's commitment (a mismatch is recorded as contested with the reason); or pass `contested` with a reason if nothing usable arrived.",
+  inputSchema: { id: z.string(), handoff_id: z.string(), content: z.any().optional(), contested: z.string().optional() },
+}, ({ id, ...o }) => run((a) => a.acknowledgeReceipt(id, o)));
+
+server.registerTool("obligations", {
+  title: "Obligation states",
+  description: "Each obligation in the terms with its state (met / pending / late / blocked / handed_off / contested), its effective deadline (slid by a late dependency) and who holds the dispute right when it is late.",
+  inputSchema: { id: z.string() },
+}, ({ id }) => run((a) => a.obligations(id)));
 
 await server.connect(new StdioServerTransport());
 console.error(`browserid-agreements ready — identity ${IDENTITY}, broker ${BROKER}`);
