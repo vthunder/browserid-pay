@@ -15,6 +15,7 @@ export class FakeAgent {
     this.deviceCert = jwsLike({ typ: "browserid-device-cert-v1", identities: [email] });
     this.grants = new Map(); // audience -> scopes
     this.requested = [];
+    this.cards = []; // one entry per consent card (bundled grants)
   }
   warrantedAudiences() { return [...this.grants.keys()]; }
   addGrant(pair) {
@@ -35,6 +36,8 @@ export class FakeAgent {
   }
   /** obtainWarrant hook: auto-approve, record the ask. */
   obtain = async (audience, scopes) => { this.requested.push({ audience, scopes }); this.grants.set(audience, scopes); };
+  /** obtainWarrants hook: ONE card carrying every grant; auto-approve, record the card. */
+  obtainAll = async (grants) => { this.cards.push(grants); for (const g of grants) this.grants.set(g.audience, g.scopes); };
 }
 
 /** Reads the fake presentation back: identity + scopes from its warrant. */

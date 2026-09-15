@@ -55,13 +55,13 @@ function sdk() {
   // which can take minutes. Instead of blocking the tool call (the agent could
   // never show the link), start the request, return the link at once
   // (NeedsApproval), and finish on the next call of the same tool.
-  const origObtain = a.obtainWarrant;
-  a.obtainWarrant = async (aud, scopes) => {
-    const key = aud + " " + JSON.stringify(scopes);
+  const origObtain = a.obtainWarrants;
+  a.obtainWarrants = async (grants) => {
+    const key = JSON.stringify(grants);
     let p = pending.get(key);
     if (!p) {
       const before = approveUrls.length;
-      p = origObtain(aud, scopes).then(() => persistGrants(agent, saved)).finally(() => pending.delete(key));
+      p = origObtain(grants).then(() => persistGrants(agent, saved)).finally(() => pending.delete(key));
       p.catch(() => {});
       pending.set(key, p);
       // Give the request a moment to file and surface its link.

@@ -13,7 +13,7 @@ function world(servers) {
   chain.put("/providers/adjudicators/judge@dsp.fyi/", "listing", { v: 1, identity: "judge@dsp.fyi", origin: servers.origin, price: { amount: "5.00", currency: "USD" }, sealing_key: judgeKey.publicKey });
   const mk = (email) => {
     const agent = new FakeAgent(email);
-    return { agent, sdk: new Agreements({ agent, chain, repo: REPO, verify: fakeVerify, obtainWarrant: agent.obtain, http: fetch }) };
+    return { agent, sdk: new Agreements({ agent, chain, repo: REPO, verify: fakeVerify, obtainWarrants: agent.obtainAll, http: fetch }) };
   };
   return { chain, judgeKey, alice: mk("alice@x.test"), bob: mk("bob@y.test") };
 }
@@ -38,11 +38,15 @@ test("propose → accept → fund → deliver → settle", async () => {
     assert.equal(p.proposal.commitment, p.commitment);
     assert.equal(p.proposal.terms, undefined, "commitment mode hides terms");
     assert.deepEqual(p.proposal.roles, { payer: "alice@x.test", payee: "bob@y.test" });
-    // Two warrants were asked of alice's human: the chain write + the contract.
-    const asks = w.alice.agent.requested;
-    assert.deepEqual(asks.map((a) => a.audience), [contractAudience(p.id, REPO), REPO]);
+    // ONE consent card for alice's human, carrying every grant this agreement
+    // needs: the contract, the standing ledger-write, and the judge's audience.
+    assert.equal(w.alice.agent.cards.length, 1, "one card");
+    const asks = w.alice.agent.cards[0];
+    assert.equal(asks.length, 3);
+    assert.deepEqual(asks.slice(0, 2).map((a) => a.audience), [contractAudience(p.id, REPO), REPO]);
     assert.deepEqual(asks[0].scopes, [{ scope: "contract:agreement", cap: { amount: "56.00", currency: "USD" }, counterparties: ["bob@y.test"] }]);
     assert.deepEqual(asks[1].scopes, ["action:post", "path:/agreements/**", "path:/alice@x.test/**"]);
+    assert.deepEqual(asks[2].scopes, ["dispute"]);
     // On chain: the proposal object under /agreements/<id>/.
     const onChain = await w.chain.get(`/agreements/${p.id}/`, "proposal");
     assert.equal(onChain.payload.parties.proposer, "alice@x.test");
@@ -107,7 +111,7 @@ test("accept refuses a bad commitment, a wrong party, an undersized cap", async 
     const p = await w.alice.sdk.propose(TERMS, { acceptor: "bob@y.test" });
     await assert.rejects(w.bob.sdk.accept(p.id, { ...p.terms, price: { amount: "1.00", currency: "USD" } }), /commitment_mismatch/);
     const carol = new FakeAgent("carol@z.test");
-    const csdk = new Agreements({ agent: carol, chain: w.chain, repo: REPO, verify: fakeVerify, obtainWarrant: carol.obtain });
+    const csdk = new Agreements({ agent: carol, chain: w.chain, repo: REPO, verify: fakeVerify, obtainWarrants: carol.obtainAll });
     await assert.rejects(csdk.accept(p.id, p.terms), /not_acceptor/);
     // Proposer's cap below the total → refused at accept.
     w.alice.agent.grant(contractAudience(p.id, REPO), [{ scope: "contract:agreement", cap: { amount: "1.00", currency: "USD" } }]);

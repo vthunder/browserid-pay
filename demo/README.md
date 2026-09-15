@@ -29,9 +29,10 @@ What it starts (all from this repo, nothing else running):
 
 What it asserts, in order: the judge's provider listing lands on chain
 attributed to `judge@dsp.test` with its sealing key; alice's human is shown
-exactly two cards for contract 1 (the `contract:agreement` warrant capped at
-$56.00 with `counterparties: [bob]`, then the standing ledger-write
-warrant); proposal and acceptance are attributed to the right parties;
+exactly one consent card for contract 1, carrying the `contract:agreement`
+warrant capped at $56.00 with `counterparties: [bob]`, the standing
+ledger-write warrant and the judge's audience (so the later dispute asks
+for nothing); proposal and acceptance are attributed to the right parties;
 funding locks $56.00 (price + 0.50 custodian fee + 5.00 adjudicator fee +
 1% contribution); settlement pays bob $50.00, returns alice the unused
 adjudicator fee, pays the custodian and `fund@dsp.test`; contract 2 freezes
@@ -95,8 +96,8 @@ observed in production.
 
 | who | prompt to the agent | what happens | ledger page shows |
 |---|---|---|---|
-| alice | *"Propose an agreement to bob@example.com: summarize ten papers I will send, $50, deliver within a week, dispute goes to the default adjudicator. Send bob the terms."* | `discover` picks pay.dsp.fyi, judge, 1% contribution; `propose` asks alice's human for **two cards** at browserid.me: *enter agreements up to $56.00 each with bob@example.com* and *record agreements on the browserid-pay ledger* (standing); posts the proposal (commitment mode) to the chain | nothing yet |
-| bob | *"Accept agreement agr_… with these terms: …"* | `accept` verifies alice's bundle and cap, asks bob's human for his two cards, posts the acceptance | nothing yet |
+| alice | *"Propose an agreement to bob@example.com: summarize ten papers I will send, $50, deliver within a week, dispute goes to the default adjudicator. Send bob the terms."* | `discover` picks pay.dsp.fyi, judge, 1% contribution; `propose` asks alice's human for **one card** at browserid.me listing every grant this agreement needs: *enter agreements up to $56.00 each with bob@example.com*, *record agreements on the browserid-pay ledger* (standing, first agreement only) and *dispute at judge.dsp.fyi*; posts the proposal (commitment mode) to the chain | nothing yet |
+| bob | *"Accept agreement agr_… with these terms: …"* | `accept` verifies alice's bundle and cap, asks bob's human for his one card (same three grants), posts the acceptance | nothing yet |
 | alice | *"Fund agreement agr_…"* | `fund` → `POST /api/escrow/lock` with the sealed terms | **Escrows:** agr_… locked, you pay bob, 50.00 + fees 0.50 / 5.00 + contribution 0.50; balance down 56.00 |
 | bob | *"Deliver the summaries for agr_…: <text>"* | `deliver` posts a delivery commitment | (bob's page: agr_… locked, alice pays you) |
 | alice | *"The summaries are fine — settle agr_…"* | `settle` posts an acknowledgement, `POST /api/escrow/agr_…/acknowledge` | agr_… settled · acknowledged; receipts: −50.00 to bob, +5.00 adjudicator fee returned; bob's balance +50.00 |
@@ -110,7 +111,7 @@ Same first four steps. Then:
 
 | who | prompt | what happens | ledger page shows |
 |---|---|---|---|
-| alice | *"Bob only delivered five of ten. Dispute agr_…"* | `dispute` posts a dispute object, freezes the escrow (`/dispute` returns the sealed terms), files with the judge (`POST https://judge.dsp.fyi/api/dispute`); one more card for alice's human the first time: *sign in to judge.dsp.fyi* | agr_… disputed |
+| alice | *"Bob only delivered five of ten. Dispute agr_…"* | `dispute` posts a dispute object, freezes the escrow (`/dispute` returns the sealed terms), files with the judge (`POST https://judge.dsp.fyi/api/dispute`); no card — the judge's audience was on the agreement's card | agr_… disputed |
 | (judge) | — | unseals the terms, reads proposal, acceptance and evidence from the chain, rules with Claude, posts `ruling` and `agreement:ruled` attestations, delivers to the custodian | agr_… settled · ruled:split; receipts per the split; judge's account +5.00 |
 
 `agreement_status agr_…` on either side reports `ruled`;

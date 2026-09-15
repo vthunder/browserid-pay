@@ -49,7 +49,8 @@ export class AgreementError extends Error {
  * @param {DeviceAgent} o.agent     from @browserid-ng/agent (email, deviceCert, addGrant, assertionFor, assertionWithAccessKey)
  * @param {object} [o.chain]        { get, list, submit } — default DaemonChain
  * @param {function} o.verify       async (presentation, audience) => { ok, email, grantee, scopes, reason }
- * @param {function} o.obtainWarrant async (audience, scopeEntries) => void — must leave the agent holding a warrant for `audience` (default: requestWarrants at the broker + onApproveUrl)
+ * @param {function} [o.obtainWarrants] async (grants: [{audience, scopes}]) => void — file ONE consent request for all of them (default: requestWarrants at the broker + onApproveUrl)
+ * @param {function} [o.obtainWarrant] single-grant variant (mapped over the bundle when given instead)
  * @param {function} [o.onApproveUrl]
  * @param {string} [o.broker]
  * @param {object} [o.custodian]    { origin } override discovery
@@ -67,7 +68,12 @@ export class Agreements {
     this.verify = o.verify || defaultVerify(this.http);
     this.broker = o.broker || "https://browserid.me";
     this.onApproveUrl = o.onApproveUrl || ((u) => console.error(`APPROVE: ${u}`));
-    this.obtainWarrant = o.obtainWarrant || ((aud, scopes) => defaultObtainWarrant(this, aud, scopes));
+    // One consent card per agreement: every grant an agreement needs is filed
+    // as ONE request (`obtainWarrants(grants)`); `obtainWarrant` is the
+    // single-grant shim. A caller-supplied single-grant hook is mapped.
+    this.obtainWarrants = o.obtainWarrants
+      || (o.obtainWarrant ? async (grants) => { for (const g of grants) await o.obtainWarrant(g.audience, g.scopes); } : (grants) => defaultObtainWarrants(this, grants));
+    this.obtainWarrant = (aud, scopes) => this.obtainWarrants([{ audience: aud, scopes }]);
     this.overrides = { custodian: o.custodian, adjudicator: o.adjudicator, contribution: o.contribution };
     this.terms = o.termsStore || new Map(); // id -> { terms, salt }
   }
@@ -110,11 +116,19 @@ export class Agreements {
 
   // ---- contract warrants -----------------------------------------------------
 
-  async #contractWarrant(id, totalMinor, currency, counterparty) {
+  /**
+   * Everything this agreement will ask the human for, in ONE card: the
+   * per-contract grant, the standing ledger-write grant (first agreement
+   * only), and the adjudicator's audience (so a later dispute needs no card).
+   */
+  async #contractWarrant(id, totalMinor, currency, counterparty, adjudicatorOrigin) {
     const aud = contractAudience(id, this.repo);
-    if (!this.agent.warrantedAudiences().includes(aud)) {
-      await this.obtainWarrant(aud, [{ scope: AGREEMENT_SCOPE, cap: { amount: fmt(totalMinor), currency }, counterparties: [counterparty] }]);
-    }
+    const held = this.agent.warrantedAudiences();
+    const grants = [];
+    if (!held.includes(aud)) grants.push({ audience: aud, scopes: [{ scope: AGREEMENT_SCOPE, cap: { amount: fmt(totalMinor), currency }, counterparties: [counterparty] }] });
+    if (!held.includes(this.repo)) grants.push({ audience: this.repo, scopes: CHAIN_SCOPES(this.email) });
+    if (adjudicatorOrigin && !held.includes(adjudicatorOrigin)) grants.push({ audience: adjudicatorOrigin, scopes: ["dispute"] });
+    if (grants.length) await this.obtainWarrants(grants);
     return this.agent.assertionFor(aud);
   }
 
@@ -168,7 +182,7 @@ export class Agreements {
     const com = commitment(full);
     const totalMinor = totalOf(full);
     const currency = full.price.currency;
-    const bundle = await this.#contractWarrant(id, totalMinor, currency, o.acceptor);
+    const bundle = await this.#contractWarrant(id, totalMinor, currency, o.acceptor, adjudicator.origin);
     const mode = o.mode || "commitment";
     const proposal = {
       v: 1, id, mode,
@@ -202,11 +216,11 @@ export class Agreements {
     const totalMinor = totalOf(full);
     const currency = full.price.currency;
     await this.#checkBundle(id, p.bundle, p.parties.proposer, totalMinor, currency);
-    const bundle = await this.#contractWarrant(id, totalMinor, currency, p.parties.proposer);
+    const adjudicator = await this.#adjudicatorFor(p);
+    const bundle = await this.#contractWarrant(id, totalMinor, currency, p.parties.proposer, adjudicator?.origin);
     const proposal_hash = "sha256:" + sha256hex(Buffer.from(canonicalize(p)));
     const acceptance = { v: 1, id, proposal_hash, bundle };
     const { submission } = await this.post(agreementPath(id), "acceptance", acceptance, "agreement.acceptance.v1");
-    const adjudicator = await this.#adjudicatorFor(p);
     this.terms.set(id, { terms: full, salt: full.salt, proposal: p, adjudicator, custodian: { origin: p.custodian } });
     return { id, acceptance, submission };
   }
@@ -373,16 +387,19 @@ function defaultVerify(http) {
   };
 }
 
-async function defaultObtainWarrant(self, audience, scopes) {
+async function defaultObtainWarrants(self, grants) {
   const { requestWarrants } = await import("@browserid-ng/agent");
   const pending = await requestWarrants(self.broker, {
     deviceCert: self.agent.deviceCert, identity: self.email,
-    grants: [{ audience, scopes }],
-    message: audience.includes("/agreements/") ? "Enter an agreement on your behalf." : "Record agreements and attestations on the browserid-pay ledger.",
+    grants: grants.map((g) => ({ audience: g.audience, scopes: g.scopes })),
+    message: grants.some((g) => g.audience.includes("/agreements/"))
+      ? "Enter an agreement on your behalf (and record it on the browserid-pay ledger)."
+      : "Record agreements and attestations on the browserid-pay ledger.",
     http: self.http,
   });
   self.onApproveUrl(pending.verificationUriComplete || pending.verificationUri);
-  const grants = await pending.wait();
-  for (const g of grants) self.agent.addGrant(g.grant);
-  if (!self.agent.warrantedAudiences().includes(audience)) throw new AgreementError("warrant_not_granted", audience);
+  const granted = await pending.wait();
+  for (const g of granted) self.agent.addGrant(g.grant);
+  const held = self.agent.warrantedAudiences();
+  for (const g of grants) if (!held.includes(g.audience)) throw new AgreementError("warrant_not_granted", g.audience);
 }

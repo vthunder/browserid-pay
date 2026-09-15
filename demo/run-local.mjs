@@ -111,7 +111,7 @@ async function main() {
   const chain = new LocalChain({ daemon: daemonOrigin, repo: REPO });
   const mk = async (email) => {
     const agent = await DemoAgent.create(idp.origin, email);
-    const sdk = new Agreements({ agent: agent.agent, chain, repo: REPO, verify: verifyVia(idp.origin), obtainWarrant: agent.obtain, broker: idp.origin });
+    const sdk = new Agreements({ agent: agent.agent, chain, repo: REPO, verify: verifyVia(idp.origin), obtainWarrants: agent.obtainAll, broker: idp.origin });
     return { agent, sdk };
   };
   const alice = await mk(ALICE), bob = await mk(BOB);
@@ -144,10 +144,11 @@ async function main() {
   step("contract 1 — propose, accept, fund, deliver, settle");
   const p1 = await alice.sdk.propose(TERMS, { acceptor: BOB_AGENT });
   log(`proposed ${p1.id}: total ${p1.terms.fees.custodian} + ${p1.terms.fees.adjudicator} fees, 1% contribution`);
-  const cards = alice.agent.asked.filter((a) => a.audience !== payOrigin); // (the ledger sign-in above was a login card)
-  assert.deepEqual(cards.map((a) => a.audience), [`${REPO.replace(/\/+$/, "")}/agreements/${p1.id}`, REPO], "two cards: the contract, then the standing ledger-write");
-  assert.deepEqual(cards[0].scopes[0].cap, { amount: "56.00", currency: "USD" });
-  assert.deepEqual(cards[0].scopes[0].counterparties, [BOB_AGENT]);
+  assert.equal(alice.agent.cards.length, 1, "one consent card for the whole agreement");
+  const card = alice.agent.cards[0];
+  assert.deepEqual(card.map((a) => a.audience), [`${REPO.replace(/\/+$/, "")}/agreements/${p1.id}`, REPO, judgeOrigin], "the card carries the contract, the standing ledger-write, and the judge's audience");
+  assert.deepEqual(card[0].scopes[0].cap, { amount: "56.00", currency: "USD" });
+  assert.deepEqual(card[0].scopes[0].counterparties, [BOB_AGENT]);
   assert.equal(daemon.get(`/agreements/${p1.id}/`, "proposal").creator, ALICE_AGENT, "authored by the agent, not the human");
 
   await bob.sdk.accept(p1.id, p1.terms);
@@ -183,7 +184,9 @@ async function main() {
   await alice.sdk.fund(p2.id);
   assert.equal((await balance(alice)).balance, "93.00");
   await bob.sdk.deliver(p2.id, { content: { summaries: ["…x5"] }, note: "five of ten" });
+  const cardsBefore = alice.agent.cards.length;
   const disp = await alice.sdk.dispute(p2.id, { note: "only half delivered" });
+  assert.equal(alice.agent.cards.length, cardsBefore, "a dispute asks the human for nothing: the judge's audience was on the agreement's card");
   assert.equal(disp.frozen.escrow.state, "disputed");
   assert.ok(disp.frozen.sealed_terms, "custodian hands back the sealed terms");
   assert.equal(disp.filed.state, "open");

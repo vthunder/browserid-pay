@@ -33,7 +33,8 @@ export class DemoAgent {
     this.agent = agent;          // the delegated agent (parties, chain writes)
     this.humanAgent = humanAgent; // the human's own device (ledger sign-in)
     this.human = human;
-    this.asked = []; // what the human would have been shown
+    this.asked = []; // every grant the human would have been shown
+    this.cards = []; // one entry per consent card (bundled grants)
   }
 
   get email() { return this.agent.email; }
@@ -43,6 +44,11 @@ export class DemoAgent {
     this.asked.push({ audience, scopes });
     const g = await postJson(`${this.idp}/demo/grant`, { grantor: this.human, grantee: this.email, audience, scopes, holder: this.agent.holder });
     this.agent.addGrant(g.pair);
+  };
+  /** The SDK's `obtainWarrants` hook: ONE card with every grant; the demo IdP signs each. */
+  obtainAll = async (grants) => {
+    this.cards.push(grants);
+    for (const g of grants) await this.obtain(g.audience, g.scopes);
   };
 
   /** The agent's presentation for an arbitrary audience (e.g. the judge), granting on the fly. */
