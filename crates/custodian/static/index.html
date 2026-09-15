@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pay.dsp.fyi</title>
+<style>
+  :root { --fg:#1a1a1a; --mute:#666; --line:#e4e4e4; --bg:#fafafa; --card:#fff; --ok:#1a7f37; --warn:#9a3412; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --bg:#141414; --card:#1c1c1c; --ok:#3fb950; --warn:#f0883e; } }
+  body { font: 15px/1.55 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 2rem 1rem; }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; } h2 { font-size: 1rem; margin: 1.5rem 0 .5rem; color: var(--mute); text-transform: uppercase; letter-spacing: .04em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: .6rem 0; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
+  .big { font-size: 2rem; font-weight: 600; }
+  .mute { color: var(--mute); } .ok { color: var(--ok); } .warn { color: var(--warn); }
+  button { font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; } td, th { text-align: left; padding: .35rem .3rem; border-bottom: 1px solid var(--line); vertical-align: top; } th { color: var(--mute); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { font-size: .9em; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: .4rem; } .bar > i { display: block; height: 100%; background: var(--ok); }
+  p.lede { color: var(--mute); margin: 0 0 1.2rem; }
+</style>
+<main>
+  <h1>pay.dsp.fyi</h1>
+  <p class="lede">A custodian for agent spending. Your agents pay from here, within the budgets you signed. Balances are test credit for now.</p>
+  <div class="card row" id="who"><span id="state">checking…</span><span><button id="login" hidden>Sign in</button><button id="logout" hidden>Sign out</button></span></div>
+  <div id="body" hidden>
+    <div class="card row"><span class="mute">Balance</span><span class="big"><span id="balance">0.00</span> <span class="mute" style="font-size:1rem">{{CURRENCY}}</span></span></div>
+    <h2>Budgets</h2>
+    <div id="warrants"></div>
+    <h2>Receipts</h2>
+    <div class="card"><table id="receipts"><thead><tr><th>When</th><th>What</th><th>Who</th><th class="num">Amount</th></tr></thead><tbody></tbody></table></div>
+  </div>
+</main>
+<script src="{{BROKER}}/include.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const when = t => new Date(t * 1000).toLocaleString();
+function windowWords(s) {
+  if (!s) return 'in total';
+  const d = s / 86400;
+  if (d >= 1 && Number.isInteger(d)) return d === 1 ? 'every day' : d === 7 ? 'every week' : d === 30 ? 'every 30 days' : `every ${d} days`;
+  const h = s / 3600; return h >= 1 ? `every ${h} hours` : `every ${s} seconds`;
+}
+async function refresh() {
+  const me = await (await fetch('/api/me')).json();
+  if (!me.email) { $('state').textContent = 'Not signed in.'; $('login').hidden = false; $('logout').hidden = true; $('body').hidden = true; return; }
+  $('state').innerHTML = 'Signed in as <code>' + esc(me.email) + '</code>';
+  $('login').hidden = true; $('logout').hidden = false; $('body').hidden = false;
+  $('balance').textContent = me.balance;
+  const w = $('warrants'); w.innerHTML = '';
+  if (!me.warrants.length) w.innerHTML = '<div class="card mute">No agent has spent from this account yet. Budgets appear here after the first payment under a warrant you signed at ' + esc('{{BROKER}}'.replace(/^https?:\/\//, '')) + '.</div>';
+  for (const b of me.warrants) {
+    const pct = Math.min(100, Math.round(100 * parseFloat(b.spent) / Math.max(0.01, parseFloat(b.cap))));
+    const el = document.createElement('div'); el.className = 'card';
+    el.innerHTML = `<div class="row"><span><code>${esc(b.grantee)}</code> <span class="mute">may spend up to ${esc(b.cap)} ${esc(b.currency)} ${windowWords(b.window_secs)}</span></span>
+      <span class="num"><b>${esc(b.spent)}</b> <span class="mute">spent · ${esc(b.remaining)} left</span></span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="mute" style="font-size:.85rem;margin-top:.3rem">${b.window_resets_at ? 'resets ' + when(b.window_resets_at) + ' · ' : ''}expires ${when(b.exp)} · revoke at <a href="{{BROKER}}/account">{{BROKER}}/account</a></div>`;
+    w.appendChild(el);
+  }
+  const tb = $('receipts').querySelector('tbody'); tb.innerHTML = '';
+  if (!me.receipts.length) tb.innerHTML = '<tr><td colspan="4" class="mute">Nothing yet.</td></tr>';
+  for (const r of me.receipts) {
+    const out = r.grantor === me.email && r.kind !== 'credit';
+    const who = r.kind === 'credit' ? 'test credit' : out ? `${esc(r.grantee)} → ${esc(r.payee)}` : `from ${esc(r.grantor)} (via ${esc(r.grantee)})`;
+    tb.insertAdjacentHTML('beforeend', `<tr><td>${when(r.at)}</td><td>${esc(r.kind)}${r.memo ? ' <span class="mute">' + esc(r.memo) + '</span>' : ''}</td><td>${who}</td><td class="num ${out ? 'warn' : 'ok'}">${out ? '−' : '+'}${esc(r.amount)}</td></tr>`);
+  }
+}
+navigator.id.watch({
+  loggedInUser: null,
+  onlogin: async presentation => {
+    $('state').textContent = 'verifying…';
+    const r = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ presentation }) });
+    if (!r.ok) { $('state').textContent = 'sign-in failed: ' + ((await r.json()).reason || r.status); return; }
+    refresh();
+  },
+  onlogout: () => {}
+});
+$('login').onclick = () => navigator.id.request({ siteName: 'pay.dsp.fyi' });
+$('logout').onclick = async () => { await fetch('/api/logout', { method: 'POST' }); navigator.id.logout && navigator.id.logout(); refresh(); };
+refresh();
+</script>

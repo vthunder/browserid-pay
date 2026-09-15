@@ -1,0 +1,7 @@
+# Local development only: build the browserid-ng crates from the sibling
+# checkout instead of the pinned git source. Excluded from Docker builds
+# (.dockerignore), so CI and the image use the pinned source.
+[patch."https://github.com/vthunder/browserid-ng"]
+browserid-core = { path = "../browserid-ng/browserid-core" }
+browserid-rp = { path = "../browserid-ng/browserid-rp" }
+browserid-dnssec = { path = "../browserid-ng/browserid-dnssec" }

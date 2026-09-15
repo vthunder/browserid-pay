@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/custodian"]
+members = ["crates/custodian", "crates/genesis"]
 
 [workspace.package]
 version = "0.1.0"
@@ -29,10 +29,7 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
-
-# Local development: point the browserid-ng crates at the sibling checkout.
-# Comment out to build against the pinned git source (what CI does).
-[patch."https://github.com/vthunder/browserid-ng"]
-browserid-core = { path = "../browserid-ng/browserid-core" }
-browserid-rp = { path = "../browserid-ng/browserid-rp" }
-browserid-dnssec = { path = "../browserid-ng/browserid-dnssec" }
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+# The SBO reference implementation (vthunder/sbo), pinned by rev like mingo does.
+sbo-core = { git = "https://github.com/vthunder/sbo", rev = "4a2b056", default-features = false }

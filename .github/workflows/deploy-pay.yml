@@ -1,0 +1,67 @@
+# Build the custodian image in CI and release it to dokku by image
+# (git:from-image) — the host never compiles. Same pattern as browserid-ng.
+#
+# One-time setup on the hobby host (declared in sandmill-infra apps/hobby/pay.conf
+# and applied with bin/apply-apps.sh): app `pay`, domain pay.dsp.fyi, storage
+# /data, builder dockerfile, letsencrypt. Repo secret DOKKU_SSH_KEY = the
+# browserid-pay-ci deploy key (dokku user only); repo variable DOKKU_HOST.
+name: deploy-pay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/custodian/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/deploy-pay.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-pay
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/vthunder/browserid-pay/custodian
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/custodian/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Deploy to dokku
+        if: ${{ vars.DOKKU_HOST != '' }}
+        env:
+          DOKKU_SSH_KEY: ${{ secrets.DOKKU_SSH_KEY }}
+          DOKKU_HOST: ${{ vars.DOKKU_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DOKKU_SSH_KEY" > ~/.ssh/dokku_key
+          chmod 600 ~/.ssh/dokku_key
+          out=$(ssh -i ~/.ssh/dokku_key -o StrictHostKeyChecking=accept-new \
+            "dokku@$DOKKU_HOST" git:from-image pay "$IMAGE:$GITHUB_SHA" 2>&1) \
+            || { echo "$out" | grep -q "No changes detected" \
+                 && echo "no-op: image digest unchanged (already deployed)" \
+                 || { echo "$out" | tail -30; exit 1; }; }
+          echo "$out" | tail -5

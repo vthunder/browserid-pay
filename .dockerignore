@@ -1,0 +1,6 @@
+.cargo/
+target/
+.env*
+.git/
+node_modules/
+*.db
