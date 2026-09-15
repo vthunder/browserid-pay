@@ -375,6 +375,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "chain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "browserid-agent",
+ "browserid-core",
+ "reqwest 0.12.28",
+ "sbo-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -550,11 +567,14 @@ name = "custodian"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
+ "browserid-agent",
  "browserid-core",
  "browserid-dnssec",
  "browserid-rp",
+ "chain",
  "chrono",
  "hmac",
  "rand 0.8.8",
@@ -1553,6 +1573,7 @@ dependencies = [
  "browserid-dnssec",
  "browserid-rp",
  "chacha20poly1305",
+ "chain",
  "chrono",
  "hex",
  "hkdf",

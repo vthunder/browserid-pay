@@ -56,15 +56,8 @@ const postJson = async (url, body, headers = {}) => {
   return j;
 };
 
-/** A DaemonChain that reads the stub and writes to its /v1/submit. */
-class LocalChain extends DaemonChain {
-  async submit(wire) {
-    const r = await fetch(`${this.daemon}/v1/submit`, { method: "POST", headers: { "content-type": "application/octet-stream" }, body: wire });
-    const j = await r.json();
-    if (!r.ok) throw new Error(`stub submit: ${j.error}`);
-    return j.submission_id;
-  }
-}
+/** The stub daemon speaks the real read + submit routes; no override needed. */
+const LocalChain = DaemonChain;
 
 async function main() {
   // ---- infrastructure -------------------------------------------------------

@@ -27,6 +27,18 @@ pub struct Config {
     pub trust_issuers: Vec<(String, String)>,
     /// Account currency (ISO 4217). One currency per deployment in v1.
     pub currency: String,
+    /// Where the custodian's identity credential lives (dokku: /data).
+    pub data_dir: String,
+    /// The SBO database the custodian writes to (audience of its chain warrant).
+    pub chain_audience: String,
+    /// The handle the custodian asks the approver for.
+    pub handle: String,
+    /// The custodian's escrow fee (decimal string), published in its listing.
+    pub fee: String,
+    /// The sbo-daemon that reads the database and submits writes for it.
+    pub daemon: String,
+    /// Repo selector passed to the daemon (defaults to the chain audience).
+    pub repo: String,
 }
 
 impl Config {
@@ -65,6 +77,12 @@ impl Config {
             dev,
             trust_issuers,
             currency: get("PAY_CURRENCY", "USD"),
+            data_dir: get("PAY_DATA_DIR", "./pay-data"),
+            chain_audience: get("PAY_CHAIN_AUDIENCE", "sbo+raw://avail:turing:530/"),
+            handle: get("PAY_HANDLE", "escrow"),
+            fee: get("PAY_FEE", "0.50"),
+            daemon: get("DAEMON", "https://da.sandmill.org"),
+            repo: env::var("REPO").unwrap_or_else(|_| get("PAY_CHAIN_AUDIENCE", "sbo+raw://avail:turing:530/")),
         }
     }
 }

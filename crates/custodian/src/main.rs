@@ -7,6 +7,7 @@ mod config;
 mod db;
 mod escrow;
 mod pay;
+mod publish;
 mod session;
 mod verify;
 
@@ -29,6 +30,7 @@ struct App {
     db: Db,
     verify: Arc<verify::Verify>,
     publisher: Arc<dyn escrow::Publisher>,
+    identity: Arc<chain::Identity>,
 }
 
 #[tokio::main]
@@ -46,11 +48,62 @@ async fn main() -> anyhow::Result<()> {
     let db = Db::open(&cfg.database_path)?;
     db.with(|c| escrow::schema(c))?;
     let verify = verify::Verify::new(&cfg)?;
-    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: Arc::new(escrow::Log) };
+
+    // The custodian's own chain identity: provisioned once (a human approves
+    // at the broker; see /api/setup), then it posts its listing, escrow locks
+    // and settlement attestations through the daemon. `PAY_SUBMIT_URL` points
+    // a dev build at a stub daemon's submit route.
+    let data = std::path::PathBuf::from(&cfg.data_dir);
+    std::fs::create_dir_all(&data)?;
+    let identity = Arc::new(chain::Identity::new(data.join("custodian-credential.json")));
+    let reader: Arc<dyn chain::ChainReader> = Arc::new(chain::DaemonReader::new(&cfg.daemon, &cfg.repo));
+    let writer: Arc<dyn chain::ChainWriter> = match std::env::var("PAY_SUBMIT_URL") {
+        Ok(url) if cfg.dev => Arc::new(chain::DaemonWriter::at_url(&url)),
+        _ => Arc::new(chain::DaemonWriter::new(&cfg.daemon, &cfg.repo)),
+    };
+    let publisher = Arc::new(publish::ChainPublisher {
+        identity: identity.clone(),
+        writer: writer.clone(),
+        chain_audience: cfg.chain_audience.clone(),
+    });
+    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: publisher.clone(), identity: identity.clone() };
+
+    // Load the identity, or provision it in the background (prints the approval
+    // URL). In dev mode without a credential nothing is provisioned unless
+    // PAY_PROVISION=1 — the demo runs without a chain identity.
+    let boot_cfg = cfg.clone();
+    tokio::spawn(async move {
+        match identity.load().await {
+            Ok(true) => {}
+            Ok(false) if boot_cfg.dev && std::env::var("PAY_PROVISION").is_err() => {
+                tracing::warn!("PAY_DEV without a credential: chain writes are dropped (set PAY_PROVISION=1 to provision)");
+                return;
+            }
+            Ok(false) => {
+                if let Err(e) = identity.provision(&boot_cfg.broker, &publish::provision_spec(&boot_cfg)).await {
+                    tracing::error!("provisioning failed: {e:#}");
+                    identity.state.lock().await.error = Some(e.to_string());
+                    return;
+                }
+            }
+            Err(e) => {
+                tracing::error!("loading identity: {e:#}");
+                identity.state.lock().await.error = Some(e.to_string());
+                return;
+            }
+        }
+        if let Some(me) = identity.email().await {
+            let want = publish::listing(&boot_cfg, &me);
+            if let Err(e) = chain::ensure_listing(&identity, reader.as_ref(), writer.as_ref(), &boot_cfg.chain_audience, "custodians", &want).await {
+                tracing::error!("provider listing: {e:#}");
+            }
+        }
+    });
 
     let router = Router::new()
         .route("/", get(index))
         .route("/healthz", get(|| async { "ok" }))
+        .route("/api/setup", get(api_setup))
         .route("/api/login", post(api_login))
         .route("/api/logout", post(api_logout))
         .route("/api/me", get(api_me))
@@ -78,6 +131,11 @@ async fn index(State(app): State<App>) -> Html<String> {
             .replace("{{ORIGIN}}", &app.cfg.origin)
             .replace("{{CURRENCY}}", &app.cfg.currency),
     )
+}
+
+/// Provisioning status: the custodian's identity, or the pending approval.
+async fn api_setup(State(app): State<App>) -> Json<chain::SetupState> {
+    Json(app.identity.state.lock().await.clone())
 }
 
 #[derive(Deserialize)]

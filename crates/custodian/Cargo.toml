@@ -9,6 +9,9 @@ license.workspace = true
 browserid-core.workspace = true
 browserid-rp.workspace = true
 browserid-dnssec.workspace = true
+chain = { path = "../chain" }
+browserid-agent.workspace = true
+async-trait = "0.1"
 tokio.workspace = true
 axum.workspace = true
 serde.workspace = true

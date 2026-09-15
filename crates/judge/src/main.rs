@@ -6,11 +6,8 @@
 //! proposal, and attests the outcome on both parties.
 
 mod cases;
-mod chain;
 mod config;
-mod identity;
 mod llm;
-mod provision;
 mod seal;
 mod verify;
 
@@ -22,9 +19,8 @@ use axum::{
     Json, Router,
 };
 use cases::{Case, Cases};
-use chain::{ChainReader, ChainWriter};
+use chain::{ChainReader, ChainWriter, Identity, ProvisionSpec, WriteSpec};
 use config::Config;
-use identity::{Identity, WriteSpec};
 use llm::{CaseFile, Ruler};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -58,10 +54,12 @@ async fn main() -> anyhow::Result<()> {
     let cases = Cases::open(data.join("cases.db").to_str().unwrap())?;
     let seal = seal::SealKey::load_or_create(&data.join("judge-seal-key.json"))?;
     let identity = Arc::new(Identity::new(data.join("judge-credential.json")));
-    let writer: Arc<dyn ChainWriter> = match (chain::TurboWriter::from_env(), chain::HttpWriter::from_env()) {
-        (Some(w), _) => Arc::new(w),
-        (None, Some(w)) if cfg.dev => Arc::new(w),
-        _ => Arc::new(chain::LogWriter),
+    // Writes go through the daemon (it holds the repo's TurboDA credentials and
+    // refreshes issuer DNSSEC evidence ahead of the write). `JUDGE_SUBMIT_URL`
+    // points a dev build at a stub daemon's submit route.
+    let writer: Arc<dyn ChainWriter> = match std::env::var("JUDGE_SUBMIT_URL") {
+        Ok(url) if cfg.dev => Arc::new(chain::DaemonWriter::at_url(&url)),
+        _ => Arc::new(chain::DaemonWriter::new(&cfg.daemon, &cfg.chain_audience)),
     };
     let ruler: Arc<dyn Ruler> = match std::env::var("JUDGE_FAKE_RULING") {
         Ok(j) if cfg.dev => {
@@ -88,11 +86,7 @@ async fn main() -> anyhow::Result<()> {
         match boot.identity.load().await {
             Ok(true) => {}
             Ok(false) => {
-                if let Err(e) = boot
-                    .identity
-                    .provision(&boot.cfg.broker, &boot.cfg.handle, &boot.cfg.chain_audience, &boot.cfg.custodians)
-                    .await
-                {
+                if let Err(e) = boot.identity.provision(&boot.cfg.broker, &provision_spec(&boot.cfg)).await {
                     tracing::error!("provisioning failed: {e:#}");
                     boot.identity.state.lock().await.error = Some(e.to_string());
                     return;
@@ -124,35 +118,34 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The listing's collection: `/providers/adjudicators/<identity>/`, ID
-/// `listing`. The identity is a PATH segment because root-policy grant
-/// patterns match an object's path, never its id (`/providers/adjudicators/$user/**`).
-pub fn listing_path(identity: &str) -> String {
-    format!("/providers/adjudicators/{identity}/")
+/// What the judge asks the approver for: its own delegated identity (handle
+/// `judge`), a chain warrant for its listing, rulings and attestations, and a
+/// `ruling` warrant per custodian it delivers to.
+fn provision_spec(cfg: &Config) -> ProvisionSpec {
+    let mut grants = vec![browserid_agent::GrantRequest {
+        audience: cfg.chain_audience.clone(),
+        scopes: vec![
+            "action:post".into(),
+            "path:/agreements/**".into(),
+            "path:/providers/adjudicators/**".into(),
+            "path:/*/attestations/**".into(),
+        ],
+    }];
+    for c in &cfg.custodians {
+        grants.push(browserid_agent::GrantRequest { audience: c.clone(), scopes: vec!["ruling".into()] });
+    }
+    ProvisionSpec {
+        handle: cfg.handle.clone(),
+        label: "browserid-pay adjudicator".into(),
+        message: "The AI adjudicator for browserid-pay agreements: it posts rulings to the dsp.fyi database and delivers them to the escrow custodian. Name it (the handle it asks for is `judge`) and pick which of your identities delegates; it acts as its own identity, attributed to you.".into(),
+        grants,
+    }
 }
-pub const LISTING_ID: &str = "listing";
 
 /// Ensure `/providers/adjudicators/<identity>/listing` (provider.v1) is on chain and current.
 async fn ensure_listing(app: &App) -> anyhow::Result<()> {
     let Some(me) = app.identity.email().await else { return Ok(()) };
-    let want = listing(app, &me);
-    let path = listing_path(&me);
-    if let Some(existing) = app.reader.get_object(&path, LISTING_ID).await? {
-        if existing.value == want && existing.creator == me {
-            tracing::info!("provider listing current");
-            return Ok(());
-        }
-    }
-    let wire = app
-        .identity
-        .sign_write(
-            &app.cfg.chain_audience,
-            &WriteSpec { path, id: LISTING_ID.into(), schema: "provider.v1".into(), payload: serde_json::to_vec(&want)? },
-        )
-        .await?;
-    let sub = app.writer.submit(wire).await?;
-    tracing::info!(%sub, "posted provider listing for {me}");
-    Ok(())
+    chain::ensure_listing(&app.identity, app.reader.as_ref(), app.writer.as_ref(), &app.cfg.chain_audience, "adjudicators", &listing(app, &me)).await
 }
 
 fn listing(app: &App, me: &str) -> Value {
@@ -180,7 +173,7 @@ async fn index(State(app): State<App>) -> Html<String> {
     )
 }
 
-async fn api_setup(State(app): State<App>) -> Json<identity::SetupState> {
+async fn api_setup(State(app): State<App>) -> Json<chain::SetupState> {
     Json(app.identity.state.lock().await.clone())
 }
 

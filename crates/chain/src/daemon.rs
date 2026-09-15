@@ -1,6 +1,7 @@
-//! Reading the SBO database (through a daemon's `/v1/*`) and submitting
-//! signed wire batches (TurboDA, directly — the daemon's turbo config is
-//! single-app). Both behind traits so tests can fake them.
+//! Reading the SBO database and submitting signed wire batches, both through
+//! an sbo-daemon's `/v1/*` (always with `repo=`): the daemon holds the repo's
+//! TurboDA credentials and refreshes issuer DNSSEC evidence ahead of any write
+//! that needs it. Both behind traits so tests can fake them.
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -85,67 +86,35 @@ impl ChainReader for DaemonReader {
     }
 }
 
-pub struct TurboWriter {
-    endpoint: String,
-    key: String,
-    http: reqwest::Client,
-}
-
-impl TurboWriter {
-    /// From `AVAIL_NETWORK` / `AVAIL_TURBODA_KEY`; `None` when unset (dev).
-    pub fn from_env() -> Option<Self> {
-        let key = std::env::var("AVAIL_TURBODA_KEY").ok()?;
-        let endpoint = match std::env::var("AVAIL_NETWORK").as_deref() {
-            Ok("mainnet") => "https://turbo-api.availproject.org",
-            _ => "https://staging.turbo-api.availproject.org",
-        }
-        .to_string();
-        Some(Self { endpoint, key, http: reqwest::Client::builder().no_proxy().build().expect("http client") })
-    }
-}
-
-#[async_trait]
-impl ChainWriter for TurboWriter {
-    async fn submit(&self, wire: Vec<u8>) -> Result<String> {
-        let resp = self
-            .http
-            .post(format!("{}/v1/submit_raw_data", self.endpoint))
-            .header("x-api-key", &self.key)
-            .header("Content-Type", "application/octet-stream")
-            .body(wire)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            bail!("TurboDA submit failed ({}): {}", resp.status(), resp.text().await.unwrap_or_default());
-        }
-        let v: Value = resp.json().await?;
-        v["submission_id"].as_str().map(String::from).context("no submission_id in TurboDA response")
-    }
-}
-
-/// Dev/demo writer: POST the raw wire to a URL (a stub daemon's `/v1/submit`).
-/// Selected by `JUDGE_SUBMIT_URL`; never set in production.
-pub struct HttpWriter {
+/// Submit through a daemon: `POST <daemon>/v1/submit?repo=<repo>` with the
+/// raw wire. Returns the daemon's `submission_id`.
+pub struct DaemonWriter {
     url: String,
     http: reqwest::Client,
 }
 
-impl HttpWriter {
-    pub fn from_env() -> Option<Self> {
-        let url = std::env::var("JUDGE_SUBMIT_URL").ok()?;
-        Some(Self { url, http: reqwest::Client::builder().no_proxy().build().expect("http client") })
+impl DaemonWriter {
+    pub fn new(daemon: &str, repo: &str) -> Self {
+        Self::at_url(&format!("{}/v1/submit?repo={}", daemon.trim_end_matches('/'), crate::encode_repo(repo)))
+    }
+    /// An explicit submit URL (dev/demo stub daemons).
+    pub fn at_url(url: &str) -> Self {
+        Self { url: url.to_string(), http: reqwest::Client::builder().no_proxy().build().expect("http client") }
     }
 }
 
 #[async_trait]
-impl ChainWriter for HttpWriter {
+impl ChainWriter for DaemonWriter {
     async fn submit(&self, wire: Vec<u8>) -> Result<String> {
         let resp = self.http.post(&self.url).header("Content-Type", "application/octet-stream").body(wire).send().await?;
         if !resp.status().is_success() {
             bail!("submit to {} failed ({}): {}", self.url, resp.status(), resp.text().await.unwrap_or_default());
         }
         let v: Value = resp.json().await.unwrap_or(Value::Null);
-        Ok(v["submission_id"].as_str().unwrap_or("submitted").to_string())
+        if let Some(refreshed) = v["evidence_refreshed"].as_array().filter(|a| !a.is_empty()) {
+            tracing::info!(?refreshed, "daemon refreshed issuer evidence ahead of the write");
+        }
+        v["submission_id"].as_str().map(String::from).or_else(|| v["hash"].as_str().map(String::from)).context("daemon submit: no submission_id")
     }
 }
 
@@ -154,7 +123,7 @@ pub struct LogWriter;
 #[async_trait]
 impl ChainWriter for LogWriter {
     async fn submit(&self, wire: Vec<u8>) -> Result<String> {
-        tracing::warn!(bytes = wire.len(), "no AVAIL_TURBODA_KEY: chain write dropped");
+        tracing::warn!(bytes = wire.len(), "no chain writer configured: write dropped");
         Ok("dropped".into())
     }
 }

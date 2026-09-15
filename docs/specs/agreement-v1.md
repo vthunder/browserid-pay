@@ -75,7 +75,7 @@ and is verified by the counterparty and the custodian, never by the chain.
 A contract exists iff `proposal` precedes `acceptance` in chain order and
 `proposal_hash` matches. Binding at acceptance; active at lock.
 
-## Lock — `ID: lock` (by the custodian named in the proposal)
+## Lock — `ID: lock`, `Content-Schema: agreement.lock.v1` (by the custodian named in the proposal)
 
 ```json
 { "v": 1, "id": "agr_…", "locked_at": 1760000000 }

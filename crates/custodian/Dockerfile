@@ -12,6 +12,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY --from=builder /build/target/release/custodian /app/custodian
 RUN mkdir -p /data
-ENV PAY_PORT=5000 DATABASE_PATH=/data/custodian.db
+ENV PAY_PORT=5000 DATABASE_PATH=/data/custodian.db PAY_DATA_DIR=/data
 EXPOSE 5000
 CMD ["/app/custodian"]

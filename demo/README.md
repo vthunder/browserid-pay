@@ -43,7 +43,7 @@ non-zero on any failed assertion.
 Not exercised locally: the real broker's consent cards (the demo IdP signs
 warrants on request), DNSSEC issuer resolution and revocation lists (dev
 mode pins the issuer and skips status checks), Claude (canned ruling),
-TurboDA submission and daemon validation of the SBO envelopes (stub).
+daemon validation of the SBO envelopes (stub).
 `DEMO_VERBOSE=1` streams the three services' logs.
 
 ## Prod walkthrough (what the live story looks like)
@@ -67,7 +67,7 @@ observed in production.
    { "mcpServers": {
        "browserid":   { "command": "npx", "args": ["-y", "@browserid-ng/wallet"] },
        "agreements":  { "command": "npx", "args": ["-y", "@browserid-ng/agreements-mcp"],
-                        "env": { "AVAIL_TURBODA_KEY": "<a TurboDA key for app 530>" } } } }
+                        "env": {} } } }
    ```
 
    Prompt: *"Provision a browserid identity for yourself."* → the wallet
@@ -120,8 +120,8 @@ one `agreement:ruled` from the judge (one indexer's subjective view).
 - The judge's identity approved once by Dan; `JUDGE_CUSTODIANS` already
   names pay.dsp.fyi.
 - `ADMIN_TOKEN` for test credit (in sandmill-infra `secrets/pay.env.age`).
-- A TurboDA key for app 530 in each agent's MCP env (the `.env` in this
-  repo has one; it is the same key the genesis used).
+- No chain keys for agents: writes go through the daemon, which holds the
+  repo's credentials and refreshes DNSSEC evidence ahead of each write.
 - Unverified until tried live: the daemon's validation of SDK-built
   envelopes under the root policy, and the `/v1/object` response shape the
   SDK normalizes (both pass against the stub, which mirrors the daemon's

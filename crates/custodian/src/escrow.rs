@@ -24,18 +24,22 @@ fn err(error: &'static str, d: impl Into<String>) -> EscrowError {
     EscrowError { error, detail: Some(d.into()) }
 }
 
-/// Where lock objects and attestations go. The chain writer (signing as the
-/// custodian identity) plugs in here; `Log` is the stand-in until it lands.
+/// Where lock objects and attestations go: the chain writer signing as the
+/// custodian's identity (`crate::publish::ChainPublisher`); `Log` for
+/// dev/tests. Publication is best-effort and never fails the money move.
+#[async_trait::async_trait]
 pub trait Publisher: Send + Sync {
-    fn lock(&self, contract_id: &str, locked_at: i64);
-    fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str);
+    async fn lock(&self, contract_id: &str, locked_at: i64);
+    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str);
 }
+#[allow(dead_code)]
 pub struct Log;
+#[async_trait::async_trait]
 impl Publisher for Log {
-    fn lock(&self, contract_id: &str, locked_at: i64) {
+    async fn lock(&self, contract_id: &str, locked_at: i64) {
         tracing::info!(contract_id, locked_at, "escrow lock (publisher: log only)");
     }
-    fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str) {
+    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str) {
         tracing::info!(contract_id, payer = parties.0, payee = parties.1, outcome, "escrow settled (publisher: log only)");
     }
 }
@@ -282,7 +286,7 @@ pub async fn lock(
             Ok(Ok(e))
         })
         .map_err(|e| err("internal", e.to_string()))??;
-    publisher.lock(&id, now);
+    publisher.lock(&id, now).await;
     Ok(escrow)
 }
 
@@ -294,7 +298,7 @@ pub fn contract_audience(id: &str) -> String {
 /// adjudicator fee back to payer, contribution → recipient.
 pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id: &str, presentation: &str) -> Result<Escrow, EscrowError> {
     let (identity, _, _, _) = caller(verify, &contract_audience(id), presentation).await?;
-    settle(db, publisher, id, |e| {
+    let e = settle(db, id, |e| {
         if identity != e.payer {
             return Err(err("not_payer", identity.clone()));
         }
@@ -302,7 +306,9 @@ pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id
             return Err(err("bad_state", e.state.clone()));
         }
         Ok(Settlement { to_payee: e.price_minor, to_payer: e.adjudicator_fee_minor, to_adjudicator: 0, outcome: "acknowledged".into() })
-    })
+    })?;
+    publish_settled(publisher, &e).await;
+    Ok(e)
 }
 
 /// Either party opens a dispute: the escrow freezes and the sealed terms are
@@ -341,7 +347,7 @@ pub async fn ruling(verify: &Verify, db: &Db, publisher: &dyn Publisher, origin:
     let ruling_json = req.ruling.to_string();
     let db2 = db.clone();
     let idc = id.to_string();
-    let r = settle(db, publisher, id, |e| {
+    let r = settle(db, id, |e| {
         if identity != e.adjudicator {
             return Err(err("not_adjudicator", identity.clone()));
         }
@@ -376,6 +382,7 @@ pub async fn ruling(verify: &Verify, db: &Db, publisher: &dyn Publisher, origin:
         Ok(())
     })
     .map_err(|e| err("internal", e.to_string()))?;
+    publish_settled(publisher, &r).await;
     Ok(r)
 }
 
@@ -386,7 +393,7 @@ struct Settlement {
     outcome: String,
 }
 
-fn settle(db: &Db, publisher: &dyn Publisher, id: &str, decide: impl FnOnce(&Escrow) -> Result<Settlement, EscrowError>) -> Result<Escrow, EscrowError> {
+fn settle(db: &Db, id: &str, decide: impl FnOnce(&Escrow) -> Result<Settlement, EscrowError>) -> Result<Escrow, EscrowError> {
     let now = db::now();
     let out = db
         .with(|c| {
@@ -401,7 +408,7 @@ fn settle(db: &Db, publisher: &dyn Publisher, id: &str, decide: impl FnOnce(&Esc
             anyhow::ensure!(paid == total, "settlement does not balance: {paid} vs {total}");
             let reference = format!("escrow:{id}");
             let cur = e.currency.clone();
-            let mut pay_out = |to: &str, amt: i64, kind: &str| -> anyhow::Result<()> {
+            let pay_out = |to: &str, amt: i64, kind: &str| -> anyhow::Result<()> {
                 if amt > 0 {
                     Db::adjust(&tx, to, &cur, amt, kind, Some(&reference))?;
                 }
@@ -427,8 +434,11 @@ fn settle(db: &Db, publisher: &dyn Publisher, id: &str, decide: impl FnOnce(&Esc
             Ok(Ok(e))
         })
         .map_err(|e| err("internal", e.to_string()))??;
-    publisher.settled(id, (&out.payer, &out.payee), out.outcome.as_deref().unwrap_or(""));
     Ok(out)
+}
+
+async fn publish_settled(publisher: &dyn Publisher, e: &Escrow) {
+    publisher.settled(&e.id, (&e.payer, &e.payee), e.outcome.as_deref().unwrap_or("")).await;
 }
 
 pub fn view(e: &Escrow) -> Value {
@@ -457,6 +467,7 @@ mod tests {
             port: 0, origin: ORIGIN.into(), database_path: ":memory:".into(), admin_token: "t".into(),
             broker: "https://idp.test".into(), accepted_fallbacks: vec![ISSUER.into()], session_secret: "s".into(),
             dev: true, trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())], currency: "USD".into(),
+            data_dir: String::new(), chain_audience: String::new(), handle: String::new(), fee: "0.50".into(), daemon: String::new(), repo: String::new(),
         }
     }
 

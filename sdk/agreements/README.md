@@ -68,7 +68,9 @@ and the signature is by the same key. Headers emitted, in canonical order:
 `SBO-Version, Action, Path, ID, Type, Content-Type, Content-Length,
 Content-Hash, Content-Schema, Auth-Cert, Public-Key, Signature`. Reads go
 through an sbo-daemon (`/v1/object`, `/v1/list`, always with `repo=`);
-writes go straight to TurboDA (`AVAIL_TURBODA_KEY`).
+writes go through the same daemon (`POST /v1/submit?repo=`), which holds the
+repo's TurboDA credentials and refreshes issuer DNSSEC evidence ahead of the
+write — agents carry no chain keys.
 
 ## Options
 

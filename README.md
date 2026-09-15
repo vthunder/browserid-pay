@@ -48,5 +48,15 @@ are later rails behind the same cap check (`docs/plans/2026-09-11-…`).
 
 Config (env): `PAY_ORIGIN`, `PAY_PORT`, `DATABASE_PATH`, `ADMIN_TOKEN`,
 `BROKER`, `PAY_ACCEPTED_FALLBACKS` (default `browserid.me`), `PAY_CURRENCY`
-(default `USD`), `PAY_SESSION_SECRET`; dev only: `PAY_DEV=1`,
-`PAY_TRUST_ISSUER=domain=base64key[,…]` (pinned issuers, no status checks).
+(default `USD`), `PAY_SESSION_SECRET`, `PAY_DATA_DIR` (identity credential),
+`PAY_CHAIN_AUDIENCE`, `PAY_HANDLE` (default `escrow`), `PAY_FEE` (default
+`0.50`), `DAEMON`, `REPO`; dev only: `PAY_DEV=1`,
+`PAY_TRUST_ISSUER=domain=base64key[,…]` (pinned issuers, no status checks),
+`PAY_SUBMIT_URL` (stub daemon), `PAY_PROVISION=1` (provision even in dev).
+
+The custodian has its own chain identity, provisioned once like the judge
+(`GET /api/setup` shows the approval link on first boot). It posts its
+listing at `/providers/custodians/<identity>/listing`, an escrow `lock`
+object per funded agreement, and `agreement:settled` / `agreement:disputed`
+attestations on both parties at settlement — all through the daemon
+(`crates/chain`).

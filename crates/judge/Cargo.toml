@@ -11,6 +11,7 @@ browserid-rp.workspace = true
 browserid-dnssec.workspace = true
 browserid-agent.workspace = true
 sbo-core.workspace = true
+chain = { path = "../chain" }
 tokio.workspace = true
 axum.workspace = true
 serde.workspace = true

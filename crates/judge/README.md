@@ -68,9 +68,14 @@ file and re-approve) until a warrant-request flow is added here.
 `JUDGE_ORIGIN`, `JUDGE_PORT`, `JUDGE_DATA_DIR`, `BROKER`, `JUDGE_HANDLE`,
 `JUDGE_CHAIN_AUDIENCE`, `SBO_DAEMON`, `JUDGE_CUSTODIANS` (comma list),
 `JUDGE_ACCEPTED_FALLBACKS`, `JUDGE_PRICE`, `JUDGE_CURRENCY`, `JUDGE_MODEL`,
-`ANTHROPIC_API_KEY`, `AVAIL_NETWORK` / `AVAIL_TURBODA_KEY` (chain
-submissions; absent ⇒ writes are logged and dropped). Dev only: `JUDGE_DEV=1`,
-`JUDGE_TRUST_ISSUER=domain=base64key`.
+`ANTHROPIC_API_KEY`. Chain writes go through the daemon (`SBO_DAEMON`,
+`POST /v1/submit?repo=`), which holds the repo's TurboDA credentials and
+refreshes issuer DNSSEC evidence ahead of the write — the judge carries no
+chain key. Dev only: `JUDGE_DEV=1`, `JUDGE_TRUST_ISSUER=domain=base64key`,
+`JUDGE_SUBMIT_URL` (a stub daemon's submit route).
+
+Identity, provisioning, envelope assembly and daemon access are shared with
+the custodian in `crates/chain`.
 
 ## Deploy
 

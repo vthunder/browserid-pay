@@ -1,10 +1,12 @@
-//! The judge's own identity: a browserid agent device credential provisioned
-//! once (a human approves at the broker; the judge becomes its own delegated
-//! identity — grantee `*`, handle `judge` — see `provision.rs`), plus the
-//! warrants that approval bundled (grantor = the approver, grantee = the judge) — one for the SBO database (chain writes) and one per custodian
-//! (ruling delivery). Chain writes are signed with the ACCESS key the access
-//! cert certifies and carry the four-object presentation as `Auth-Cert`,
-//! exactly like mingo's `sign_as_logged_in_user`.
+//! A service's own identity: a browserid agent device credential provisioned
+//! once (a human approves at the broker; the service becomes its own delegated
+//! identity — grantee `*`, a requested handle — see `provision.rs`), plus the
+//! warrants that approval bundled (grantor = the approver, grantee = the
+//! service): one for the SBO database (chain writes) and any others the
+//! service needs. Chain writes are signed with the ACCESS key the access cert
+//! certifies and carry the four-object presentation as `Auth-Cert`, exactly
+//! like mingo's `sign_as_logged_in_user`. Without `as:<grantor>` in the chain
+//! warrant the service authors its writes as itself.
 
 use anyhow::{anyhow, Context, Result};
 use browserid_agent::{DeviceAgent, DeviceCredential, GrantRequest};
@@ -96,30 +98,13 @@ impl Identity {
     }
 
     /// Start provisioning at `broker`: a merged one-approval flow covering the
-    /// identity and the bundled grants. The approval URL is printed and exposed
-    /// at `/api/setup`; this waits (in the caller's task) for the pickup.
-    pub async fn provision(&self, broker: &str, handle: &str, chain_audience: &str, custodians: &[String]) -> Result<()> {
-        let mut grants = vec![GrantRequest {
-            audience: chain_audience.to_string(),
-            scopes: vec![
-                "action:post".into(),
-                "path:/agreements/**".into(),
-                "path:/providers/adjudicators/**".into(),
-                "path:/*/attestations/**".into(),
-            ],
-        }];
-        for c in custodians {
-            grants.push(GrantRequest { audience: c.clone(), scopes: vec!["ruling".into()] });
-        }
-        let pending = crate::provision::request(
-            broker,
-            handle,
-            &grants,
-            "browserid-pay adjudicator",
-            "The AI adjudicator for browserid-pay agreements: it posts rulings to the dsp.fyi database and delivers them to the escrow custodian. Name it (the handle it asks for is `judge`) and pick which of your identities delegates; it acts as its own identity, attributed to you.",
-        )
-        .await
-        .map_err(|e| anyhow!("provisioning request at {broker}: {e}"))?;
+    /// identity and the bundled grants. The approval URL is logged and exposed
+    /// in `state` (serve it at `/api/setup`); this waits (in the caller's
+    /// task) for the pickup.
+    pub async fn provision(&self, broker: &str, spec: &ProvisionSpec) -> Result<()> {
+        let pending = crate::provision::request(broker, &spec.handle, &spec.grants, &spec.label, &spec.message)
+            .await
+            .map_err(|e| anyhow!("provisioning request at {broker}: {e}"))?;
         {
             let mut st = self.state.lock().await;
             st.approval_url = Some(pending.verification_uri_complete.clone());
@@ -176,6 +161,15 @@ impl Identity {
             .map_err(|e| anyhow!("minting access cert for {chain_audience}: {e}"))?;
         assemble_device_wire(&seed, &presentation, spec, &owner)
     }
+}
+
+/// What a service asks the approver for: its handle, the human-facing label
+/// and message on the approval card, and the warrants to bundle.
+pub struct ProvisionSpec {
+    pub handle: String,
+    pub label: String,
+    pub message: String,
+    pub grants: Vec<GrantRequest>,
 }
 
 pub struct WriteSpec {

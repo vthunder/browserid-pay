@@ -1,18 +1,18 @@
-// Chain access: reads through an sbo-daemon (`/v1/object`, `/v1/list`, always
-// with `repo=`), writes straight to TurboDA (the daemon's submit is single-app).
+// Chain access through an sbo-daemon: reads (`/v1/object`, `/v1/list`) and
+// writes (`POST /v1/submit`), always with `repo=`. The daemon holds the repo's
+// TurboDA credentials and refreshes issuer DNSSEC evidence ahead of any write
+// that needs it, so agents carry no chain keys of their own.
 import { parseEnvelope } from "./envelope.mjs";
 
 export const DEFAULTS = {
   daemon: "https://da.sandmill.org",
   repo: "sbo+raw://avail:turing:530/",
-  turbo: { endpoint: "https://staging.turbo-api.availproject.org", appId: 530 },
 };
 
 export class DaemonChain {
-  constructor({ daemon = DEFAULTS.daemon, repo = DEFAULTS.repo, turbo = {}, http = fetch } = {}) {
+  constructor({ daemon = DEFAULTS.daemon, repo = DEFAULTS.repo, http = fetch } = {}) {
     this.daemon = daemon.replace(/\/+$/, "");
     this.repo = repo;
-    this.turbo = { ...DEFAULTS.turbo, key: process.env.AVAIL_TURBODA_KEY, ...turbo };
     this.http = http;
   }
 
@@ -38,18 +38,17 @@ export class DaemonChain {
     return items.map(normalizeView);
   }
 
-  /** Submit signed wire bytes to TurboDA. Returns the submission id. */
+  /** Submit signed wire bytes through the daemon. Returns the submission id. */
   async submit(wire) {
-    if (!this.turbo.key) throw new Error("AVAIL_TURBODA_KEY is not set");
-    const r = await this.http(`${this.turbo.endpoint}/v1/submit_raw_data`, {
+    const r = await this.http(`${this.daemon}/v1/submit?${this.#q({})}`, {
       method: "POST",
-      headers: { "x-api-key": this.turbo.key, "content-type": "application/octet-stream" },
+      headers: { "content-type": "application/octet-stream" },
       body: wire,
     });
-    if (!r.ok) throw new Error(`TurboDA submit ${r.status}: ${await r.text().catch(() => "")}`);
+    if (!r.ok) throw new Error(`daemon /v1/submit ${r.status}: ${await r.text().catch(() => "")}`);
     const j = await r.json();
-    if (!j.submission_id) throw new Error("TurboDA: no submission_id");
-    return j.submission_id;
+    if (j.evidence_refreshed?.length) this.lastEvidenceRefreshed = j.evidence_refreshed;
+    return j.submission_id || j.hash || "submitted";
   }
 }
 

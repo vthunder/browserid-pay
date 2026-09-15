@@ -7,7 +7,7 @@
 //
 // Env: AGREEMENTS_IDENTITY, BROWSERID_BROKER (https://browserid.me),
 //      SBO_DAEMON (https://da.sandmill.org), SBO_REPO (sbo+raw://avail:turing:530/),
-//      AVAIL_TURBODA_KEY (chain writes), AGREEMENTS_TERMS_DIR (~/.browserid-agreements).
+//      AGREEMENTS_TERMS_DIR (~/.browserid-agreements). Chain writes go through the daemon; no chain key.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

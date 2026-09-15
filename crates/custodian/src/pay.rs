@@ -212,6 +212,7 @@ mod tests {
             dev: true,
             trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())],
             currency: "USD".into(),
+            data_dir: String::new(), chain_audience: String::new(), handle: String::new(), fee: "0.50".into(), daemon: String::new(), repo: String::new(),
         }
     }
 
