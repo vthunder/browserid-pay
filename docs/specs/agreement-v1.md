@@ -38,8 +38,9 @@ zero bytes, aad = epk, plaintext = the canonical terms) ‖ 16-byte tag;
 anonymous sender. Carried off-chain to the custodian at lock time and to
 the adjudicator on dispute. Reference: `sdk/agreements/src/seal.mjs` (seal) and `crates/judge/src/seal.rs`
 (unseal). The judge's listing also carries `sealing_scheme: "sealed-x25519-v1"`;
-the listing id is the adjudicator's full identity string (root policy:
-`/providers/adjudicators/$user`, `$user` = the attributed email).
+the listing lives at `/providers/adjudicators/<identity>/` with ID `listing`
+(root policy: `/providers/adjudicators/$user/**`, `$user` = the attributed
+email — grant patterns match paths, not ids).
 
 **Two warrants per agent.** The chain (sbo-core `audience_identifies_db`)
 only honours a presentation whose warrant audience is the *bare* database
@@ -127,8 +128,13 @@ both parties and the custodian `agreement:disputed`.
 
 ## Providers (discovery)
 
-`/providers/custodians/<name>` and `/providers/adjudicators/<name>` (by the
-identity `<name>@…` that runs them):
+`Path: /providers/custodians/<identity>/` and `/providers/adjudicators/<identity>/`,
+`ID: listing`, `Content-Schema: provider.v1`, posted by `<identity>` (its
+attributed email — the root policy grants `post` on
+`/providers/<kind>/$user/**`; the identity is a path segment because grant
+patterns match an object's path, never its id). Readers list the `/providers/<kind>/`
+prefix and keep objects whose id is `listing` and whose path segment equals
+the payload's `identity`:
 ```json
 { "v": 1, "identity": "judge@dsp.fyi", "origin": "https://judge.dsp.fyi",
   "price": { "amount": "5.00", "currency": "USD" }, "sealing_key": "<x25519 base64url>",

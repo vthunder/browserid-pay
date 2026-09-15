@@ -16,6 +16,8 @@
 //!   status   — TurboDA submission status (block number once included)
 //!   identity — canonical identity + `_sbo` record + daemon repos.json entry
 //!   dnssec-refresh — refresh `/sys/dnssec/<domain>` via the daemon's capture
+//!   policy-update — re-sign the current root policy with the sys key and
+//!                   submit it through the daemon (a governed update; no regenesis)
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -94,6 +96,25 @@ enum Commands {
     /// Refresh `/sys/dnssec/<domain>` on chain if the daemon reports it stale:
     /// capture via the daemon, sign with a throwaway key (self-authorizing
     /// object), submit to TurboDA. Cron-friendly; exits non-zero on failure.
+    /// Re-sign `/sys/policies/root` (the policy this binary builds) with the sys
+    /// key and submit it as an update through the daemon's per-repo submit
+    /// (`POST /v1/submit?repo=`). Admin holds `govern` on `/**`, so this is an
+    /// ordinary governed write — the way to change policy without a regenesis.
+    /// Polls until the daemon serves the new payload.
+    PolicyUpdate {
+        #[arg(long, default_value = "~/secure-backup/dsp-sys.key")]
+        key_file: String,
+        #[arg(long, default_value = DEFAULT_DAEMON)]
+        daemon: String,
+        #[arg(long, default_value = "sbo+raw://avail:turing:530/")]
+        repo: String,
+        /// Print the policy and the wire size without submitting.
+        #[arg(long)]
+        dry_run: bool,
+        /// Submit straight to TurboDA (AVAIL_TURBODA_KEY) instead of the daemon.
+        #[arg(long)]
+        direct: bool,
+    },
     DnssecRefresh {
         #[arg(long, default_value = DEFAULT_DAEMON)]
         daemon: String,
@@ -154,6 +175,43 @@ async fn turbo_submit(data: &[u8]) -> Result<String> {
     v["submission_id"].as_str().map(String::from).context("no submission_id in response")
 }
 
+fn encode_repo(repo: &str) -> String {
+    // `+` in a query string decodes to a space; the repo selector carries one.
+    repo.replace('+', "%2B")
+}
+
+/// Submit a wire batch through the daemon (`POST /v1/submit?repo=`): the
+/// daemon holds this repo's TurboDA credentials and refreshes any issuer
+/// DNSSEC evidence the write needs before it. Returns the submission id.
+async fn daemon_submit(daemon: &str, repo: &str, data: &[u8]) -> Result<serde_json::Value> {
+    let url = format!("{}/v1/submit?repo={}", daemon.trim_end_matches('/'), encode_repo(repo));
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("Content-Type", "application/octet-stream")
+        .body(data.to_vec())
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        bail!("daemon submit failed ({}): {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    Ok(resp.json().await?)
+}
+
+async fn daemon_get_object(daemon: &str, repo: &str, path: &str, id: &str) -> Result<Option<serde_json::Value>> {
+    let url = format!(
+        "{}/v1/object?repo={}&path={}&id={}",
+        daemon.trim_end_matches('/'),
+        encode_repo(repo),
+        path,
+        id
+    );
+    let resp = reqwest::Client::new().get(&url).send().await?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    Ok(Some(resp.error_for_status()?.json().await?))
+}
+
 async fn turbo_status(id: &str) -> Result<serde_json::Value> {
     let resp = reqwest::Client::new()
         .get(format!("{}/v1/get_submission_info?submission_id={id}", turbo_endpoint()))
@@ -200,9 +258,13 @@ fn root_policy(sys: &SigningKey) -> serde_json::Value {
             // Every signer owns its own top-level namespace: attestations live
             // at /<issuer>/attestations/<subject>/<type> (Attestation spec).
             { "to": "*", "can": ["post", "delete"], "on": "/$user/**" },
-            // Provider listings: an identity may publish exactly its own entry.
-            { "to": "*", "can": ["post"], "on": "/providers/custodians/$user" },
-            { "to": "*", "can": ["post"], "on": "/providers/adjudicators/$user" },
+            // Provider listings: an identity may publish exactly its own entry,
+            // at /providers/<kind>/<identity>/ (ID `listing`). Grant patterns
+            // match an object's PATH, never path+id, so the identity is a path
+            // segment (sbo-core policy/path.rs; bean browserid-pay-iovq: listing
+            // layout fix, 2026-09-15).
+            { "to": "*", "can": ["post"], "on": "/providers/custodians/$user/**" },
+            { "to": "*", "can": ["post"], "on": "/providers/adjudicators/$user/**" },
             // Agreements: append-only. Any attributed identity may CREATE any
             // object under an agreement; nothing is ever updated (a second
             // proposal/acceptance/ruling at the same slot is a no-op under
@@ -341,6 +403,52 @@ async fn main() -> Result<()> {
             }]);
             println!("daemon repos.json entry (append to the array):");
             println!("{}", serde_json::to_string(&entry[0])?);
+        }
+        Commands::PolicyUpdate { key_file, daemon, repo, dry_run, direct } => {
+            let sys = load_key(&key_file)?;
+            let policy = root_policy(&sys);
+            let payload = serde_json::to_vec(&policy)?;
+            let wire_bytes = signed_object(&sys, "/sys/policies/", "root", "policy.v2", "application/json", payload.clone(), None, None, None);
+            println!("{}", serde_json::to_string_pretty(&policy)?);
+            println!("policy.v2 for /sys/policies/root: {} bytes payload, {} bytes wire, sys {}", payload.len(), wire_bytes.len(), pubkey_str(&sys));
+            if dry_run {
+                return Ok(());
+            }
+            let sub = if direct {
+                let id = turbo_submit(&wire_bytes).await?;
+                println!("✓ TurboDA submission_id {id}");
+                id
+            } else {
+                let v = daemon_submit(&daemon, &repo, &wire_bytes).await?;
+                println!("✓ daemon accepted: {}", serde_json::to_string(&v)?);
+                v["submission_id"].as_str().unwrap_or("").to_string()
+            };
+            // Poll until the daemon serves the new payload (confirmed on chain).
+            let want: serde_json::Value = serde_json::from_slice(&payload)?;
+            let started = std::time::Instant::now();
+            loop {
+                if let Some(o) = daemon_get_object(&daemon, &repo, "/sys/policies/", "root").await? {
+                    let got = o.get("payload").or_else(|| o.get("content")).or_else(|| o.get("value")).cloned();
+                    let got = match got {
+                        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(&s).ok().or_else(|| {
+                            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                .decode(&s)
+                                .ok()
+                                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                        }),
+                        other => other,
+                    };
+                    if got.as_ref() == Some(&want) {
+                        let block = o.get("block").cloned().unwrap_or(serde_json::Value::Null);
+                        println!("✓ /sys/policies/root now serves the new policy (block {block}; submission {sub})");
+                        break;
+                    }
+                }
+                if started.elapsed() > std::time::Duration::from_secs(900) {
+                    bail!("timed out waiting for the daemon to serve the new policy (submission {sub})");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            }
         }
         Commands::DnssecRefresh { daemon, repo, domains } => {
             let mut failed = false;

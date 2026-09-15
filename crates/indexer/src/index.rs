@@ -70,6 +70,20 @@ pub fn norm(identity: &str) -> String {
     }
 }
 
+/// `/providers/<kind>/<identity>/` + `listing` → `(kind, identity)`; anything
+/// else under `/providers/` is not a listing.
+pub fn provider_ref(path: &str, id: &str) -> Option<(String, String)> {
+    if id != "listing" {
+        return None;
+    }
+    let rest = path.strip_prefix("/providers/")?.strip_suffix('/')?;
+    let (kind, name) = rest.split_once('/')?;
+    if (kind != "custodians" && kind != "adjudicators") || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some((kind.to_string(), name.to_string()))
+}
+
 impl Index {
     pub fn open(path: &str) -> Result<Self> {
         let c = Connection::open(path)?;
@@ -128,14 +142,14 @@ impl Index {
                 )?;
             }
             for o in providers {
-                // /providers/<kind>/<name>  →  path "/providers/custodians/", id = name
-                let kind = o.path.trim_start_matches("/providers/").trim_end_matches('/').to_string();
-                if kind != "custodians" && kind != "adjudicators" {
-                    continue;
-                }
+                // /providers/<kind>/<identity>/  +  ID `listing`  (agreement-v1.md
+                // "Providers": the identity is a PATH segment because root-policy
+                // grant patterns match paths, never ids). Anything else under
+                // /providers/ is ignored.
+                let Some((kind, name)) = provider_ref(&o.path, &o.id) else { continue };
                 tx.execute(
                     "INSERT OR REPLACE INTO providers(kind,name,payload,block,object_hash) VALUES(?1,?2,?3,?4,?5)",
-                    params![kind, o.id, o.json().to_string(), o.block as i64, o.object_hash],
+                    params![kind, name, o.json().to_string(), o.block as i64, o.object_hash],
                 )?;
             }
             let contribution = contribution.map(|o| json!({ "value": o.json(), "reference": Reference::from(o) })).unwrap_or(Value::Null);
@@ -200,7 +214,7 @@ impl Index {
                     let payload: Value = serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or(Value::Null);
                     Ok(json!({
                         "name": r.get::<_, String>(0)?, "listing": payload,
-                        "reference": { "path": format!("/providers/{kind}/"), "id": r.get::<_, String>(0)?, "block": r.get::<_, i64>(2)?, "object_hash": r.get::<_, String>(3)? }
+                        "reference": { "path": format!("/providers/{kind}/{}/", r.get::<_, String>(0)?), "id": "listing", "block": r.get::<_, i64>(2)?, "object_hash": r.get::<_, String>(3)? }
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -474,9 +488,11 @@ mod tests {
         let acc = acceptance("agr_1", 11, &h);
         let att1 = obj("/bob@y.test/attestations/alice@x.test/", "agreement:completed", 12, json!({ "subject": "alice@x.test", "type": "agreement:completed", "value": { "contract": "agr_1" }, "issued_at": 5 }));
         let att2 = obj("/judge@dsp.fyi/attestations/alice@x.test/", "agreement:ruled", 13, json!({ "subject": "alice@X.test", "type": "agreement:ruled", "value": {}, "issued_at": 5, "expires": 1 }));
-        let prov = obj("/providers/adjudicators/", "judge", 3, json!({ "identity": "judge@dsp.fyi", "price": { "amount": "5.00", "currency": "USD" } }));
+        let prov = obj("/providers/adjudicators/judge@dsp.fyi/", "listing", 3, json!({ "identity": "judge@dsp.fyi", "price": { "amount": "5.00", "currency": "USD" } }));
+        // The old flat layout (id = identity) is not a listing any more.
+        let stale = obj("/providers/adjudicators/", "old@dsp.fyi", 3, json!({ "identity": "old@dsp.fyi" }));
         let contrib = obj("/sys/", "contribution", 1, json!({ "recipient": "fund@dsp.fyi", "suggested_percentage": 1.0 }));
-        ix.rebuild(&[p, acc], &[att1, att2], &[prov], Some(&contrib), &StateRoot { block: 13, state_root: "r".into() }).unwrap();
+        ix.rebuild(&[p, acc], &[att1, att2], &[prov, stale], Some(&contrib), &StateRoot { block: 13, state_root: "r".into() }).unwrap();
 
         assert_eq!(ix.agreements_by_party("ALICE@x.test").unwrap().len(), 0, "local part is byte-exact");
         assert_eq!(ix.agreements_by_party("alice@X.TEST").unwrap().len(), 1);
@@ -486,7 +502,8 @@ mod tests {
         assert_eq!(ix.attestations_by_subject("alice@x.test", None).unwrap().len(), 2);
         assert_eq!(ix.attestations_by_subject("alice@x.test", Some("agreement:completed")).unwrap()[0].issuer, "bob@y.test");
         assert_eq!(ix.attestations_by_subject("alice", None).unwrap().len(), 0, "no name resolution");
-        assert_eq!(ix.providers("adjudicators").unwrap()[0]["name"], "judge");
+        assert_eq!(ix.providers("adjudicators").unwrap()[0]["name"], "judge@dsp.fyi");
+        assert_eq!(ix.providers("adjudicators").unwrap().len(), 1, "the flat-layout object is not a listing");
         assert!(ix.providers("custodians").unwrap().is_empty());
         assert_eq!(ix.meta("contribution").unwrap().unwrap()["value"]["recipient"], "fund@dsp.fyi");
         let rep = ix.reputation("alice@x.test").unwrap();

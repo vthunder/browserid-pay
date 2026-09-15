@@ -19,6 +19,19 @@ const money = (s) => {
 };
 const fmt = (minor) => `${Math.floor(minor / 100)}.${String(minor % 100).padStart(2, "0")}`;
 
+// Provider listings live at `/providers/<kind>/<identity>/` with ID `listing`
+// (agreement-v1.md "Providers"): the identity is a path segment because the
+// root policy's grant patterns match paths, not ids. A prefix list of
+// `/providers/<kind>/` returns every listing; keep only the `listing` objects
+// whose identity matches their path segment (a listing under someone else's
+// segment is unauthorized on chain, but a lenient reader could still see it).
+function listings(objs) {
+  return objs
+    .filter((o) => o.id === "listing" && o.payload && typeof o.payload === "object")
+    .filter((o) => o.path.endsWith(`/${o.payload.identity}/`))
+    .map((o) => o.payload);
+}
+
 export class AgreementError extends Error {
   constructor(code, message) { super(message ? `${code}: ${message}` : code); this.code = code; }
 }
@@ -57,8 +70,8 @@ export class Agreements {
 
   async discover() {
     const [cust, adj, contrib] = await Promise.all([
-      this.overrides.custodian ? [this.overrides.custodian] : this.chain.list("/providers/custodians/").then((l) => l.map((o) => o.payload).filter(Boolean)),
-      this.overrides.adjudicator ? [this.overrides.adjudicator] : this.chain.list("/providers/adjudicators/").then((l) => l.map((o) => o.payload).filter(Boolean)),
+      this.overrides.custodian ? [this.overrides.custodian] : this.chain.list("/providers/custodians/").then(listings),
+      this.overrides.adjudicator ? [this.overrides.adjudicator] : this.chain.list("/providers/adjudicators/").then(listings),
       this.overrides.contribution ? this.overrides.contribution : this.chain.get("/sys/", "contribution").then((o) => o?.payload || null),
     ]);
     return {
@@ -180,7 +193,7 @@ export class Agreements {
   async #adjudicatorFor(p) {
     if (this.overrides.adjudicator?.identity === p.adjudicator) return this.overrides.adjudicator;
     const list = await this.chain.list("/providers/adjudicators/");
-    return list.map((o) => o.payload).find((a) => a?.identity === p.adjudicator) || { identity: p.adjudicator };
+    return listings(list).find((a) => a?.identity === p.adjudicator) || { identity: p.adjudicator };
   }
 
   // ---- fund (payer) ------------------------------------------------------------

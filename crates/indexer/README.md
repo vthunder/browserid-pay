@@ -14,7 +14,7 @@ itself.
 | `GET /v1/agreements?party=<identity>` | agreements where the identity is proposer, acceptor, payer, payee, adjudicator or custodian |
 | `GET /v1/agreements/<id>` | one agreement |
 | `GET /v1/attestations?subject=<identity>[&type=<type>]` | attestations *about* a subject (the Attestation spec stores them under the issuer; this is the reverse index it delegates to indexers) |
-| `GET /v1/providers/custodians` · `GET /v1/providers/adjudicators` | provider listings (discovery) |
+| `GET /v1/providers/custodians` · `GET /v1/providers/adjudicators` | provider listings (discovery; `/providers/<kind>/<identity>/listing`) |
 | `GET /v1/contribution` | `/sys/contribution` |
 | `GET /v1/reputation?subject=<identity>` | **non-normative**: this indexer's subjective counts (distinct issuers per attestation type, agreements by state) |
 | `GET /healthz` | liveness |

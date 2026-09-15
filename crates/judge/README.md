@@ -50,9 +50,9 @@ The approval URL, user code, and key fingerprint are logged and served at
 delegate from. The judge's identity string is whatever the approval names
 (e.g. `judge@browserid.me`-style handle or a subaddress of the approver); it
 is recorded in `judge-credential.json`, shown at `GET /api/setup` and `/`,
-and is the id of the provider listing `/providers/adjudicators/<identity>` —
+and is the path segment of the provider listing `/providers/adjudicators/<identity>/listing` —
 proposals must name exactly that string as `adjudicator`. The pickup is persisted (mode 600) and the service provisions the
-provider listing `/providers/adjudicators/<identity>` on the chain.
+provider listing `/providers/adjudicators/<identity>/listing` on the chain.
 
 Chain writes are signed with the ephemeral **access key** the IdP certifies
 and carry the four-object presentation as `Auth-Cert` (the daemon's

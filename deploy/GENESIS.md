@@ -67,8 +67,11 @@ grants:
   owner   update, delete    /sys/names/*
   *       post, delete      /$user/**            // every signer's own namespace:
                                                  //   /<issuer>/attestations/<subject>/<type>
-  *       post              /providers/custodians/$user     // exactly its own listing
-  *       post              /providers/adjudicators/$user
+  *       post              /providers/custodians/$user/**   // exactly its own listing:
+  *       post              /providers/adjudicators/$user/** //   /providers/<kind>/<identity>/listing
+                                                 // (patterns match PATHS, not ids — v1 genesis had
+                                                 //   `/providers/<kind>/$user`, which could never match;
+                                                 //   fixed by a governed policy update, 2026-09-15)
   *       create            /agreements/**       // append-only; see the gap below
   *       create, update    /sys/dnssec/**       // self-authorizing (shared sbo fragment)
   admin   post, transfer, delete, govern   /**   // governance

@@ -55,7 +55,7 @@ a ledger-write warrant (audience = the database, scopes `action:post`,
 `cap = price + fees + contribution` and `counterparties = [the other party]`.
 
 Discovery: custodian, adjudicator and the suggested contribution come from
-`/providers/custodians/*`, `/providers/adjudicators/*` and `/sys/contribution`
+`/providers/custodians/<identity>/listing`, `/providers/adjudicators/<identity>/listing` and `/sys/contribution`
 on the ledger; the first listed is the default, and each can be overridden
 in the constructor or per proposal.
 

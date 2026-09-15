@@ -191,7 +191,7 @@ block one; automate the DNSSEC evidence refresh. Paths:
 |---|---|---|
 | `/sys/*` | sys key | names, root policy, trust anchors, dnssec evidence (as mingo) |
 | `/agreements/<id>/` | create: any attributed identity; `evidence/`: the two parties; `ruling`: the named adjudicator; `lock`: the named custodian | proposal, acceptance, lock, evidence, ruling |
-| `/providers/custodians/<name>`, `/providers/adjudicators/<name>` | the named identity | self-describing listings: price, rails, conformance version — the discovery source |
+| `/providers/custodians/<identity>/listing`, `/providers/adjudicators/<identity>/listing` | the named identity | self-describing listings: price, rails, conformance version — the discovery source |
 | `/<issuer>/attestations/<subject>/<type>` | the issuer (Attestation spec layout) | completion, dispute, ruling, supporter attestations |
 | `/sys/contribution` | sys key | the suggested ecosystem contribution (recipient, percentage); the *minimum* lives in the root policy as a restriction |
 

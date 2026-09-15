@@ -74,7 +74,7 @@ async function main() {
   const payOrigin = `http://127.0.0.1:${PORTS.pay}`;
   const judgeOrigin = `http://127.0.0.1:${PORTS.judge}`;
   daemon.put("/sys/", "contribution", { recipient: FUND, suggested_percentage: 1.0 }, "sys", "contribution.v1");
-  daemon.put("/providers/custodians/", ESCROW, { v: 1, identity: ESCROW, origin: payOrigin, price: { amount: "0.50", currency: "USD" }, conformance: "browserid-pay-custodian-v1" }, ESCROW, "provider.v1");
+  daemon.put(`/providers/custodians/${ESCROW}/`, "listing", { v: 1, identity: ESCROW, origin: payOrigin, price: { amount: "0.50", currency: "USD" }, conformance: "browserid-pay-custodian-v1" }, ESCROW, "provider.v1");
 
   run("idp", BIN("demo-idp"), { DEMO_IDP_PORT: String(PORTS.idp) });
   const idp = await waitFor("demo-idp", () => getJson(`http://127.0.0.1:${PORTS.idp}/demo/issuer`));
@@ -106,7 +106,7 @@ async function main() {
     JUDGE_FAKE_RULING: JSON.stringify({ outcome: "split", split: { payee: "30.00", payer: "20.00" }, fee: "escrow", reasoning: "Half the summaries were delivered; the rest were not. Price split accordingly." }),
   });
   await waitFor("judge", () => fetch(`${judgeOrigin}/healthz`).then((r) => r.ok));
-  const listing = await waitFor("judge provider listing on chain", () => daemon.get("/providers/adjudicators/", JUDGE));
+  const listing = await waitFor("judge provider listing on chain", () => daemon.get(`/providers/adjudicators/${JUDGE}/`, "listing"));
   assert.equal(listing.creator, JUDGE, "listing is attributed to the judge");
   assert.ok(listing.value.sealing_key, "listing carries the sealing key");
   log(`judge ${judgeOrigin} listed as ${JUDGE}, sealing key ${listing.value.sealing_key.slice(0, 12)}…`);

@@ -221,7 +221,7 @@ mod tests {
     async fn poll_once_builds_the_index_from_the_daemon_reads() {
         let chain = Fake(vec![
             obj("/sys/", "contribution", 1, Some("contribution.v1"), json!({ "recipient": "fund@dsp.fyi", "suggested_percentage": 1.0 })),
-            obj("/providers/custodians/", "escrow@dsp.fyi", 2, Some("provider.v1"), json!({ "identity": "escrow@dsp.fyi" })),
+            obj("/providers/custodians/escrow@dsp.fyi/", "listing", 2, Some("provider.v1"), json!({ "identity": "escrow@dsp.fyi" })),
             obj("/agreements/agr_1/", "proposal", 3, Some("agreement.proposal.v1"), json!({ "id": "agr_1", "parties": { "proposer": "a@x", "acceptor": "b@y" }, "roles": { "payer": "a@x", "payee": "b@y" }, "adjudicator": "judge@dsp.fyi", "custodian": "https://pay.dsp.fyi" })),
             obj("/b@y/attestations/a@x/", "agreement:completed", 4, Some("attestation.v1"), json!({ "subject": "a@x", "type": "agreement:completed", "value": { "contract": "agr_1" } })),
         ]);

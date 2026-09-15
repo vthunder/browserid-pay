@@ -85,7 +85,7 @@ observed in production.
 3. **The judge's identity** (operator, once): on first boot the judge
    prints an approval URL (`GET https://judge.dsp.fyi/api/setup`); whoever
    approves at browserid.me becomes `judge@…`, and the judge posts its
-   provider listing (price, sealing key) to `/providers/adjudicators/`.
+   provider listing (price, sealing key) to `/providers/adjudicators/<identity>/listing`.
 
 ### Contract 1 — settle
 

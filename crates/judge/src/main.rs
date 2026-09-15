@@ -124,11 +124,20 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ensure `/providers/adjudicators/<identity>` (provider.v1) is on chain and current.
+/// The listing's collection: `/providers/adjudicators/<identity>/`, ID
+/// `listing`. The identity is a PATH segment because root-policy grant
+/// patterns match an object's path, never its id (`/providers/adjudicators/$user/**`).
+pub fn listing_path(identity: &str) -> String {
+    format!("/providers/adjudicators/{identity}/")
+}
+pub const LISTING_ID: &str = "listing";
+
+/// Ensure `/providers/adjudicators/<identity>/listing` (provider.v1) is on chain and current.
 async fn ensure_listing(app: &App) -> anyhow::Result<()> {
     let Some(me) = app.identity.email().await else { return Ok(()) };
     let want = listing(app, &me);
-    if let Some(existing) = app.reader.get_object("/providers/adjudicators/", &me).await? {
+    let path = listing_path(&me);
+    if let Some(existing) = app.reader.get_object(&path, LISTING_ID).await? {
         if existing.value == want && existing.creator == me {
             tracing::info!("provider listing current");
             return Ok(());
@@ -138,7 +147,7 @@ async fn ensure_listing(app: &App) -> anyhow::Result<()> {
         .identity
         .sign_write(
             &app.cfg.chain_audience,
-            &WriteSpec { path: "/providers/adjudicators/".into(), id: me.clone(), schema: "provider.v1".into(), payload: serde_json::to_vec(&want)? },
+            &WriteSpec { path, id: LISTING_ID.into(), schema: "provider.v1".into(), payload: serde_json::to_vec(&want)? },
         )
         .await?;
     let sub = app.writer.submit(wire).await?;
