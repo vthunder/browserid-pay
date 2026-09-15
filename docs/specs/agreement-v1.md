@@ -109,11 +109,19 @@ adjudicator, delivered to it by that adjudicator's own presentation
 
 | route | who | body |
 |---|---|---|
-| `POST /api/escrow/lock` | payer's agent | `{ presentation (contract audience), proposal: <proposal payload>, price, fees, contribution, sealed_terms }` → `{ lock }` — money fields are decimal strings or `{ amount, currency }` (the terms' shape) |
+| `POST /api/escrow/lock` | payer's agent | `{ presentation (contract audience), acceptance_bundle (the payee's presentation for the contract: the acceptance's `bundle`, or the proposal's when the proposer is the payee), proposal: <proposal payload>, price, fees, contribution, sealed_terms }` → `{ lock }` — money fields are decimal strings or `{ amount, currency }` (the terms' shape) |
 | `POST /api/escrow/<id>/acknowledge` | payer's agent | `{ presentation (contract audience) }` → releases to payee, pays fees + contribution, returns adjudicator fee |
 | `POST /api/escrow/<id>/dispute` | either party's agent | `{ presentation (contract audience) }` → freezes; returns `{ sealed_terms }` for the adjudicator |
 | `POST /api/escrow/<id>/ruling` | the adjudicator | `{ presentation (custodian audience, identity = named adjudicator), ruling }` → settles per ruling |
 | `GET /api/escrow/<id>` | any party | state: `binding` / `locked` / `released` / `disputed` / `ruled` |
+
+**Parties are acting identities; accounts are their grantors.** Every
+identity in `parties`/`roles`/`adjudicator` is the agent that presents —
+the warrant grantee — and the custodian matches it against the caller's
+grantee. Money never touches an agent: the payer's grantor (from the lock
+presentation) is debited and refunded, the payee's grantor (from
+`acceptance_bundle`) is credited, and the escrow view exposes both as
+`payer_account` / `payee_account`. The adjudicator is paid as named.
 
 The `contract:agreement` scope's `cap` bounds `price + fees + contribution`;
 `counterparties` (if present) must cover the other party; `max_duration`
