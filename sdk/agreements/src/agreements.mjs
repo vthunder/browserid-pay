@@ -270,20 +270,39 @@ export class Agreements {
 
   /** Either party disputes: evidence on chain, freeze at the custodian, file with the adjudicator. */
   async dispute(id, { note } = {}) {
+    // Safe to retry: the human-facing step (the judge's sign-in card) comes
+    // BEFORE any side effect; a dispute note already on chain by me is reused;
+    // an escrow the custodian already froze counts as frozen.
     const p = await this.#proposal(id);
-    const ev = await this.#evidence(id, "dispute", { note });
-    const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
-    const frozen = await this.#custodian(p.custodian, `/api/escrow/${id}/dispute`, { presentation });
     const adjudicator = await this.#adjudicatorFor(p);
+    if (adjudicator?.origin && !this.agent.warrantedAudiences().includes(adjudicator.origin)) {
+      await this.obtainWarrant(adjudicator.origin, ["dispute"]);
+    }
+    const existing = (await this.chain.list(`${agreementPath(id)}evidence/`))
+      .find((o) => o.payload?.kind === "dispute" && o.payload?.by === this.email);
+    const ev = existing
+      ? { evidence: existing.payload, evidence_id: existing.id, submission: null, reused: true }
+      : await this.#evidence(id, "dispute", { note });
+    const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
+    let frozen;
+    try {
+      frozen = await this.#custodian(p.custodian, `/api/escrow/${id}/dispute`, { presentation });
+    } catch (e) {
+      if (e.code !== "bad_state") throw e;
+      frozen = await this.#custodian(p.custodian, `/api/escrow/${id}`, null); // already disputed: read the state
+      if (frozen?.state !== "disputed") throw e;
+    }
     let filed = null;
     if (adjudicator?.origin) {
       const st = this.terms.get(id);
       const sealed_terms = frozen?.sealed_terms || (st && adjudicator.sealing_key ? seal(canonicalize(st.terms), adjudicator.sealing_key) : null);
-      // Filing needs a presentation for the judge's own audience — one more
-      // (login-shaped) card for the human the first time this judge is used.
-      if (!this.agent.warrantedAudiences().includes(adjudicator.origin)) await this.obtainWarrant(adjudicator.origin, ["dispute"]);
       const jp = await this.agent.assertionFor(adjudicator.origin);
-      filed = await this.#json(`${adjudicator.origin.replace(/\/+$/, "")}/api/dispute`, { presentation: jp, contract_id: id, sealed_terms, note });
+      try {
+        filed = await this.#json(`${adjudicator.origin.replace(/\/+$/, "")}/api/dispute`, { presentation: jp, contract_id: id, sealed_terms, note });
+      } catch (e) {
+        if (e.code !== "http_409") throw e; // already filed
+        filed = { already_filed: true };
+      }
     }
     return { ...ev, frozen, filed };
   }
@@ -325,7 +344,9 @@ export class Agreements {
   #custodian(origin, route, body) { return this.#json(`${origin.replace(/\/+$/, "")}${route}`, body); }
 
   async #json(url, body) {
-    const r = await this.http(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const r = body === null
+      ? await this.http(url, { method: "GET" })
+      : await this.http(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new AgreementError(j.error || `http_${r.status}`, j.detail || j.reason || `${url} → ${r.status}`);
     return j;
