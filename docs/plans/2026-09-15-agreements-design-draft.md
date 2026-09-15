@@ -134,10 +134,24 @@ the provider's name (discovery, below):
   percentage); SDKs read it at discovery and fill the default in, so the
   nudge comes from the chain the parties chose, not from our code. The
   consent card shows the line; either party may zero it or change the
-  recipient before accepting. Never a protocol rule — the chain has no
-  value primitive and a mandatory fee fails principles §2 — but because
-  contributions are terms in on-chain agreements they are attributable,
-  and the recipient may issue a *supporter* attestation indexers can weigh.
+  recipient before accepting. **The chain may also enforce a minimum**
+  (Dan, 2026-09-15: running the chain and indexer costs real money): a
+  root-policy *restriction* on `/agreements/**` requiring
+  `contribution.percentage ≥ N`. Validity in SBO is established by every
+  reader on replay under the chain's policy, so a below-minimum proposal
+  is disregarded by every conforming validator, not only ours — it is a
+  rule of *this database*, never of the protocol, and the escape hatch is
+  the correct §2 one: another chain. Two consequences: (1) the Policy spec
+  needs a payload-field restriction condition (today only `max_size` and
+  `schema` exist) — a small extension; (2) the contribution must be a
+  **clear field** of the proposal object, not part of the committed terms,
+  since a validator cannot check a hashed field — a percentage of a hidden
+  price leaks nothing. The chain cannot make a custodian *pay*; paying
+  every payee in the terms is a custodian conformance requirement, and a
+  skipped contribution is visible to the recipient (contributions arrive
+  attributed), so a non-paying custodian is provably nonconforming.
+  Contributions are attributable, so the recipient may issue a *supporter*
+  attestation indexers can weigh.
   Our custodian may also route a share of its own fee to the same
   recipient; that needs no protocol support.
 
@@ -165,7 +179,7 @@ block one; automate the DNSSEC evidence refresh. Paths:
 | `/agreements/<id>/` | create: any attributed identity; `evidence/`: the two parties; `ruling`: the named adjudicator; `lock`: the named custodian | proposal, acceptance, lock, evidence, ruling |
 | `/providers/custodians/<name>`, `/providers/adjudicators/<name>` | the named identity | self-describing listings: price, rails, conformance version — the discovery source |
 | `/<issuer>/attestations/<subject>/<type>` | the issuer (Attestation spec layout) | completion, dispute, ruling, supporter attestations |
-| `/sys/contribution` | sys key | the suggested ecosystem contribution (recipient, percentage) |
+| `/sys/contribution` | sys key | the suggested ecosystem contribution (recipient, percentage); the *minimum* lives in the root policy as a restriction |
 
 **Indexing by identity.** Follows the Attestation spec's decision:
 storage is keyed by writer authority (neutral `/agreements/<id>/`, since
@@ -200,6 +214,7 @@ Every default that could harden into a gate, with its escape hatch:
 |---|---|---|
 | browserid.me's custodian | the only one counterparties accept | custodian **conformance spec**; anyone runs one; contract names it explicitly |
 | our AI adjudicator | the only one anyone trusts | adjudicators are plain identities; price + record on chain; contract names it |
+| the chain's minimum contribution | a tax on every agreement here | a rule of this database only, set by its governance and visible in the root policy; any other chain sets none |
 | the SDK's discovery list source | de facto registry | a list *source*, swappable; entries are self-describing SBO objects anyone can post |
 | custodial escrow | money always passes through a company | on-chain escrow as the decentralized option — on the roadmap, not the start |
 
@@ -222,5 +237,6 @@ Every default that could harden into a gate, with its escape hatch:
   dispute. (Schema detail to fix before build.)
 - Access-cert validity follows the base spec; nothing contract-specific.
 - Custodian charges a fee. Ecosystem contribution is a contract term with a
-  chain-published default (Dan: beyond a custodian pass-through).
+  chain-published default, and the chain reserves a policy-enforced
+  minimum (Dan: as a matter of principle; the chain costs money to run).
 - Identity indexing is the indexer's job, per the Attestation spec.
