@@ -66,7 +66,9 @@ observed in production.
    profiles), give the agent an identity with the wallet:
 
    The agreements packages are not on npm yet, so run the MCP server from
-   this checkout (`npm install` once in `sdk/agreements-mcp`):
+   this checkout — `demo/setup-clients.sh ~/pay-clients` writes both client
+   directories (wallet + agreements + relay tools, per-agent state, role
+   prompts, tool permissions); the hand-written form is:
 
    ```json
    { "mcpServers": {
@@ -94,15 +96,18 @@ observed in production.
 
 ### Contract 1 — settle
 
+The agents talk to each other through the relay (`send_message` /
+`check_messages`); the human only approves cards and watches two terminals.
+
 | who | prompt to the agent | what happens | ledger page shows |
 |---|---|---|---|
-| alice | *"Propose an agreement to bob@example.com: summarize ten papers I will send, $50, deliver within a week, dispute goes to the default adjudicator. Send bob the terms."* | `discover` picks pay.dsp.fyi, judge, 1% contribution; `propose` asks alice's human for **one card** at browserid.me listing every grant this agreement needs: *enter agreements up to $56.00 each with bob@example.com*, *record agreements on the browserid-pay ledger* (standing, first agreement only) and *dispute at judge.dsp.fyi*; posts the proposal (commitment mode) to the chain | nothing yet |
-| bob | *"Accept agreement agr_… with these terms: …"* | `accept` verifies alice's bundle and cap, asks bob's human for his one card (same three grants), posts the acceptance | nothing yet |
-| alice | *"Fund agreement agr_…"* | `fund` → `POST /api/escrow/lock` with the sealed terms | **Escrows:** agr_… locked, you pay bob, 50.00 + fees 0.50 / 5.00 + contribution 0.50; balance down 56.00 |
-| bob | *"Deliver the summaries for agr_…: <text>"* | `deliver` posts a delivery commitment | (bob's page: agr_… locked, alice pays you) |
-| alice | *"The summaries are fine — settle agr_…"* | `settle` posts an acknowledgement, `POST /api/escrow/agr_…/acknowledge` | agr_… settled · acknowledged; receipts: −50.00 to bob, +5.00 adjudicator fee returned; bob's balance +50.00 |
+| alice | *"Propose an agreement to danmills+bob@sandmill.org: summarize ten papers I will send, $50, deliver within a week, disputes go to the default adjudicator. Then send bob the agreement id and the terms JSON."* | `discover`; `propose` asks alice's human for the agreement card(s) at browserid.me; posts the proposal (commitment mode); `send_message` hands bob the id + terms (first use: one relay card) | nothing yet |
+| bob | *"Check your messages and accept the agreement alice sent, then tell her you accepted."* | `check_messages` → `accept` (verifies alice's bundle and cap; bob's human approves his card(s)) → `send_message` | nothing yet |
+| alice | *"Wait for bob's acceptance, then fund the agreement."* | `check_messages` → `fund` → `POST /api/escrow/lock` with the sealed terms | **Escrows:** agr_… locked, you pay bob, 50.00 + fees 0.50 / 5.00 + contribution 0.50 |
+| bob | *"Deliver the summaries for the agreement: <text>. Tell alice they are delivered."* | `deliver` posts a delivery commitment; `send_message` | (bob's page: agr_… locked, alice pays you) |
+| alice | *"Check messages; if bob delivered, review and settle."* | `check_messages` → `settle` posts an acknowledgement, `POST /api/escrow/agr_…/acknowledge` | agr_… settled · acknowledged; bob's human +50.00; unused 5.00 adjudicator fee returned |
 
-<https://index.dsp.fyi/v1/agreements?party=alice@example.com> shows the
+<https://index.dsp.fyi/v1/agreements?party=danmills+alice@sandmill.org> shows the
 agreement as `settled` with references to each object on the daemon.
 
 ### Contract 2 — dispute

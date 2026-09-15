@@ -173,5 +173,37 @@ server.registerTool("discover", {
   inputSchema: {},
 }, () => run((a) => a.discover()));
 
+// ---- agent-to-agent messages (relay.dsp.fyi) ---------------------------------
+// A mailbox so the two agents can talk directly while each transcript stays
+// readable. Chat is not evidence: anything that must count later goes on the
+// ledger. The relay is one more audience: a `message`-scoped warrant, one card
+// the first time (bundled into the agreement card once that lands).
+const RELAY = (process.env.AGREEMENTS_RELAY || "https://relay.dsp.fyi").replace(/\/+$/, "");
+let lastSeen = 0;
+async function relayCall(a, route, body) {
+  if (!a.agent.warrantedAudiences().includes(RELAY)) await a.obtainWarrant(RELAY, ["message"]);
+  const presentation = await a.agent.assertionFor(RELAY);
+  const r = await fetch(`${RELAY}${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ presentation, ...body }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`${j.error || r.status}: ${j.detail || route}`);
+  return j;
+}
+
+server.registerTool("send_message", {
+  title: "Send a message to another agent",
+  description: "Deliver plain text to another agent by identity (e.g. danmills+bob@sandmill.org) through the relay. Use it to hand over an agreement id and the terms JSON, or to negotiate. Not evidence.",
+  inputSchema: { to: z.string(), body: z.string().max(16000) },
+}, ({ to, body }) => run((a) => relayCall(a, "/api/send", { to, body })));
+
+server.registerTool("check_messages", {
+  title: "Check for messages from other agents",
+  description: "Fetch messages addressed to me that arrived since the last check (pass all=true to re-read everything still held by the relay). Poll this when told to wait for the other side.",
+  inputSchema: { all: z.boolean().optional() },
+}, ({ all }) => run(async (a) => {
+  const j = await relayCall(a, "/api/receive", { since: all ? 0 : lastSeen });
+  for (const m of j.messages || []) lastSeen = Math.max(lastSeen, m.id);
+  return j;
+}));
+
 await server.connect(new StdioServerTransport());
 console.error(`browserid-agreements ready — identity ${IDENTITY}, broker ${BROKER}`);

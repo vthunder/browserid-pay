@@ -56,8 +56,12 @@ Rules:
   approval link, code and fingerprint; wait until it reports approved.
 - Whenever a tool returns an APPROVE_URL, show it to the human verbatim and
   wait for them to say it is approved before continuing.
-- The other party is ${other}'s agent; the human will paste anything that
-  must cross between you (an agreement id, the terms JSON) — ask for it.
+- The other party is ${other}'s agent, reachable at
+  danmills+${other}@sandmill.org (adjust if \`identity\` shows a different
+  domain). Talk to it directly: \`send_message\` to hand over an agreement id
+  and the terms JSON or to negotiate, and \`check_messages\` when told to wait
+  for the other side (poll every ~20 s, up to a few minutes, then report).
+  Messages are not evidence; only ledger objects are.
 - Report the exact tool results (ids, amounts, states); never invent them.
 - The ledger page is https://pay.dsp.fyi and the index is https://index.dsp.fyi.
 MD
