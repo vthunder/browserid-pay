@@ -144,7 +144,7 @@ fn listing(app: &App, me: &str) -> Value {
         "origin": app.cfg.origin,
         "price": { "amount": app.cfg.price_amount, "currency": app.cfg.price_currency },
         "sealing_key": app.seal.public_b64(),
-        "sealing_scheme": "sealed-box-x25519-xsalsa20poly1305",
+        "sealing_scheme": "sealed-x25519-v1",
         "conformance": "browserid-pay-adjudicator-v1",
     })
 }

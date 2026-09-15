@@ -25,6 +25,8 @@ base64.workspace = true
 rand.workspace = true
 hex.workspace = true
 sha2.workspace = true
-crypto_box.workspace = true
+x25519-dalek.workspace = true
+hkdf.workspace = true
+chacha20poly1305.workspace = true
 async-trait = "0.1"
 tower-http = { version = "0.5", features = ["trace"] }

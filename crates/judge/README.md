@@ -50,8 +50,7 @@ provider listing `/providers/adjudicators/<identity>` on the chain.
 Chain writes are signed with the ephemeral **access key** the IdP certifies
 and carry the four-object presentation as `Auth-Cert` (the daemon's
 device-attribution path; same as mingo's `sign_as_logged_in_user`). There is
-no separate long-lived SBO signing key. The **sealing key** (X25519, sealed
-box) is generated on first boot into `judge-seal-key.json` and published in
+no separate long-lived SBO signing key. The **sealing key** (X25519; scheme `sealed-x25519-v1`, see the spec) is generated on first boot into `judge-seal-key.json` and published in
 the listing.
 
 Adding a custodian later means a new provisioning (delete the credential

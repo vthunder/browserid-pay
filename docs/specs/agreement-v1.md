@@ -36,7 +36,10 @@ rpk); `key` = HKDF-SHA256(ikm = shared, salt = epk‖rpk, info =
 zero bytes, aad = epk, plaintext = the canonical terms) ‖ 16-byte tag;
 `sealed` = base64url(epk ‖ ct). Single-use key ⇒ fixed nonce is safe;
 anonymous sender. Carried off-chain to the custodian at lock time and to
-the adjudicator on dispute. Reference: `sdk/agreements/src/seal.mjs`.
+the adjudicator on dispute. Reference: `sdk/agreements/src/seal.mjs` (seal) and `crates/judge/src/seal.rs`
+(unseal). The judge's listing also carries `sealing_scheme: "sealed-x25519-v1"`;
+the listing id is the adjudicator's full identity string (root policy:
+`/providers/adjudicators/$user`, `$user` = the attributed email).
 
 **Two warrants per agent.** The chain (sbo-core `audience_identifies_db`)
 only honours a presentation whose warrant audience is the *bare* database
