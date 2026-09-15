@@ -1,6 +1,6 @@
 # Built in CI (GitHub Actions) and pulled by dokku as an image; the host never
 # compiles. Context: repo root.
-FROM rust:1.85-bookworm AS builder
+FROM rust:1-bookworm AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
