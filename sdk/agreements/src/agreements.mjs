@@ -68,6 +68,9 @@ export class Agreements {
     this.verify = o.verify || defaultVerify(this.http);
     this.broker = o.broker || "https://browserid.me";
     this.onApproveUrl = o.onApproveUrl || ((u) => console.error(`APPROVE: ${u}`));
+    // Extra grants a host wants on the SAME agreement card (e.g. the relay's
+    // `message` scope), so a run is one card per agent per agreement.
+    this.extraGrants = o.extraGrants || [];
     // One consent card per agreement: every grant an agreement needs is filed
     // as ONE request (`obtainWarrants(grants)`); `obtainWarrant` is the
     // single-grant shim. A caller-supplied single-grant hook is mapped.
@@ -128,6 +131,7 @@ export class Agreements {
     if (!held.includes(aud)) grants.push({ audience: aud, scopes: [{ scope: AGREEMENT_SCOPE, cap: { amount: fmt(totalMinor), currency }, counterparties: [counterparty] }] });
     if (!held.includes(this.repo)) grants.push({ audience: this.repo, scopes: CHAIN_SCOPES(this.email) });
     if (adjudicatorOrigin && !held.includes(adjudicatorOrigin)) grants.push({ audience: adjudicatorOrigin, scopes: ["dispute"] });
+    for (const g of this.extraGrants) if (!held.includes(g.audience)) grants.push(g);
     if (grants.length) await this.obtainWarrants(grants);
     return this.agent.assertionFor(aud);
   }

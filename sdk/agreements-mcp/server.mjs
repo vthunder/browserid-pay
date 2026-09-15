@@ -49,6 +49,7 @@ function sdk() {
   const chain = new DaemonChain({ daemon: process.env.SBO_DAEMON, repo: process.env.SBO_REPO });
   const a = new Agreements({
     agent, chain, broker: BROKER, termsStore,
+    extraGrants: [{ audience: RELAY, scopes: ["message"] }],
     onApproveUrl: (u) => approveUrls.push(u),
   });
   // Two-phase approvals: a warrant request needs the HUMAN to approve a link,
@@ -191,7 +192,13 @@ server.registerTool("discover", {
 const RELAY = (process.env.AGREEMENTS_RELAY || "https://relay.dsp.fyi").replace(/\/+$/, "");
 let lastSeen = 0;
 async function relayCall(a, route, body) {
-  if (!a.agent.warrantedAudiences().includes(RELAY)) await a.obtainWarrant(RELAY, ["message"]);
+  if (!a.agent.warrantedAudiences().includes(RELAY)) {
+    // One card: the relay grant plus the standing ledger-write grant if it is
+    // not held yet (a first-time agent usually checks messages before it accepts).
+    const grants = [{ audience: RELAY, scopes: ["message"] }];
+    if (!a.agent.warrantedAudiences().includes(a.repo)) grants.push({ audience: a.repo, scopes: ["action:post", "path:/agreements/**", `path:/${a.email}/**`] });
+    await a.obtainWarrants(grants);
+  }
   const presentation = await a.agent.assertionFor(RELAY);
   const r = await fetch(`${RELAY}${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ presentation, ...body }) });
   const j = await r.json().catch(() => ({}));
