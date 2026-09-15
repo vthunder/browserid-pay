@@ -50,10 +50,36 @@ function sdk() {
     agent, chain, broker: BROKER, termsStore,
     onApproveUrl: (u) => approveUrls.push(u),
   });
+  // Two-phase approvals: a warrant request needs the HUMAN to approve a link,
+  // which can take minutes. Instead of blocking the tool call (the agent could
+  // never show the link), start the request, return the link at once
+  // (NeedsApproval), and finish on the next call of the same tool.
   const origObtain = a.obtainWarrant;
-  a.obtainWarrant = async (aud, scopes) => { await origObtain(aud, scopes); persistGrants(agent, saved); };
+  a.obtainWarrant = async (aud, scopes) => {
+    const key = aud + " " + JSON.stringify(scopes);
+    let p = pending.get(key);
+    if (!p) {
+      const before = approveUrls.length;
+      p = origObtain(aud, scopes).then(() => persistGrants(agent, saved)).finally(() => pending.delete(key));
+      p.catch(() => {});
+      pending.set(key, p);
+      // Give the request a moment to file and surface its link.
+      const deadline = Date.now() + 8000;
+      while (approveUrls.length === before && Date.now() < deadline) {
+        const done = await Promise.race([p.then(() => true, () => true), new Promise((r) => setTimeout(() => r(false), 250))]);
+        if (done) return p;
+      }
+      if (approveUrls.length > before) throw new NeedsApproval(approveUrls.slice(before));
+    }
+    await p;
+  };
   ctx = a;
   return a;
+}
+
+const pending = new Map();
+class NeedsApproval extends Error {
+  constructor(urls) { super("needs approval"); this.urls = urls; }
 }
 
 const text = (s) => ({ content: [{ type: "text", text: s }] });
@@ -64,6 +90,9 @@ const run = async (fn) => {
     const pre = approveUrls.length ? `APPROVE_URL: ${approveUrls.join("\n")}\n(the human approved these grants)\n\n` : "";
     return text(pre + JSON.stringify(out, null, 2));
   } catch (e) {
+    if (e instanceof NeedsApproval) {
+      return text(`APPROVAL NEEDED — show the human this link and wait for them to approve it, then call the same tool again with the same arguments:\n${e.urls.join("\n")}`);
+    }
     const pre = approveUrls.length ? `APPROVE_URL: ${approveUrls.join("\n")}\n` : "";
     return text(`${pre}ERROR: ${e.message}`);
   }
