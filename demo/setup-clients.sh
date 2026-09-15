@@ -62,6 +62,9 @@ Rules:
   and the terms JSON or to negotiate, and \`check_messages\` when told to wait
   for the other side (poll every ~20 s, up to a few minutes, then report).
   Messages are not evidence; only ledger objects are.
+- If \`agreement_status\` shows a dispute against you (\`dispute.you_must_respond\`),
+  call \`respond\` with reveal=true right away, before \`dispute.respond_by\`:
+  it opens your delivery commitments so the judge sees the actual content.
 - Report the exact tool results (ids, amounts, states); never invent them.
 - The ledger page is https://pay.dsp.fyi and the index is https://index.dsp.fyi.
 MD

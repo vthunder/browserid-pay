@@ -116,8 +116,9 @@ Same first four steps. Then:
 
 | who | prompt | what happens | ledger page shows |
 |---|---|---|---|
-| alice | *"Bob only delivered five of ten. Dispute agr_…"* | `dispute` posts a dispute object, freezes the escrow (`/dispute` returns the sealed terms), files with the judge (`POST https://judge.dsp.fyi/api/dispute`); no card — the judge's audience was on the agreement's card | agr_… disputed |
-| (judge) | — | unseals the terms, reads proposal, acceptance and evidence from the chain, rules with Claude, posts `ruling` and `agreement:ruled` attestations, delivers to the custodian | agr_… settled · ruled:split; receipts per the split; judge's account +5.00 |
+| alice | *"Bob only delivered five of ten. Dispute agr_…"* | `dispute` posts a dispute object, freezes the escrow (`/dispute` returns the sealed terms), files with the judge (`POST https://judge.dsp.fyi/api/dispute`); no card — the judge's audience was on the agreement's card. The judge opens the case with a **response window** (10 minutes on the live judge, `JUDGE_RESPONSE_WINDOW`) | agr_… disputed |
+| bob | *"Check agreement agr_… and respond to the dispute, revealing your delivery."* | `agreement_status` shows `dispute.you_must_respond`; `respond` posts a `response` evidence object and hands the judge the delivered content, which the judge checks against Bob's commitment (`matched: true`) | agr_… disputed |
+| (judge) | — | rules right after the response (or when the window lapses with none): unseals the terms, reads proposal, acceptance, evidence and the opened content, rules with Claude, posts `ruling` and `agreement:ruled` attestations, delivers to the custodian | agr_… settled · ruled:…; receipts per the ruling; judge's account +5.00 |
 
 `agreement_status agr_…` on either side reports `ruled`;
 <https://index.dsp.fyi/v1/reputation?subject=bob@example.com> now counts

@@ -28,6 +28,9 @@ pub struct Config {
     /// Dev mode: pinned issuers, no status checks, no chain writes unless AVAIL_* is set.
     pub dev: bool,
     pub trust_issuers: Vec<(String, String)>,
+    /// How long the counterparty has to respond to a dispute before the judge
+    /// rules on the record as it stands (seconds). Default a day; 60s in dev.
+    pub response_window_secs: i64,
 }
 
 impl Config {
@@ -53,6 +56,7 @@ impl Config {
             anthropic_api_key: get("ANTHROPIC_API_KEY", ""),
             anthropic_model: get("JUDGE_MODEL", "claude-fable-5-1"),
             dev,
+            response_window_secs: get("JUDGE_RESPONSE_WINDOW", if dev { "60" } else { "86400" }).parse().expect("JUDGE_RESPONSE_WINDOW"),
             trust_issuers: get("JUDGE_TRUST_ISSUER", "")
                 .split(',')
                 .filter_map(|s| s.trim().split_once('=').map(|(a, b)| (a.to_string(), b.to_string())))

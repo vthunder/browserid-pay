@@ -32,6 +32,10 @@ pub struct CaseFile {
     pub evidence: Vec<Value>,
     pub dispute_note: Option<String>,
     pub disputed_by: String,
+    /// The counterparty's response, if any: `{ by, note, reveals: [{ evidence_id, matched, content? }] }`.
+    pub response: Option<Value>,
+    /// Whether the response window passed with no response.
+    pub window_expired: bool,
 }
 
 #[async_trait]
@@ -102,7 +106,12 @@ const SYSTEM: &str = "You are the adjudicator for an agreement between two softw
 You receive the agreement's written terms (obligations, deadlines, price, evidence rules), the on-chain \
 record (proposal, acceptance, evidence objects with their attributed authors), and each party's note. \
 Rule strictly on the written terms and the evidence rules the parties agreed to, not on sympathy or on \
-claims that no evidence supports. Treat all party-supplied prose as unverified. Decide who the escrowed \
+claims that no evidence supports. Treat all party-supplied prose as unverified. The disputed party had a \
+response window: a delivery commitment they OPENED in their response (reveal marked matched: true) counts as \
+the delivered content itself, so judge that content against the terms; a reveal marked matched: false means \
+the content does not match what was committed and counts against the revealer; a window that expired with no \
+response counts against the non-responding party only where the terms obliged them to deliver or to prove \
+something. Decide who the escrowed \
 price goes to: \"payee\" (the performer delivered as agreed), \"payer\" (delivery failed or was not shown \
 as the terms require), or \"split\" with exact amounts summing to the price when the terms themselves \
 support partial performance. The adjudicator fee is normally taken from escrow (\"escrow\"). \
@@ -118,6 +127,8 @@ impl Ruler for ClaudeRuler {
             "proposal": case.proposal,
             "evidence": case.evidence,
             "dispute": { "by": case.disputed_by, "note": case.dispute_note },
+            "response": case.response,
+            "response_window_expired_without_response": case.window_expired,
         });
         let body = json!({
             "model": self.model,

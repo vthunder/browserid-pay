@@ -161,9 +161,15 @@ server.registerTool("dispute", {
   inputSchema: { id: z.string(), note: z.string().optional() },
 }, ({ id, note }) => run((a) => a.dispute(id, { note })));
 
+server.registerTool("respond", {
+  title: "Respond to a dispute",
+  description: "Answer a dispute filed against you within the judge's response window: a note and, with reveal=true (default), open every delivery commitment you made for this agreement so the judge sees the actual content. The judge rules right after.",
+  inputSchema: { id: z.string(), note: z.string().optional(), reveal: z.boolean().optional() },
+}, ({ id, note, reveal }) => run((a) => a.respond(id, { note, reveal: reveal !== false })));
+
 server.registerTool("agreement_status", {
   title: "Agreement status",
-  description: "Stage (proposed/binding/active/delivered/settled/disputed/ruled) with the on-chain objects and the custodian's escrow view.",
+  description: "Stage (proposed/binding/active/delivered/settled/disputed/ruled) with the on-chain objects, the custodian's escrow view and, while disputed, the judge's case: respond_by and whether you must respond.",
   inputSchema: { id: z.string() },
 }, ({ id }) => run((a) => a.status(id)));
 

@@ -103,12 +103,23 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Response-window sweep: rule on cases whose window passed with no response.
+    let sweep = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            rule_due_cases(&sweep).await;
+        }
+    });
+
     let router = Router::new()
         .route("/", get(index))
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/setup", get(api_setup))
         .route("/api/dispute", post(api_dispute))
+        .route("/api/cases", get(api_cases_list))
         .route("/api/cases/:id", get(api_case))
+        .route("/api/cases/:id/respond", post(api_respond))
         .route("/api/cases/:id/deliver", post(api_deliver))
         .with_state(app)
         .layer(tower_http::trace::TraceLayer::new_for_http());
@@ -192,7 +203,8 @@ fn err(code: StatusCode, msg: impl Into<String>) -> Response {
 
 /// Either party files: verify the caller, unseal the terms, read the on-chain
 /// record, check the caller is a party and we are the named adjudicator,
-/// then rule in the background.
+/// then open the case with a response window for the other party. The ruling
+/// comes when they respond, or when the window passes (sweep).
 async fn api_dispute(State(app): State<App>, Json(body): Json<DisputeBody>) -> Response {
     let who = match app.verify.presentation(&body.presentation).await {
         // Parties are acting identities (the agents), not their grantors.
@@ -269,19 +281,140 @@ async fn api_dispute(State(app): State<App>, Json(body): Json<DisputeBody>) -> R
         error: None,
         opened_at: cases::now(),
         updated_at: cases::now(),
+        respond_by: cases::now() + app.cfg.response_window_secs,
+        response: None,
     };
+    let respond_by = case.respond_by;
     if let Err(e) = app.cases.insert(&case) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     }
+    (StatusCode::ACCEPTED, Json(json!({ "contract_id": id, "state": "open", "respond_by": respond_by }))).into_response()
+}
+
+#[derive(Deserialize)]
+struct Reveal {
+    evidence_id: String,
+    content: Value,
+}
+
+#[derive(Deserialize)]
+struct RespondBody {
+    presentation: String,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    reveals: Vec<Reveal>,
+}
+
+/// `sha256:` + hex over a revealed content: a string is hashed as-is, JSON
+/// as its canonical form — exactly how the SDK commits at delivery.
+fn content_commitment(content: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = match content {
+        Value::String(s) => s.clone(),
+        other => canonical(other),
+    };
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes.as_bytes())))
+}
+
+/// The counterparty answers the dispute: a note and/or reveals of its own
+/// delivery commitments. Each reveal is checked against the commitment on
+/// the named evidence object; the case then goes to ruling at once.
+async fn api_respond(State(app): State<App>, Path(id): Path<String>, Json(body): Json<RespondBody>) -> Response {
+    let who = match app.verify.presentation(&body.presentation).await {
+        Ok(v) => v.grantee,
+        Err(e) => return err(StatusCode::UNAUTHORIZED, format!("verification failed: {e}")),
+    };
+    let case = match app.cases.get(&id) {
+        Ok(Some(c)) => c,
+        Ok(None) => return err(StatusCode::NOT_FOUND, "no such case"),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    if !case.parties.contains(&who) || who == case.disputed_by {
+        return err(StatusCode::FORBIDDEN, "only the party the dispute is against may respond");
+    }
+    if case.state != "open" {
+        return (StatusCode::CONFLICT, Json(json!({ "error": "not_open", "state": case.state }))).into_response();
+    }
+    let path = format!("/agreements/{id}/evidence/");
+    let mut reveals = Vec::new();
+    for r in body.reveals.iter().take(16) {
+        let ev = match app.reader.get_object(&path, &r.evidence_id).await {
+            Ok(Some(o)) => o,
+            Ok(None) => return err(StatusCode::BAD_REQUEST, format!("no evidence {} on chain", r.evidence_id)),
+            Err(e) => return err(StatusCode::BAD_GATEWAY, format!("chain read: {e}")),
+        };
+        if ev.creator != who || ev.value["kind"].as_str() != Some("delivery") {
+            return err(StatusCode::BAD_REQUEST, format!("{} is not a delivery of yours", r.evidence_id));
+        }
+        let committed = ev.value["commitment"].as_str().unwrap_or("").to_string();
+        let got = content_commitment(&r.content);
+        let matched = !committed.is_empty() && committed == got;
+        let mut entry = json!({ "evidence_id": r.evidence_id, "commitment": committed, "matched": matched });
+        if matched {
+            // Keep the opened content for the ruler (capped so a reveal cannot
+            // bloat the case file).
+            let text = serde_json::to_string(&r.content).unwrap_or_default();
+            entry["content"] = if text.len() > 32_000 { Value::String(text[..32_000].to_string()) } else { r.content.clone() };
+        }
+        reveals.push(entry);
+    }
+    let response = json!({
+        "by": who,
+        "note": body.note.map(|n| n.chars().take(2000).collect::<String>()),
+        "reveals": reveals,
+        "at": cases::now(),
+    });
+    if let Err(e) = app.cases.respond(&id, &response) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+    spawn_ruling(&app, &id);
+    (StatusCode::ACCEPTED, Json(json!({ "contract_id": id, "state": "responded", "reveals": response["reveals"] }))).into_response()
+}
+
+fn spawn_ruling(app: &App, id: &str) {
     let bg = app.clone();
-    let cid = id.clone();
+    let cid = id.to_string();
     tokio::spawn(async move {
         if let Err(e) = rule_and_deliver(&bg, &cid).await {
             tracing::error!(contract = %cid, "ruling failed: {e:#}");
             let _ = bg.cases.update(&cid, "failed", None, None, Some(&e.to_string()));
         }
     });
-    (StatusCode::ACCEPTED, Json(json!({ "contract_id": id, "state": "open" }))).into_response()
+}
+
+/// Rule on every open case whose response window has passed.
+pub async fn rule_due_cases(app: &App) {
+    let due = match app.cases.due(cases::now()) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("sweep: {e}");
+            return;
+        }
+    };
+    for c in due {
+        tracing::info!(contract = %c.contract_id, "response window passed with no response; ruling");
+        // Mark first so a slow ruling is not picked up twice.
+        let _ = app.cases.update(&c.contract_id, "responded", None, None, None);
+        if let Err(e) = rule_and_deliver(app, &c.contract_id).await {
+            tracing::error!(contract = %c.contract_id, "ruling failed: {e:#}");
+            let _ = app.cases.update(&c.contract_id, "failed", None, None, Some(&e.to_string()));
+        }
+    }
+}
+
+/// Cases where `party` is a party (`?party=<identity>`): id, state, window,
+/// who disputed. The record itself is public on chain; this is just the
+/// judge's bookkeeping, so no authentication.
+async fn api_cases_list(State(app): State<App>, axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    let Some(party) = q.get("party") else { return err(StatusCode::BAD_REQUEST, "party required") };
+    match app.cases.for_party(party) {
+        Ok(v) => Json(json!({ "cases": v.iter().map(|c| json!({
+            "contract_id": c.contract_id, "state": c.state, "disputed_by": c.disputed_by,
+            "respond_by": c.respond_by, "responded": c.response.is_some(), "opened_at": c.opened_at,
+        })).collect::<Vec<_>>() })).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 /// `sha256:` + hex over the canonical (JCS) terms. JCS for the subset we
@@ -314,6 +447,8 @@ async fn rule_and_deliver(app: &App, id: &str) -> anyhow::Result<()> {
         evidence: case.evidence.as_array().cloned().unwrap_or_default(),
         dispute_note: case.dispute_note.clone(),
         disputed_by: case.disputed_by.clone(),
+        response: case.response.clone(),
+        window_expired: case.response.is_none(),
     };
     let raw = app.ruler.rule(&file).await?;
     let ruling = llm::validate(&raw, id, &case.terms)?;
@@ -377,8 +512,13 @@ async fn deliver(app: &App, id: &str) -> anyhow::Result<()> {
 async fn api_case(State(app): State<App>, Path(id): Path<String>) -> Response {
     match app.cases.get(&id) {
         Ok(Some(c)) => Json(json!({
-            "contract_id": c.contract_id, "state": c.state, "disputed_by": c.disputed_by,
+            "contract_id": c.contract_id, "state": c.state, "disputed_by": c.disputed_by, "dispute_note": c.dispute_note,
             "custodian": c.custodian, "parties": c.parties, "ruling": c.ruling,
+            "respond_by": c.respond_by, "response": c.response.as_ref().map(|r| json!({
+                "by": r["by"], "note": r["note"], "at": r["at"],
+                "reveals": r["reveals"].as_array().map(|a| a.iter().map(|x| json!({ "evidence_id": x["evidence_id"], "matched": x["matched"] })).collect::<Vec<_>>()),
+            })),
+            "evidence": c.evidence,
             "submission": c.submission, "error": c.error, "opened_at": c.opened_at, "updated_at": c.updated_at,
         }))
         .into_response(),
@@ -396,7 +536,7 @@ async fn api_deliver(State(app): State<App>, Path(id): Path<String>) -> Response
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use async_trait::async_trait;
     use browserid_core::device::{AccessCert, Binding, DeviceCert, Holder, HolderMatcher, Purpose, ScopeEntry, Warrant};
@@ -408,9 +548,9 @@ mod tests {
     const ORIGIN: &str = "https://judge.test";
     const ISSUER: &str = "idp.test";
 
-    struct FakeChain {
-        objects: Mutex<HashMap<(String, String), chain::ObjectView>>,
-        submitted: Mutex<Vec<Vec<u8>>>,
+    pub struct FakeChain {
+        pub objects: Mutex<HashMap<(String, String), chain::ObjectView>>,
+        pub submitted: Mutex<Vec<Vec<u8>>>,
     }
     #[async_trait]
     impl ChainReader for FakeChain {
@@ -436,7 +576,7 @@ mod tests {
         }
     }
 
-    fn login_presentation(issuer_kp: &KeyPair, email: &str) -> String {
+    pub fn login_presentation(issuer_kp: &KeyPair, email: &str) -> String {
         let access_kp = KeyPair::generate();
         let config_kp = KeyPair::generate();
         let access_cert = AccessCert::create(ISSUER, email, Holder::new("br.main").unwrap(), &access_kp.public_key(), Duration::hours(1), issuer_kp, None).unwrap();
@@ -451,7 +591,7 @@ mod tests {
         format!("{}~{}~{}~{}", access_cert.encoded(), assertion.encoded(), warrant.encoded(), config_cert.encoded())
     }
 
-    async fn app(issuer_kp: &KeyPair, chain: Arc<FakeChain>, ruler: Value) -> (App, seal::SealKey) {
+    pub async fn app(issuer_kp: &KeyPair, chain: Arc<FakeChain>, ruler: Value) -> (App, seal::SealKey) {
         let dir = std::env::temp_dir().join(format!("judge-test-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = Config {
@@ -460,6 +600,7 @@ mod tests {
             custodians: vec!["https://pay.test".into()], accepted_fallbacks: vec![ISSUER.into()],
             price_amount: "5.00".into(), price_currency: "USD".into(), anthropic_api_key: String::new(),
             anthropic_model: "m".into(), dev: true, trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())],
+            response_window_secs: 3600,
         };
         let seal = seal::SealKey::from_secret([3u8; 32]);
         let identity = Arc::new(Identity::new(dir.join("cred.json")));
@@ -473,7 +614,7 @@ mod tests {
         (app, seal)
     }
 
-    fn terms() -> Value {
+    pub fn terms() -> Value {
         json!({ "v": 1, "id": "agr_test", "salt": "s", "price": { "amount": "50.00", "currency": "USD" }, "obligations": [], "fees": { "custodian": "0.50", "adjudicator": "5.00" } })
     }
 
@@ -499,18 +640,15 @@ mod tests {
         let bad = seal::seal_to(&seal.public_b64(), br#"{"id":"agr_test","price":{"amount":"1.00","currency":"USD"}}"#).unwrap();
         let r = api_dispute(State(app.clone()), Json(DisputeBody { presentation: login_presentation(&issuer_kp, "a@x.test"), contract_id: "agr_test".into(), sealed_terms: bad, note: None })).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
-        // A party with the right terms is accepted; the ruling is recorded
-        // (delivery fails: no identity to present, so the case ends "ruled"
-        // with an error, never "delivered").
+        // A party with the right terms is accepted; the case opens with a
+        // response window and NO ruling yet.
         let r = api_dispute(State(app.clone()), Json(DisputeBody { presentation: login_presentation(&issuer_kp, "a@x.test"), contract_id: "agr_test".into(), sealed_terms: sealed.clone(), note: Some("late".into()) })).await;
         assert_eq!(r.status(), StatusCode::ACCEPTED);
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            if app.cases.get("agr_test").unwrap().unwrap().ruling.is_some() { break; }
-        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let c = app.cases.get("agr_test").unwrap().unwrap();
-        assert_eq!(c.ruling.as_ref().unwrap()["outcome"], "payer");
-        assert_ne!(c.state, "delivered");
+        assert_eq!(c.state, "open");
+        assert!(c.ruling.is_none(), "no ruling before the response window");
+        assert!(c.respond_by > cases::now() + 3000);
         // Filing twice conflicts.
         let r = api_dispute(State(app.clone()), Json(DisputeBody { presentation: login_presentation(&issuer_kp, "b@y.test"), contract_id: "agr_test".into(), sealed_terms: sealed, note: None })).await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
@@ -522,5 +660,106 @@ mod tests {
         let b = json!({ "a": [1, { "x": 1, "y": 2 }], "b": 1 });
         assert_eq!(commitment(&a), commitment(&b));
         assert!(commitment(&a).starts_with("sha256:"));
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn counterparty_reveals_then_the_judge_rules() {
+        let (issuer_kp, chain, app, seal) = open_case(json!({ "outcome": "payee", "fee": "escrow", "reasoning": "opened content matches the terms" })).await;
+        // Bob's delivery commitment on chain (content hashed like the SDK does).
+        let content = json!({ "summaries": ["one", "two"] });
+        chain.put("/agreements/agr_test/evidence/", "ev_1", "b@y.test", json!({ "v": 1, "id": "agr_test", "kind": "delivery", "by": "b@y.test", "commitment": content_commitment(&content) }));
+        let _ = seal;
+        // The disputer cannot respond; a stranger cannot respond.
+        for who in ["a@x.test", "z@z.test"] {
+            let r = api_respond(State(app.clone()), Path("agr_test".into()), Json(RespondBody { presentation: login_presentation(&issuer_kp, who), note: None, reveals: vec![] })).await;
+            assert_eq!(r.status(), StatusCode::FORBIDDEN, "{who}");
+        }
+        // Bob reveals: matched, then the ruling follows.
+        let r = api_respond(State(app.clone()), Path("agr_test".into()), Json(RespondBody { presentation: login_presentation(&issuer_kp, "b@y.test"), note: Some("all ten".into()), reveals: vec![Reveal { evidence_id: "ev_1".into(), content: content.clone() }] })).await;
+        assert_eq!(r.status(), StatusCode::ACCEPTED);
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            if app.cases.get("agr_test").unwrap().unwrap().ruling.is_some() { break; }
+        }
+        let c = app.cases.get("agr_test").unwrap().unwrap();
+        assert_eq!(c.response.as_ref().unwrap()["reveals"][0]["matched"], true);
+        assert_eq!(c.response.as_ref().unwrap()["reveals"][0]["content"], content);
+        assert_eq!(c.ruling.as_ref().unwrap()["outcome"], "payee");
+        // A second response is refused: the case is no longer open.
+        let r = api_respond(State(app.clone()), Path("agr_test".into()), Json(RespondBody { presentation: login_presentation(&issuer_kp, "b@y.test"), note: None, reveals: vec![] })).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_mismatching_reveal_is_recorded_as_such() {
+        let (issuer_kp, chain, app, _seal) = open_case(json!({ "outcome": "payer", "fee": "escrow", "reasoning": "reveal did not match" })).await;
+        chain.put("/agreements/agr_test/evidence/", "ev_1", "b@y.test", json!({ "kind": "delivery", "commitment": "sha256:deadbeef" }));
+        let r = api_respond(State(app.clone()), Path("agr_test".into()), Json(RespondBody { presentation: login_presentation(&issuer_kp, "b@y.test"), note: None, reveals: vec![Reveal { evidence_id: "ev_1".into(), content: json!("other") }] })).await;
+        assert_eq!(r.status(), StatusCode::ACCEPTED);
+        let c = app.cases.get("agr_test").unwrap().unwrap();
+        assert_eq!(c.response.as_ref().unwrap()["reveals"][0]["matched"], false);
+        assert!(c.response.as_ref().unwrap()["reveals"][0].get("content").is_none());
+        // Someone else's evidence cannot be revealed.
+        let (issuer_kp2, chain2, app2, _s2) = open_case(json!({ "outcome": "payer", "fee": "escrow", "reasoning": "x" })).await;
+        chain2.put("/agreements/agr_test/evidence/", "ev_a", "a@x.test", json!({ "kind": "delivery", "commitment": "sha256:00" }));
+        let r = api_respond(State(app2.clone()), Path("agr_test".into()), Json(RespondBody { presentation: login_presentation(&issuer_kp2, "b@y.test"), note: None, reveals: vec![Reveal { evidence_id: "ev_a".into(), content: json!("x") }] })).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_expired_window_is_ruled_by_the_sweep() {
+        let (_issuer_kp, _chain, app, _seal) = open_case(json!({ "outcome": "payer", "fee": "escrow", "reasoning": "no response" })).await;
+        // Nothing due yet.
+        rule_due_cases(&app).await;
+        assert!(app.cases.get("agr_test").unwrap().unwrap().ruling.is_none());
+        // Backdate the window, sweep, ruled.
+        app.cases.with_conn(|c| c.execute("UPDATE cases SET respond_by=?1 WHERE contract_id='agr_test'", rusqlite::params![cases::now() - 1]).map(|_| ()));
+        rule_due_cases(&app).await;
+        let c = app.cases.get("agr_test").unwrap().unwrap();
+        assert_eq!(c.ruling.as_ref().unwrap()["outcome"], "payer");
+        assert!(c.response.is_none());
+        // The party listing shows it.
+        let r = api_cases_list(State(app.clone()), axum::extract::Query([("party".to_string(), "b@y.test".to_string())].into_iter().collect())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+}
+
+/// Shared fixtures for the response tests (built on the same fakes as `tests`).
+#[cfg(test)]
+mod tests_support {
+    use super::*;
+    pub use super::tests::{login_presentation, FakeChain};
+    use browserid_core::KeyPair;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    impl FakeChain {
+        pub fn put(&self, path: &str, id: &str, creator: &str, value: Value) {
+            self.objects.lock().unwrap().insert((path.into(), id.into()), chain::ObjectView { path: path.into(), id: id.into(), creator: creator.into(), value, confirmed: true });
+        }
+    }
+
+    /// A case for agr_test between a@x.test (payer, disputer) and b@y.test,
+    /// opened through `api_dispute`, with the given canned ruling.
+    pub async fn open_case(ruling: Value) -> (KeyPair, Arc<FakeChain>, App, seal::SealKey) {
+        let issuer_kp = KeyPair::generate();
+        let chain = Arc::new(FakeChain { objects: Mutex::new(HashMap::new()), submitted: Mutex::new(vec![]) });
+        let t = super::tests::terms();
+        let proposal = json!({ "v": 1, "id": "agr_test", "mode": "commitment", "commitment": commitment(&t),
+            "parties": { "proposer": "a@x.test", "acceptor": "b@y.test" }, "roles": { "payer": "a@x.test", "payee": "b@y.test" },
+            "adjudicator": "judge@dsp.fyi", "custodian": "https://pay.test", "expires": 0 });
+        chain.put("/agreements/agr_test/", "proposal", "a@x.test", proposal);
+        chain.put("/agreements/agr_test/", "acceptance", "b@y.test", json!({ "v": 1 }));
+        let (app, seal) = super::tests::app(&issuer_kp, chain.clone(), ruling).await;
+        let sealed = seal::seal_to(&seal.public_b64(), &serde_json::to_vec(&t).unwrap()).unwrap();
+        let r = api_dispute(State(app.clone()), Json(DisputeBody { presentation: login_presentation(&issuer_kp, "a@x.test"), contract_id: "agr_test".into(), sealed_terms: sealed, note: Some("half".into()) })).await;
+        assert_eq!(r.status(), StatusCode::ACCEPTED);
+        (issuer_kp, chain, app, seal)
     }
 }

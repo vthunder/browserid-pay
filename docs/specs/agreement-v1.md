@@ -86,12 +86,31 @@ payer's account and keeps the sealed terms.
 ## Evidence — `Path: /agreements/<id>/evidence/`, `ID: <random>` (by either party)
 
 ```json
-{ "v": 1, "id": "agr_…", "kind": "delivery" | "acknowledgement" | "dispute",
-  "by": "b@y", "commitment": "sha256:…", "note": "… (unverified)" }
+{ "v": 1, "id": "agr_…", "kind": "delivery" | "acknowledgement" | "dispute" | "response",
+  "by": "b@y", "commitment": "sha256:…", "note": "… (unverified)",
+  "reveals": [ { "evidence_id": "ev_…", "sha256": "sha256:…" } ] }   // response only
 ```
 `delivery`: commitment over the deliverable (or the deliverable inline when
 public). `acknowledgement` by the payer releases escrow. `dispute` by either
-party opens Flow 3.
+party opens Flow 3. `response`: the disputed-against party's answer — a note
+and the hashes of the delivery commitments it is opening (the contents go to
+the adjudicator off chain; the chain records that they were opened).
+
+### Dispute response phase
+
+Filing a dispute opens a case at the adjudicator in state `open` with a
+**response window** (`respond_by`, adjudicator-configured; 24h reference).
+The other party may answer once within it: `POST <adjudicator>/api/cases/<id>/respond
+{ presentation (adjudicator audience), note?, reveals: [{ evidence_id, content }] }`
+— the adjudicator checks each reveal's `sha256(content)` (string as-is, JSON
+in canonical form) against the commitment on that delivery evidence and
+records it as `matched` or not. The adjudicator rules when the response is
+in, or when the window passes with none. `GET /api/cases/<id>` shows the
+window and whether a response exists; `GET /api/cases?party=<identity>`
+lists a party's cases. A commitment opened in a matching reveal is judged
+as delivered content; a mismatching reveal counts against the revealer; an
+unanswered window counts against the non-responder only where the terms
+obliged them.
 
 ## Ruling — `ID: ruling` (by the adjudicator named in the proposal)
 
@@ -103,7 +122,9 @@ party opens Flow 3.
 ```
 The custodian honors one ruling per contract, only from the named
 adjudicator, delivered to it by that adjudicator's own presentation
-(audience = the custodian).
+(audience = the custodian). A ruling is issued only after the dispute
+response phase (above): on the counterparty's response, or when the
+window lapses.
 
 ## Custodian escrow API
 

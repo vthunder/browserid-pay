@@ -97,7 +97,7 @@ async function main() {
   run("judge", BIN("judge"), {
     JUDGE_DEV: "1", JUDGE_PORT: String(PORTS.judge), JUDGE_ORIGIN: judgeOrigin, JUDGE_DATA_DIR: judgeDir, JUDGE_TRUST_ISSUER: trust,
     JUDGE_ACCEPTED_FALLBACKS: idp.domain, SBO_DAEMON: daemonOrigin, JUDGE_CHAIN_AUDIENCE: REPO, JUDGE_CUSTODIANS: payOrigin,
-    JUDGE_SUBMIT_URL: `${daemonOrigin}/v1/submit`, BROKER: idp.origin,
+    JUDGE_SUBMIT_URL: `${daemonOrigin}/v1/submit`, BROKER: idp.origin, JUDGE_RESPONSE_WINDOW: "300",
     JUDGE_FAKE_RULING: JSON.stringify({ outcome: "split", split: { payee: "30.00", payer: "20.00" }, fee: "escrow", reasoning: "Half the summaries were delivered; the rest were not. Price split accordingly." }),
   });
   await waitFor("judge", () => fetch(`${judgeOrigin}/healthz`).then((r) => r.ok));
@@ -190,7 +190,23 @@ async function main() {
   assert.equal(disp.frozen.escrow.state, "disputed");
   assert.ok(disp.frozen.sealed_terms, "custodian hands back the sealed terms");
   assert.equal(disp.filed.state, "open");
-  log(`disputed ${p2.id}: escrow frozen, case filed with the judge`);
+  assert.ok(disp.filed.respond_by > Date.now() / 1000 + 60, "the judge opened a response window");
+  log(`disputed ${p2.id}: escrow frozen, case filed with the judge, bob may respond until ${disp.filed.respond_by}`);
+
+  // Bob sees the dispute against him and responds by opening his delivery.
+  const stB = await bob.sdk.status(p2.id);
+  assert.equal(stB.stage, "disputed");
+  assert.equal(stB.dispute.state, "open");
+  assert.equal(stB.dispute.you_must_respond, true, "status tells bob he must respond");
+  const caseBefore = await getJson(`${judgeOrigin}/api/cases/${p2.id}`);
+  assert.equal(caseBefore.state, "open");
+  assert.equal(caseBefore.ruling, null, "no ruling before bob's response");
+  const resp = await bob.sdk.respond(p2.id, { note: "here are the five I delivered", reveal: true });
+  assert.equal(resp.evidence.kind, "response");
+  assert.equal(resp.evidence.reveals.length, 1, "one delivery opened");
+  assert.equal(daemon.get(`/agreements/${p2.id}/evidence/`, resp.evidence_id).value.kind, "response", "response evidence on chain");
+  assert.equal(resp.filed.reveals[0].matched, true, "the judge verified the reveal against the commitment");
+  log(`bob responded: opened ${resp.evidence.reveals[0].evidence_id}, matched`);
 
   const kase = await waitFor("judge ruling delivered", async () => {
     const c = await getJson(`${judgeOrigin}/api/cases/${p2.id}`);
