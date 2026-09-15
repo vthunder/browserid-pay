@@ -56,7 +56,9 @@ export class DaemonChain {
 // versions; take the first that looks like content, and parse JSON when it is.
 export function normalizeView(v) {
   if (!v || typeof v !== "object") return null;
-  let payload = v.payload ?? v.content ?? v.object?.payload ?? v.object?.content ?? null;
+  // sbo-daemon (2026-09): `value` is the parsed JSON, `payload_text` the raw
+  // text; older/other shapes below.
+  let payload = v.value ?? v.payload ?? v.payload_text ?? v.content ?? v.object?.payload ?? v.object?.content ?? null;
   if (typeof payload === "string") {
     if (v.encoding === "base64" || v.payload_encoding === "base64") payload = Buffer.from(payload, "base64").toString("utf8");
     try { payload = JSON.parse(payload); } catch {}

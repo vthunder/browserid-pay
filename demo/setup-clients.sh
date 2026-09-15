@@ -36,6 +36,12 @@ for who in alice bob; do
   }
 }
 JSON
+  # Claude Code's auto-mode classifier treats propose/fund as real-world
+  # transactions and blocks them; allow the two MCP servers' tools up front.
+  mkdir -p "$d/.claude"
+  cat > "$d/.claude/settings.json" <<JSON
+{ "permissions": { "allow": ["mcp__agreements__*", "mcp__browserid__*"] } }
+JSON
   other=$([ "$who" = alice ] && echo bob || echo alice)
   cat > "$d/CLAUDE.md" <<MD
 # You are ${who}'s agent

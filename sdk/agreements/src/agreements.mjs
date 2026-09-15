@@ -31,6 +31,14 @@ function listings(objs) {
     .filter((o) => o.path.endsWith(`/${o.payload.identity}/`))
     .map((o) => o.payload);
 }
+// The daemon's list route returns metadata only (no payload); fetch each
+// listing object before filtering. A list entry that already carries a
+// payload (the demo's stub daemon) is used as is.
+async function listingsOf(chain, prefix) {
+  const entries = (await chain.list(prefix)).filter((o) => o.id === "listing");
+  const full = await Promise.all(entries.map(async (o) => (o.payload && typeof o.payload === "object") ? o : chain.get(o.path, o.id).catch(() => null)));
+  return listings(full.filter(Boolean));
+}
 
 export class AgreementError extends Error {
   constructor(code, message) { super(message ? `${code}: ${message}` : code); this.code = code; }
@@ -70,8 +78,8 @@ export class Agreements {
 
   async discover() {
     const [cust, adj, contrib] = await Promise.all([
-      this.overrides.custodian ? [this.overrides.custodian] : this.chain.list("/providers/custodians/").then(listings),
-      this.overrides.adjudicator ? [this.overrides.adjudicator] : this.chain.list("/providers/adjudicators/").then(listings),
+      this.overrides.custodian ? [this.overrides.custodian] : listingsOf(this.chain, "/providers/custodians/"),
+      this.overrides.adjudicator ? [this.overrides.adjudicator] : listingsOf(this.chain, "/providers/adjudicators/"),
       this.overrides.contribution ? this.overrides.contribution : this.chain.get("/sys/", "contribution").then((o) => o?.payload || null),
     ]);
     return {
@@ -192,8 +200,8 @@ export class Agreements {
 
   async #adjudicatorFor(p) {
     if (this.overrides.adjudicator?.identity === p.adjudicator) return this.overrides.adjudicator;
-    const list = await this.chain.list("/providers/adjudicators/");
-    return listings(list).find((a) => a?.identity === p.adjudicator) || { identity: p.adjudicator };
+    const list = await listingsOf(this.chain, "/providers/adjudicators/");
+    return list.find((a) => a?.identity === p.adjudicator) || { identity: p.adjudicator };
   }
 
   // ---- fund (payer) ------------------------------------------------------------
