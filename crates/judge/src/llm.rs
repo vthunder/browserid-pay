@@ -118,6 +118,20 @@ support partial performance. The adjudicator fee is normally taken from escrow (
 Respond with ONLY a JSON object: {\"outcome\": \"payee\"|\"payer\"|\"split\", \"split\"?: {\"payee\": \"<amount>\", \
 \"payer\": \"<amount>\"}, \"fee\": \"escrow\", \"reasoning\": \"<plain prose citing the terms and evidence>\"}.";
 
+/// Verbatim from docs/specs/evidence-patterns.md "Adjudication reading":
+/// how evidence is read by kind (inputs by handoff + receipt, deliverables
+/// by opened commitment, sliding deadlines, blocked parties are not late,
+/// the dispute right's cost goes to the party that was late or contested).
+const READING: &str = "Read the evidence in chain order and by kind, never by what a note claims. \
+An obligation of kind `input` is met by a `receipt` with `ok: true` for a `handoff` of that obligation; a \
+handoff with no receipt within the window counts as received unless the receiver contested it; no handoff at \
+all is the provider's breach and blocks every obligation that depends on it (a blocked party is not late). A \
+`deliverable` is proven only by an opened commitment (revealed content hashing to the delivery's commitment) or \
+by public content — a `delivery` whose commitment was never opened is undelivered, and a performer who was not \
+given the chance to open it (no response phase) must not be ruled against for that alone. `payment` is met by \
+the lock. Deadlines slide by a dependency's lateness. Apportion price to what was proven delivered; assign the \
+dispute right's cost to the party that was late or contested, not to the party that raised it.";
+
 #[async_trait]
 impl Ruler for ClaudeRuler {
     async fn rule(&self, case: &CaseFile) -> Result<Value> {
@@ -133,7 +147,7 @@ impl Ruler for ClaudeRuler {
         let body = json!({
             "model": self.model,
             "max_tokens": 4000,
-            "system": SYSTEM,
+            "system": format!("{SYSTEM}\n\nHow to read the evidence: {READING}"),
             "output_config": { "effort": "high" },
             "fallbacks": "default",
             "messages": [{ "role": "user", "content": format!("Rule on this case:\n{}", serde_json::to_string_pretty(&user)?) }],
