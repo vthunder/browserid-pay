@@ -13,6 +13,7 @@ use browserid_rp::{VerifiedIdentity, Verifier};
 pub struct Verify {
     verifier: Verifier,
     dns: Option<browserid_dnssec::DnsFetcher>,
+    cfg: Config,
 }
 
 /// What a verified payment presentation tells the custodian.
@@ -26,7 +27,12 @@ pub struct Verified {
 
 impl Verify {
     pub fn new(cfg: &Config) -> Result<Self> {
-        let mut v = Verifier::new(cfg.origin.clone());
+        Self::for_audience(cfg, &cfg.origin)
+    }
+
+    /// A verifier for one audience (the custodian's origin, or a contract).
+    pub fn for_audience(cfg: &Config, audience: &str) -> Result<Self> {
+        let mut v = Verifier::new(audience.to_string());
         for d in &cfg.accepted_fallbacks {
             v = v.accept_fallback(d.clone());
         }
@@ -45,7 +51,17 @@ impl Verify {
             );
             Some(browserid_dnssec::DnsFetcher::new().map_err(|e| anyhow!(e))?)
         };
-        Ok(Self { verifier: v, dns })
+        Ok(Self { verifier: v, dns, cfg: cfg.clone() })
+    }
+
+    /// Verify a presentation for a different audience than this verifier's
+    /// (contract audiences are per agreement).
+    pub async fn presentation_for(&self, audience: &str, presentation: &str) -> Result<Verified, String> {
+        if audience == self.verifier.audience() {
+            return self.presentation(presentation).await;
+        }
+        let v = Self::for_audience(&self.cfg, audience).map_err(|e| e.to_string())?;
+        v.presentation(presentation).await
     }
 
     pub async fn presentation(&self, presentation: &str) -> Result<Verified, String> {

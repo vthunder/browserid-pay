@@ -37,6 +37,10 @@ entry with a `cap` parameter — the budget the human signed.
 | `POST /api/pay` | the agent | `{ presentation, amount, currency, payee, memo? }` → `{ receipt }`; errors `no_grant`, `cap_exceeded` (+`remaining`), `revoked`, `insufficient_funds`, `verification_failed`, `unsupported_currency` |
 | `POST /api/login` / `GET /api/me` / `POST /api/logout` | the human (browser) | ledger UI session: balance, budgets (spent / remaining / window reset), receipts |
 | `POST /admin/credit` | admin (`Authorization: Bearer $ADMIN_TOKEN`) | `{ identity, amount, memo? }` — test credit until a real rail lands |
+| `POST /api/escrow/lock` | payer's agent | lock price + fees + contribution against a contract under a `contract:agreement` warrant (audience = the contract); see `docs/specs/agreement-v1.md` |
+| `POST /api/escrow/<id>/acknowledge` · `/dispute` | a party's agent | release to the payee / freeze and hand back the sealed terms |
+| `POST /api/escrow/<id>/ruling` | the named adjudicator | settle per the ruling (`payee` / `payer` / `split`), once |
+| `GET /api/escrow/<id>` | anyone | escrow state |
 | `GET /healthz` | anyone | liveness |
 
 Rails: `transfer` (internal move to another account here). x402 and cards

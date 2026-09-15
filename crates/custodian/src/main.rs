@@ -5,6 +5,7 @@
 
 mod config;
 mod db;
+mod escrow;
 mod pay;
 mod session;
 mod verify;
@@ -27,6 +28,7 @@ struct App {
     cfg: Arc<Config>,
     db: Db,
     verify: Arc<verify::Verify>,
+    publisher: Arc<dyn escrow::Publisher>,
 }
 
 #[tokio::main]
@@ -42,8 +44,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("PAY_DEV=1: pinned issuers, no status checks — never in production");
     }
     let db = Db::open(&cfg.database_path)?;
+    db.with(|c| escrow::schema(c))?;
     let verify = verify::Verify::new(&cfg)?;
-    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify) };
+    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: Arc::new(escrow::Log) };
 
     let router = Router::new()
         .route("/", get(index))
@@ -53,6 +56,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/me", get(api_me))
         .route("/api/pay", post(api_pay))
         .route("/admin/credit", post(admin_credit))
+        .route("/api/escrow/lock", post(escrow_lock))
+        .route("/api/escrow/:id", get(escrow_get))
+        .route("/api/escrow/:id/acknowledge", post(escrow_acknowledge))
+        .route("/api/escrow/:id/dispute", post(escrow_dispute))
+        .route("/api/escrow/:id/ruling", post(escrow_ruling))
         .with_state(app)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
@@ -159,8 +167,16 @@ async fn api_me(State(app): State<App>, headers: HeaderMap) -> Response {
         .into_iter()
         .map(|l| json!({ "delta": pay::fmt_minor(l.delta_minor), "kind": l.kind, "reference": l.reference, "at": l.at }))
         .collect();
+    let escrows: Vec<_> = app
+        .db
+        .with(|c| escrow::for_party(c, &identity))
+        .unwrap_or_default()
+        .iter()
+        .map(escrow::view)
+        .collect();
     Json(json!({
         "email": identity,
+        "escrows": escrows,
         "currency": app.cfg.currency,
         "balance": pay::fmt_minor(account.map(|a| a.balance_minor).unwrap_or(0)),
         "warrants": warrants,
@@ -236,5 +252,58 @@ async fn admin_credit(State(app): State<App>, headers: HeaderMap, Json(body): Js
     match res {
         Ok(bal) => Json(json!({ "balance": pay::fmt_minor(bal) })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+fn escrow_status(e: &escrow::EscrowError) -> StatusCode {
+    match e.error {
+        "verification_failed" | "revoked" => StatusCode::UNAUTHORIZED,
+        "no_grant" | "cap_exceeded" | "not_payer" | "not_party" | "not_adjudicator" | "counterparty_not_allowed" | "duration_exceeded" => StatusCode::FORBIDDEN,
+        "insufficient_funds" => StatusCode::PAYMENT_REQUIRED,
+        "not_found" => StatusCode::NOT_FOUND,
+        "already_locked" | "bad_state" => StatusCode::CONFLICT,
+        "bad_request" | "unsupported_currency" | "wrong_custodian" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn escrow_lock(State(app): State<App>, Json(req): Json<escrow::LockRequest>) -> Response {
+    match escrow::lock(&app.verify, &app.db, app.publisher.as_ref(), &app.cfg.origin, &app.cfg.currency, req).await {
+        Ok(e) => Json(json!({ "lock": escrow::view(&e) })).into_response(),
+        Err(e) => (escrow_status(&e), Json(e)).into_response(),
+    }
+}
+
+async fn escrow_get(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
+    match app.db.with(|c| escrow::get(c, &id)) {
+        Ok(Some(e)) => Json(escrow::view(&e)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PresentationBody {
+    presentation: String,
+}
+
+async fn escrow_acknowledge(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(b): Json<PresentationBody>) -> Response {
+    match escrow::acknowledge(&app.verify, &app.db, app.publisher.as_ref(), &id, &b.presentation).await {
+        Ok(e) => Json(escrow::view(&e)).into_response(),
+        Err(e) => (escrow_status(&e), Json(e)).into_response(),
+    }
+}
+
+async fn escrow_dispute(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(b): Json<PresentationBody>) -> Response {
+    match escrow::dispute(&app.verify, &app.db, &id, &b.presentation).await {
+        Ok((e, sealed)) => Json(json!({ "escrow": escrow::view(&e), "sealed_terms": sealed })).into_response(),
+        Err(e) => (escrow_status(&e), Json(e)).into_response(),
+    }
+}
+
+async fn escrow_ruling(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(req): Json<escrow::RulingRequest>) -> Response {
+    match escrow::ruling(&app.verify, &app.db, app.publisher.as_ref(), &app.cfg.origin, &id, req).await {
+        Ok(e) => Json(escrow::view(&e)).into_response(),
+        Err(e) => (escrow_status(&e), Json(e)).into_response(),
     }
 }
