@@ -316,7 +316,7 @@ async fn admin_credit(State(app): State<App>, headers: HeaderMap, Json(body): Js
 fn escrow_status(e: &escrow::EscrowError) -> StatusCode {
     match e.error {
         "verification_failed" | "revoked" => StatusCode::UNAUTHORIZED,
-        "no_grant" | "cap_exceeded" | "not_payer" | "not_party" | "not_adjudicator" | "counterparty_not_allowed" | "duration_exceeded" => StatusCode::FORBIDDEN,
+        "no_grant" | "cap_exceeded" | "not_payer" | "not_party" | "not_adjudicator" | "payee_bundle_invalid" | "counterparty_not_allowed" | "duration_exceeded" => StatusCode::FORBIDDEN,
         "insufficient_funds" => StatusCode::PAYMENT_REQUIRED,
         "not_found" => StatusCode::NOT_FOUND,
         "already_locked" | "bad_state" => StatusCode::CONFLICT,

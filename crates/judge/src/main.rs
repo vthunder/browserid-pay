@@ -195,7 +195,8 @@ fn err(code: StatusCode, msg: impl Into<String>) -> Response {
 /// then rule in the background.
 async fn api_dispute(State(app): State<App>, Json(body): Json<DisputeBody>) -> Response {
     let who = match app.verify.presentation(&body.presentation).await {
-        Ok(v) => v.email,
+        // Parties are acting identities (the agents), not their grantors.
+        Ok(v) => v.grantee,
         Err(e) => return err(StatusCode::UNAUTHORIZED, format!("verification failed: {e}")),
     };
     let id = body.contract_id.trim().to_string();

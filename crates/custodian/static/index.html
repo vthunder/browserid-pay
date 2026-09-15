@@ -64,9 +64,9 @@ async function refresh() {
   const es = $('escrows'); es.innerHTML = '';
   if (!me.escrows.length) es.innerHTML = '<div class="card mute">No agreements funded from this account yet.</div>';
   for (const e of me.escrows) {
-    const mine = e.payer === me.email;
+    const mine = e.payer_account === me.email;
     const el = document.createElement('div'); el.className = 'card';
-    el.innerHTML = `<div class="row"><span><code>${esc(e.id)}</code> <span class="mute">${mine ? 'you pay ' + esc(e.payee) : esc(e.payer) + ' pays you'}</span></span>
+    el.innerHTML = `<div class="row"><span><code>${esc(e.id)}</code> <span class="mute">${mine ? 'you pay ' + esc(e.payee_account) + ' (your agent ' + esc(e.payer) + ')' : esc(e.payer_account) + ' pays you (their agent ' + esc(e.payer) + ')'}</span></span>
       <span class="num"><b>${esc(e.price)}</b> <span class="mute">+ fees ${esc(e.fees.custodian)} / ${esc(e.fees.adjudicator)} + contribution ${esc(e.contribution.amount)}</span></span></div>
       <div class="mute" style="font-size:.85rem;margin-top:.3rem">${esc(e.state)}${e.outcome ? ' · ' + esc(e.outcome) : ''} · adjudicator <code>${esc(e.adjudicator)}</code> · locked ${when(e.locked_at)}${e.settled_at ? ' · settled ' + when(e.settled_at) : ''}</div>`;
     es.appendChild(el);

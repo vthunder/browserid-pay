@@ -206,8 +206,13 @@ export class Agreements {
     const adjudicator = st.adjudicator?.sealing_key ? st.adjudicator : await this.#adjudicatorFor(p);
     const sealed_terms = adjudicator?.sealing_key ? seal(canonicalize(st.terms), adjudicator.sealing_key) : null;
     const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
+    // The payee's bundle: its grantor is the account the price is released to.
+    const payeeIsProposer = p.roles.payee === p.parties.proposer;
+    const acc = payeeIsProposer ? null : await this.chain.get(agreementPath(id), "acceptance");
+    const acceptance_bundle = payeeIsProposer ? p.bundle : acc?.payload?.bundle;
+    if (!acceptance_bundle) throw new AgreementError("not_accepted", "no acceptance on chain yet");
     const body = {
-      presentation, proposal: p,
+      presentation, acceptance_bundle, proposal: p,
       price: st.terms.price, fees: st.terms.fees, contribution: p.contribution, sealed_terms,
     };
     return this.#custodian(p.custodian, "/api/escrow/lock", body);

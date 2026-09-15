@@ -23,7 +23,9 @@ const TARGET = process.env.CARGO_TARGET_DIR || join(homedir(), ".cache", "cargo-
 const BIN = (name) => join(TARGET, "debug", name);
 const PORTS = { idp: 3900, pay: 3300, judge: 3400 };
 const REPO = "sbo+raw://avail:turing:530/";
+// Humans (accounts) and their delegated agents (the parties on chain).
 const ALICE = "alice@x.test", BOB = "bob@y.test", JUDGE = "judge@dsp.test", ESCROW = "escrow@dsp.test", FUND = "fund@dsp.test";
+const ALICE_AGENT = "alice+agent@x.test", BOB_AGENT = "bob+agent@y.test";
 
 const children = [];
 const tmp = mkdtempSync(join(tmpdir(), "browserid-pay-demo-"));
@@ -119,9 +121,9 @@ async function main() {
   const escrowOf = (id) => getJson(`${payOrigin}/api/escrow/${id}`);
   // Balances via the ledger session: sign in as the human (a self login presentation).
   const balance = async (who) => {
-    const p = await who.agent.presentationFor(payOrigin, ["login"]);
+    const p = await who.agent.humanPresentationFor(payOrigin);
     const r = await fetch(`${payOrigin}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ presentation: p }) });
-    assert.ok(r.ok, `login as ${who.email}: ${r.status}`);
+    assert.ok(r.ok, `login as ${who.agent.human}: ${r.status}`);
     const cookie = r.headers.get("set-cookie").split(";")[0];
     const me = await fetch(`${payOrigin}/api/me`, { headers: { cookie } }).then((x) => x.json());
     return me;
@@ -133,29 +135,30 @@ async function main() {
   const TERMS = {
     title: "Summarize 10 papers",
     description: "Bob's agent summarizes ten papers alice's agent names; delivery is a commitment over the summaries sent off-chain.",
-    obligations: [{ by: BOB, what: "deliver ten summaries", deadline: Math.floor(Date.now() / 1000) + 7 * 86400 }],
+    obligations: [{ by: BOB_AGENT, what: "deliver ten summaries", deadline: Math.floor(Date.now() / 1000) + 7 * 86400 }],
     price: { amount: "50.00", currency: "USD" },
     evidence: "a delivery commitment over the summaries",
   };
 
   // ---- contract 1: settle ---------------------------------------------------------
   step("contract 1 — propose, accept, fund, deliver, settle");
-  const p1 = await alice.sdk.propose(TERMS, { acceptor: BOB });
+  const p1 = await alice.sdk.propose(TERMS, { acceptor: BOB_AGENT });
   log(`proposed ${p1.id}: total ${p1.terms.fees.custodian} + ${p1.terms.fees.adjudicator} fees, 1% contribution`);
   const cards = alice.agent.asked.filter((a) => a.audience !== payOrigin); // (the ledger sign-in above was a login card)
   assert.deepEqual(cards.map((a) => a.audience), [`${REPO.replace(/\/+$/, "")}/agreements/${p1.id}`, REPO], "two cards: the contract, then the standing ledger-write");
   assert.deepEqual(cards[0].scopes[0].cap, { amount: "56.00", currency: "USD" });
-  assert.deepEqual(cards[0].scopes[0].counterparties, [BOB]);
-  assert.equal(daemon.get(`/agreements/${p1.id}/`, "proposal").creator, ALICE);
+  assert.deepEqual(cards[0].scopes[0].counterparties, [BOB_AGENT]);
+  assert.equal(daemon.get(`/agreements/${p1.id}/`, "proposal").creator, ALICE_AGENT, "authored by the agent, not the human");
 
   await bob.sdk.accept(p1.id, p1.terms);
-  assert.equal(daemon.get(`/agreements/${p1.id}/`, "acceptance").creator, BOB);
+  assert.equal(daemon.get(`/agreements/${p1.id}/`, "acceptance").creator, BOB_AGENT);
   assert.equal((await bob.sdk.status(p1.id)).stage, "binding");
   log("accepted (binding)");
 
   const lock = await alice.sdk.fund(p1.id);
   assert.equal(lock.lock.state, "locked");
   assert.equal(lock.lock.price, "50.00");
+  assert.deepEqual([lock.lock.payer, lock.lock.payer_account, lock.lock.payee, lock.lock.payee_account], [ALICE_AGENT, ALICE, BOB_AGENT, BOB], "parties are the agents, accounts their humans");
   assert.equal((await balance(alice)).balance, "44.00", "100 − (50 + 0.50 + 5.00 + 0.50) locked");
   log("funded: alice 44.00 (56.00 in escrow)");
 
@@ -174,7 +177,7 @@ async function main() {
   // ---- contract 2: dispute --------------------------------------------------------
   step("contract 2 — propose, accept, fund, deliver, dispute, ruling");
   await credit(ALICE, "100.00");
-  const p2 = await alice.sdk.propose(TERMS, { acceptor: BOB });
+  const p2 = await alice.sdk.propose(TERMS, { acceptor: BOB_AGENT });
   await bob.sdk.accept(p2.id, p2.terms);
   // Not enough for a second lock without the top-up: 149 − 56 = 93.
   await alice.sdk.fund(p2.id);
@@ -194,7 +197,7 @@ async function main() {
   assert.equal(kase.ruling.outcome, "split");
   const rulingObj = daemon.get(`/agreements/${p2.id}/`, "ruling");
   assert.equal(rulingObj?.creator, JUDGE, "ruling object on chain, attributed to the judge");
-  assert.equal(daemon.get(`/${JUDGE}/attestations/${ALICE}/`, "agreement:ruled")?.creator, JUDGE, "attestation on alice");
+  assert.equal(daemon.get(`/${JUDGE}/attestations/${ALICE_AGENT}/`, "agreement:ruled")?.creator, JUDGE, "attestation on the agent that was a party");
   const e2 = await escrowOf(p2.id);
   assert.equal(e2.state, "settled");
   assert.equal(e2.outcome, "ruled:split");

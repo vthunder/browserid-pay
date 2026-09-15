@@ -48,8 +48,12 @@ impl Publisher for Log {
 pub struct Escrow {
     pub id: String,
     pub state: String,
+    /// The acting identities named in the proposal (the agents).
     pub payer: String,
     pub payee: String,
+    /// Whose money: the grantor behind each party's contract warrant.
+    pub payer_account: String,
+    pub payee_account: String,
     pub adjudicator: String,
     pub price_minor: i64,
     pub custodian_fee_minor: i64,
@@ -87,10 +91,16 @@ pub fn schema(c: &Connection) -> anyhow::Result<()> {
            locked_at INTEGER NOT NULL,
            settled_at INTEGER,
            outcome TEXT,
-           ruling TEXT
+           ruling TEXT,
+           payer_account TEXT NOT NULL DEFAULT '',
+           payee_account TEXT NOT NULL DEFAULT ''
          );
          CREATE INDEX IF NOT EXISTS escrows_party ON escrows(payer, payee);",
     )?;
+    // Rows created before accounts were separate from parties.
+    for col in ["payer_account", "payee_account"] {
+        let _ = c.execute(&format!("ALTER TABLE escrows ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"), []);
+    }
     Ok(())
 }
 
@@ -112,16 +122,18 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Escrow> {
         locked_at: r.get(13)?,
         settled_at: r.get(14)?,
         outcome: r.get(15)?,
+        payer_account: r.get(16)?,
+        payee_account: r.get(17)?,
     })
 }
-const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome";
+const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome, payer_account, payee_account";
 
 pub fn get(c: &Connection, id: &str) -> anyhow::Result<Option<Escrow>> {
     Ok(c.query_row(&format!("SELECT {COLS} FROM escrows WHERE id=?1"), params![id], row).optional()?)
 }
 
 pub fn for_party(c: &Connection, identity: &str) -> anyhow::Result<Vec<Escrow>> {
-    let mut st = c.prepare(&format!("SELECT {COLS} FROM escrows WHERE payer=?1 OR payee=?1 ORDER BY locked_at DESC"))?;
+    let mut st = c.prepare(&format!("SELECT {COLS} FROM escrows WHERE payer=?1 OR payee=?1 OR payer_account=?1 OR payee_account=?1 ORDER BY locked_at DESC"))?;
     let v = st.query_map(params![identity], row)?.collect::<Result<Vec<_>, _>>()?;
     Ok(v)
 }
@@ -178,6 +190,11 @@ pub struct LockRequest {
     pub contribution: Value,
     #[serde(default)]
     pub sealed_terms: Option<String>,
+    /// The payee's presentation for the contract audience — the `bundle`
+    /// field of the on-chain acceptance (or of the proposal when the
+    /// proposer is the payee). Its grantor is the account the price goes to.
+    #[serde(default)]
+    pub acceptance_bundle: Option<String>,
     /// Latest obligation deadline (unix), so `max_duration` can be checked
     /// without reading the sealed terms.
     #[serde(default)]
@@ -192,8 +209,10 @@ fn proposal_str<'a>(p: &'a Value, path: &[&str]) -> Result<&'a str, EscrowError>
     v.as_str().ok_or_else(|| err("bad_request", format!("proposal.{} must be a string", path.join("."))))
 }
 
-/// Verify the caller's presentation for the contract audience and return
-/// (identity, scope entries).
+/// Verify a presentation for `audience` and return
+/// (grantor = the account behind it, grantee = the acting identity, scope
+/// entries, warrant key). Parties in a proposal are acting identities
+/// (agents); money belongs to their grantors.
 async fn caller(verify: &Verify, audience: &str, presentation: &str) -> Result<(String, String, Vec<ScopeEntry>, Option<String>), EscrowError> {
     let v = verify.presentation_for(audience, presentation).await.map_err(|e| {
         if e.contains("revoked") { err("revoked", e) } else { err("verification_failed", e) }
@@ -228,12 +247,22 @@ pub async fn lock(
         return Err(err("bad_request", "roles must be the two parties"));
     }
     let audience = contract_audience(&id);
-    let (identity, grantee, scopes, warrant_key) = caller(verify, &audience, &req.presentation).await?;
-    if identity != payer {
-        return Err(err("not_payer", format!("{identity} is not the payer")));
+    let (payer_account, actor, scopes, warrant_key) = caller(verify, &audience, &req.presentation).await?;
+    if actor != payer {
+        return Err(err("not_payer", format!("{actor} is not the payer")));
     }
     let Some(warrant_key) = warrant_key else { return Err(err("no_grant", "warrant has no status ref")) };
     let grant = contract_grant(&scopes)?;
+    // The payee's side: its bundle names the account the price is released to.
+    let Some(acceptance_bundle) = req.acceptance_bundle.as_deref() else {
+        return Err(err("bad_request", "acceptance_bundle (the payee's presentation for the contract) is required"));
+    };
+    let (payee_account, payee_actor, payee_scopes, _) = caller(verify, &audience, acceptance_bundle).await
+        .map_err(|e| EscrowError { error: "payee_bundle_invalid", detail: e.detail })?;
+    if payee_actor != payee {
+        return Err(err("payee_bundle_invalid", format!("{payee_actor} is not the payee")));
+    }
+    contract_grant(&payee_scopes).map_err(|_| err("payee_bundle_invalid", "no contract:agreement scope"))?;
     if grant.currency != deployment_currency {
         return Err(err("unsupported_currency", format!("cap is in {}", grant.currency)));
     }
@@ -269,17 +298,17 @@ pub async fn lock(
                 return Ok(Err(err("already_locked", id.clone())));
             }
             let reference = format!("escrow:{id}");
-            if Db::adjust(&tx, &payer, deployment_currency, -total, "escrow_lock", Some(&reference)).is_err() {
+            if Db::adjust(&tx, &payer_account, deployment_currency, -total, "escrow_lock", Some(&reference)).is_err() {
                 return Ok(Err(EscrowError { error: "insufficient_funds", detail: None }));
             }
             tx.execute(
-                "INSERT INTO escrows(id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, warrant_key, locked_at)
-                 VALUES(?1,'locked',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-                params![id, payer, payee, adjudicator, price, custodian_fee, adjudicator_fee, contribution, contribution_recipient, deployment_currency, req.sealed_terms, p.to_string(), warrant_key, now],
+                "INSERT INTO escrows(id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, warrant_key, locked_at, payer_account, payee_account)
+                 VALUES(?1,'locked',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                params![id, payer, payee, adjudicator, price, custodian_fee, adjudicator_fee, contribution, contribution_recipient, deployment_currency, req.sealed_terms, p.to_string(), warrant_key, now, payer_account, payee_account],
             )?;
             Db::insert_receipt(
                 &tx,
-                &Receipt { id: reference, kind: "escrow:lock".into(), grantor: payer.clone(), grantee: grantee.clone(), warrant_key: Some(warrant_key.clone()), amount_minor: total, currency: deployment_currency.into(), payee: Some(payee.clone()), memo: Some(id.clone()), at: now },
+                &Receipt { id: reference, kind: "escrow:lock".into(), grantor: payer_account.clone(), grantee: actor.clone(), warrant_key: Some(warrant_key.clone()), amount_minor: total, currency: deployment_currency.into(), payee: Some(payee.clone()), memo: Some(id.clone()), at: now },
             )?;
             let e = get(&tx, &id)?.expect("just inserted");
             tx.commit()?;
@@ -297,10 +326,10 @@ pub fn contract_audience(id: &str) -> String {
 /// Payer acknowledges delivery: price → payee, fees → custodian and (unused)
 /// adjudicator fee back to payer, contribution → recipient.
 pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id: &str, presentation: &str) -> Result<Escrow, EscrowError> {
-    let (identity, _, _, _) = caller(verify, &contract_audience(id), presentation).await?;
+    let (_, actor, _, _) = caller(verify, &contract_audience(id), presentation).await?;
     let e = settle(db, id, |e| {
-        if identity != e.payer {
-            return Err(err("not_payer", identity.clone()));
+        if actor != e.payer {
+            return Err(err("not_payer", actor.clone()));
         }
         if e.state != "locked" && e.state != "disputed" {
             return Err(err("bad_state", e.state.clone()));
@@ -314,11 +343,11 @@ pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id
 /// Either party opens a dispute: the escrow freezes and the sealed terms are
 /// handed back for delivery to the adjudicator.
 pub async fn dispute(verify: &Verify, db: &Db, id: &str, presentation: &str) -> Result<(Escrow, Option<String>), EscrowError> {
-    let (identity, _, _, _) = caller(verify, &contract_audience(id), presentation).await?;
+    let (_, actor, _, _) = caller(verify, &contract_audience(id), presentation).await?;
     db.with(|c| {
         let Some(e) = get(c, id)? else { return Ok(Err(err("not_found", id))) };
-        if identity != e.payer && identity != e.payee {
-            return Ok(Err(err("not_party", identity)));
+        if actor != e.payer && actor != e.payee {
+            return Ok(Err(err("not_party", actor)));
         }
         if e.state != "locked" {
             return Ok(Err(err("bad_state", e.state)));
@@ -340,7 +369,7 @@ pub struct RulingRequest {
 /// The named adjudicator rules; honored once, only from that identity,
 /// authenticated by its own presentation for the custodian's audience.
 pub async fn ruling(verify: &Verify, db: &Db, publisher: &dyn Publisher, origin: &str, id: &str, req: RulingRequest) -> Result<Escrow, EscrowError> {
-    let (identity, _, _, _) = caller(verify, origin, &req.presentation).await?;
+    let (_, actor, _, _) = caller(verify, origin, &req.presentation).await?;
     let outcome = req.ruling.get("outcome").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let split = req.ruling.get("split").cloned();
     let fee = req.ruling.get("fee").and_then(|v| v.as_str()).unwrap_or("escrow").to_string();
@@ -348,8 +377,8 @@ pub async fn ruling(verify: &Verify, db: &Db, publisher: &dyn Publisher, origin:
     let db2 = db.clone();
     let idc = id.to_string();
     let r = settle(db, id, |e| {
-        if identity != e.adjudicator {
-            return Err(err("not_adjudicator", identity.clone()));
+        if actor != e.adjudicator {
+            return Err(err("not_adjudicator", actor.clone()));
         }
         if e.state != "disputed" && e.state != "locked" {
             return Err(err("bad_state", e.state.clone()));
@@ -414,8 +443,8 @@ fn settle(db: &Db, id: &str, decide: impl FnOnce(&Escrow) -> Result<Settlement, 
                 }
                 Ok(())
             };
-            pay_out(&e.payee, s.to_payee, "escrow_release")?;
-            pay_out(&e.payer, s.to_payer, "escrow_refund")?;
+            pay_out(&e.payee_account, s.to_payee, "escrow_release")?;
+            pay_out(&e.payer_account, s.to_payer, "escrow_refund")?;
             pay_out(&e.adjudicator, s.to_adjudicator, "adjudicator_fee")?;
             pay_out("custodian", e.custodian_fee_minor, "custodian_fee")?;
             if let Some(r) = &e.contribution_recipient {
@@ -427,7 +456,7 @@ fn settle(db: &Db, id: &str, decide: impl FnOnce(&Escrow) -> Result<Settlement, 
             )?;
             Db::insert_receipt(
                 &tx,
-                &Receipt { id: format!("{reference}:settle"), kind: format!("escrow:{}", s.outcome), grantor: e.payer.clone(), grantee: e.payer.clone(), warrant_key: None, amount_minor: s.to_payee, currency: cur, payee: Some(e.payee.clone()), memo: Some(id.to_string()), at: now },
+                &Receipt { id: format!("{reference}:settle"), kind: format!("escrow:{}", s.outcome), grantor: e.payer_account.clone(), grantee: e.payer.clone(), warrant_key: None, amount_minor: s.to_payee, currency: cur, payee: Some(e.payee_account.clone()), memo: Some(id.to_string()), at: now },
             )?;
             let e = get(&tx, id)?.expect("exists");
             tx.commit()?;
@@ -443,7 +472,8 @@ async fn publish_settled(publisher: &dyn Publisher, e: &Escrow) {
 
 pub fn view(e: &Escrow) -> Value {
     json!({
-        "id": e.id, "state": e.state, "payer": e.payer, "payee": e.payee, "adjudicator": e.adjudicator,
+        "id": e.id, "state": e.state, "payer": e.payer, "payee": e.payee,
+        "payer_account": e.payer_account, "payee_account": e.payee_account, "adjudicator": e.adjudicator,
         "price": crate::pay::fmt_minor(e.price_minor),
         "fees": { "custodian": crate::pay::fmt_minor(e.custodian_fee_minor), "adjudicator": crate::pay::fmt_minor(e.adjudicator_fee_minor) },
         "contribution": { "amount": crate::pay::fmt_minor(e.contribution_minor), "recipient": e.contribution_recipient },
@@ -493,9 +523,9 @@ mod tests {
 
     fn proposal(id: &str) -> Value {
         json!({ "v": 1, "id": id, "mode": "commitment", "commitment": "sha256:00",
-            "parties": { "proposer": "alice@x.test", "acceptor": "bob@y.test" },
-            "roles": { "payer": "alice@x.test", "payee": "bob@y.test" },
-            "adjudicator": "judge@dsp.test", "custodian": ORIGIN,
+            "parties": { "proposer": "alice+agent@x.test", "acceptor": "bob+agent@y.test" },
+            "roles": { "payer": "alice+agent@x.test", "payee": "bob+agent@y.test" },
+            "adjudicator": "judge+agent@dsp.test", "custodian": ORIGIN,
             "contribution": { "recipient": "fund@dsp.test", "percentage": 1.0 }, "expires": 4_000_000_000i64 })
     }
 
@@ -514,6 +544,7 @@ mod tests {
         let aud = contract_audience(id);
         LockRequest {
             presentation: presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &aud, vec![contract_scope(cap, counterparties)], 1),
+            acceptance_bundle: Some(presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", &aud, vec![contract_scope("60.00", None)], 9)),
             proposal: proposal(id), price: json!("50.00"), fees: json!({ "custodian": "0.50", "adjudicator": "5.00" }),
             contribution: json!({ "recipient": "fund@dsp.test", "percentage": 1.0 }), sealed_terms: Some("sealed".into()), latest_deadline: None,
         }
@@ -526,6 +557,15 @@ mod tests {
         let s = setup();
         let e = lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_1", "60.00", None)).await.unwrap();
         assert_eq!(e.state, "locked");
+        assert_eq!((e.payer.as_str(), e.payer_account.as_str()), ("alice+agent@x.test", "alice@x.test"));
+        assert_eq!((e.payee.as_str(), e.payee_account.as_str()), ("bob+agent@y.test", "bob@y.test"));
+        // The lock needs the payee's bundle, and it must be the payee's.
+        let mut r = lock_req(&s, "agr_9", "60.00", None);
+        r.acceptance_bundle = None;
+        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", r).await.err().unwrap().error, "bad_request");
+        let mut r = lock_req(&s, "agr_9", "60.00", None);
+        r.acceptance_bundle = Some(presentation(&s.issuer, "carol@z.test", "carol+agent@z.test", &contract_audience("agr_9"), vec![contract_scope("60.00", None)], 8));
+        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", r).await.err().unwrap().error, "payee_bundle_invalid");
         // 50 + 0.50 + 5 + 1% of 50 (0.50) = 56.00 locked
         assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600);
         // Locking twice is refused.
@@ -536,11 +576,12 @@ mod tests {
         let e = acknowledge(&s.verify, &s.db, &Log, "agr_1", &ack).await.unwrap();
         assert_eq!(e.state, "settled");
         assert_eq!(e.outcome.as_deref(), Some("acknowledged"));
-        assert_eq!(bal(&s, "bob@y.test"), 5_000);
+        assert_eq!(bal(&s, "bob@y.test"), 5_000, "the price lands on bob's human");
+        assert_eq!(bal(&s, "bob+agent@y.test"), 0, "never on the agent");
         assert_eq!(bal(&s, "custodian"), 50);
         assert_eq!(bal(&s, "fund@dsp.test"), 50);
-        assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600 + 500, "unused adjudicator fee returned");
-        assert_eq!(bal(&s, "judge@dsp.test"), 0);
+        assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600 + 500, "unused adjudicator fee returned to alice's human");
+        assert_eq!(bal(&s, "judge+agent@dsp.test"), 0);
     }
 
     #[tokio::test]
@@ -567,15 +608,20 @@ mod tests {
         assert_eq!(sealed.as_deref(), Some("sealed"));
         // A stranger's ruling is refused; the named adjudicator's is honored once.
         let stranger = presentation(&s.issuer, "someone@z.test", "someone@z.test", ORIGIN, vec![ScopeEntry::Bare("login".into())], 4);
+        // The judge's HUMAN (its grantor) is not the adjudicator either — the acting identity is.
+        let judges_human = presentation(&s.issuer, "dan@dsp.test", "dan@dsp.test", ORIGIN, vec![ScopeEntry::Bare("login".into())], 6);
         let rr = |p: &str| RulingRequest { presentation: p.into(), ruling: json!({ "outcome": "split", "split": { "payee": "30.00", "payer": "20.00" }, "fee": "escrow", "reasoning": "partial delivery" }) };
         assert_eq!(ruling(&s.verify, &s.db, &Log, ORIGIN, "agr_4", rr(&stranger)).await.err().unwrap().error, "not_adjudicator");
-        let judge = presentation(&s.issuer, "judge@dsp.test", "judge@dsp.test", ORIGIN, vec![ScopeEntry::Bare("login".into())], 5);
+        assert_eq!(ruling(&s.verify, &s.db, &Log, ORIGIN, "agr_4", rr(&judges_human)).await.err().unwrap().error, "not_adjudicator");
+        // The judge is a delegated agent: dan@dsp.test granted judge+agent@dsp.test.
+        let judge = presentation(&s.issuer, "dan@dsp.test", "judge+agent@dsp.test", ORIGIN, vec![ScopeEntry::Bare("ruling".into())], 5);
         let e = ruling(&s.verify, &s.db, &Log, ORIGIN, "agr_4", rr(&judge)).await.unwrap();
         assert_eq!(e.state, "settled");
         assert_eq!(e.outcome.as_deref(), Some("ruled:split"));
-        assert_eq!(bal(&s, "bob@y.test"), 3_000);
-        assert_eq!(bal(&s, "judge@dsp.test"), 500);
-        assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600 + 2_000);
+        assert_eq!(bal(&s, "bob@y.test"), 3_000, "payee share to bob's human");
+        assert_eq!(bal(&s, "judge+agent@dsp.test"), 500, "the adjudicator is paid as named");
+        assert_eq!(bal(&s, "dan@dsp.test"), 0);
+        assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600 + 2_000, "payer share to alice's human");
         assert_eq!(ruling(&s.verify, &s.db, &Log, ORIGIN, "agr_4", rr(&judge)).await.err().unwrap().error, "bad_state");
     }
 }
