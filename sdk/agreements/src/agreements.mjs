@@ -141,7 +141,20 @@ export class Agreements {
    */
   async propose(terms, o) {
     if (!o?.acceptor) throw new Error("acceptor required");
-    const id = newId();
+    // A retry (e.g. after a human approval) must resume the SAME proposal: the
+    // contract warrant is bound to the id. Callers pass `o.id`/`o.salt` back;
+    // any failure carries `e.resume = { id, salt }` for that purpose.
+    const id = o.id || newId();
+    const salt = o.salt || randomBytes(32).toString("base64url");
+    try {
+      return await this.#proposeWith(id, salt, terms, o);
+    } catch (e) {
+      if (e && typeof e === "object") e.resume = { id, salt };
+      throw e;
+    }
+  }
+
+  async #proposeWith(id, salt, terms, o) {
     const disc = await this.discover();
     const adjudicator = o.adjudicator || disc.adjudicators[0];
     const custodian = o.custodian || disc.custodians[0];
@@ -151,7 +164,7 @@ export class Agreements {
     const payer = o.payer || this.email;
     const payee = payer === this.email ? o.acceptor : this.email;
     const fees = { custodian: terms.fees?.custodian ?? custodian.price?.amount ?? "0.00", adjudicator: terms.fees?.adjudicator ?? adjudicator.price?.amount ?? "0.00" };
-    const full = { v: 1, id, salt: randomBytes(32).toString("base64url"), ...terms, fees, contribution: { recipient: contribution.recipient, percentage: contribution.percentage } };
+    const full = { v: 1, id, salt, ...terms, fees, contribution: { recipient: contribution.recipient, percentage: contribution.percentage } };
     const com = commitment(full);
     const totalMinor = totalOf(full);
     const currency = full.price.currency;

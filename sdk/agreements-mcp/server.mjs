@@ -9,6 +9,7 @@
 //      SBO_DAEMON (https://da.sandmill.org), SBO_REPO (sbo+raw://avail:turing:530/),
 //      AGREEMENTS_TERMS_DIR (~/.browserid-agreements). Chain writes go through the daemon; no chain key.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -78,6 +79,7 @@ function sdk() {
 }
 
 const pending = new Map();
+const proposals = new Map(); // args-hash -> { id, salt } of a proposal awaiting approval
 class NeedsApproval extends Error {
   constructor(urls) { super("needs approval"); this.urls = urls; }
 }
@@ -113,7 +115,21 @@ server.registerTool("propose", {
   title: "Propose an agreement",
   description: "Draft terms and post a proposal on the browserid-pay ledger. Returns the id and the FULL terms (with salt) that you must send to the counterparty off-chain — they need them to accept. Asks the human to approve a contract warrant (cap = price + fees + contribution) if none is held.",
   inputSchema: { ...TERMS, acceptor: z.string().describe("counterparty identity (email)"), payer: z.string().optional().describe("who pays; default: me"), expires: z.number().optional(), mode: z.enum(["commitment", "public"]).optional() },
-}, ({ acceptor, payer, expires, mode, ...terms }) => run((a) => a.propose(terms, { acceptor, payer, expires, mode })));
+}, (args) => run(async (a) => {
+  // Same arguments ⇒ same proposal (id + salt), so a retry after the human's
+  // approval resumes instead of minting a fresh id that no warrant matches.
+  const { acceptor, payer, expires, mode, ...terms } = args;
+  const key = createHash("sha256").update(JSON.stringify(args)).digest("hex");
+  const resume = proposals.get(key) || {};
+  try {
+    const out = await a.propose(terms, { acceptor, payer, expires, mode, ...resume });
+    proposals.delete(key);
+    return out;
+  } catch (e) {
+    if (e instanceof NeedsApproval && e.resume) proposals.set(key, e.resume);
+    throw e;
+  }
+}));
 
 server.registerTool("accept", {
   title: "Accept a proposal",
