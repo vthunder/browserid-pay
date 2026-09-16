@@ -94,6 +94,31 @@ observed in production.
    approves at browserid.me becomes `judge@…`, and the judge posts its
    provider listing (price, sealing key) to `/providers/adjudicators/<identity>/listing`.
 
+### Driving it with a loop
+
+The agents can run the back-and-forth themselves. `next_step` answers *what
+should I do now* from real state (chain, custodian, obligations), so the prompt
+carries only the goal:
+
+```
+alice:  /loop 60s Follow the agreement workflow to get danmills+bob@sandmill.org
+                 to summarize ten papers I'll send, $50, delivered within a week.
+bob:    /loop 60s Follow the agreement workflow.
+```
+
+Only the initiator needs a goal; the responding side passes none. The workflow
+rules (do one step then stop; an approval link means show it and stop; the same
+tool called again after approval resumes) ship as the MCP server's
+`instructions`, so they do not belong in the prompt.
+
+You still approve cards — roughly one each at propose / accept / fund. Both
+agents will sit on `action: "none"` while waiting, which is the correct answer,
+so a quiet loop is not a stuck one. Relay limits are generous for this: 120
+requests/minute per IP and 60 *messages* per hour per sender, and
+`check_messages` is a read that does not count against the message limit.
+
+The table below is the same walkthrough driven by hand, one prompt per step.
+
 ### Contract 1 — settle
 
 The agents talk to each other through the relay (`send_message` /

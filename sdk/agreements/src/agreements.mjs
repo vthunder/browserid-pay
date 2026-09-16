@@ -500,6 +500,136 @@ export class Agreements {
 
   // ---- status ------------------------------------------------------------------
 
+  /**
+   * Agreement ids I am a party to. Asks the indexer's reverse index first, and
+   * falls back to scanning `/agreements/` on chain — so an agent can follow its
+   * own workflow with no indexer at all, just more slowly.
+   */
+  async mine() {
+    try {
+      const r = await this.http(`${this.index}/v1/agreements?party=${encodeURIComponent(this.email)}`);
+      if (r.ok) {
+        const j = await r.json();
+        const ids = (j.results || []).map((x) => x.id || x.agreement).filter(Boolean);
+        if (ids.length) return ids;
+      }
+    } catch {}
+    const objs = await this.chain.list("/agreements/").catch(() => []);
+    const ids = [];
+    for (const o of objs) {
+      if (o.id !== "proposal") continue;
+      const pr = o.payload || {};
+      const parties = [pr.parties?.proposer, pr.parties?.acceptor];
+      if (!parties.includes(this.email)) continue;
+      const m = /^\/agreements\/([^/]+)\//.exec(o.path || "");
+      if (m) ids.push(m[1]);
+    }
+    return ids;
+  }
+
+  /**
+   * The single next thing *I* should do, across every agreement I am party to.
+   *
+   * Read-only: it never consumes messages (that is `check_messages`, which
+   * advances the read cursor) and never writes. When a step depends on
+   * something that arrives off-chain — the full terms an acceptor needs — it
+   * returns `check_messages` rather than guessing.
+   *
+   * Returns `{ action, agreement?, why, then? }`. `action: "none"` means there
+   * is genuinely nothing to do, which is the normal answer while waiting on the
+   * other side.
+   */
+  async nextStep({ goal } = {}) {
+    const ids = await this.mine().catch(() => []);
+    const open = [];
+    for (const id of ids) {
+      const st = await this.status(id).catch(() => null);
+      if (st && !["settled", "ruled"].includes(st.stage)) open.push({ id, st });
+    }
+
+    if (!open.length) {
+      if (goal?.acceptor) {
+        return { action: "propose", why: `no open agreement with ${goal.acceptor}; the goal says to start one`, goal,
+                 then: "send the acceptor the id and the FULL terms with send_message — they cannot accept without them" };
+      }
+      return { action: "none", why: ids.length ? "every agreement I am party to is finished" : "no agreements, and no goal was given" };
+    }
+
+    // Oldest open agreement first: finish what is started before anything else.
+    for (const { id, st } of open.reverse()) {
+      const step = await this.#stepFor(id, st).catch((e) => ({ action: "none", why: `could not read ${id}: ${e.message}` }));
+      if (step.action !== "none") return { agreement: id, ...step };
+    }
+    return { action: "none", why: "waiting on the other party", agreements: open.map((o) => ({ id: o.id, stage: o.st.stage })) };
+  }
+
+  async #stepFor(id, st) {
+    const p = await this.#proposal(id);
+    const parties = p?.parties || {};
+    const roles = p?.roles || {};
+    const me = this.email;
+    const iAmPayer = roles.payer === me;
+    const iAmAcceptor = parties.acceptor === me;
+
+    if (st.stage === "disputed") {
+      // Prefer the judge's own case view (it carries the response window), but
+      // fall back to chain evidence so a judge that is down or slow does not
+      // leave the disputed party with nothing to do.
+      const ev = st.evidence || [];
+      const disputedBy = st.dispute?.disputed_by ?? ev.find((e) => e.kind === "dispute")?.by ?? null;
+      const iResponded = ev.some((e) => e.kind === "response" && e.by === me);
+      const mustRespond = st.dispute?.you_must_respond ?? (disputedBy != null && disputedBy !== me && !iResponded);
+      if (mustRespond) {
+        const by = st.dispute?.respond_by ? ` by ${st.dispute.respond_by}` : "";
+        return { action: "respond", why: `disputed by ${disputedBy}; I must respond${by}`,
+                 then: "reveal the delivered content so the judge can check it against my commitment" };
+      }
+      return { action: "none", why: "disputed; the judge rules once the response window closes" };
+    }
+    if (st.stage === "proposed") {
+      if (!iAmAcceptor) return { action: "none", why: "proposed; waiting for the acceptor" };
+      const haveTerms = !!this.terms.get(id)?.terms || !!p?.terms;
+      return haveTerms
+        ? { action: "accept", why: `${parties.proposer} proposed this and I am the acceptor`,
+            then: "tell the proposer you accepted with send_message" }
+        : { action: "check_messages", why: "I am the acceptor but do not hold the full terms yet; they arrive off-chain" };
+    }
+    // Funded is the custodian's escrow record, not the on-chain lock: the
+    // custodian posts that object asynchronously, so the chain lags the truth.
+    if (!st.escrow) {
+      return iAmPayer
+        ? { action: "fund", why: "accepted and not funded; I am the payer" }
+        : { action: "none", why: "accepted; waiting for the payer to fund the escrow" };
+    }
+    {
+      const obs = await this.obligations(id).catch(() => []);
+      const mineUnmet = obs.filter((o) => o.by === me && o.state !== "met");
+      const input = mineUnmet.find((o) => o.kind === "input" && o.state !== "handed_off");
+      if (input) {
+        return { action: "handoff", why: `my input obligation "${input.what}" is ${input.state}`,
+                 obligation: input.index, then: "send the material itself with send_message; the handoff posts only a commitment" };
+      }
+      const toReceive = obs.find((o) => o.kind === "input" && o.by !== me && o.state === "handed_off");
+      if (toReceive) {
+        return { action: "acknowledge_receipt", why: `${toReceive.by} handed off "${toReceive.what}" and the receipt is outstanding`,
+                 obligation: toReceive.index };
+      }
+      const deliverable = mineUnmet.find((o) => o.kind === "deliverable" && ["pending", "late"].includes(o.state));
+      if (deliverable) {
+        return { action: "deliver", why: `my deliverable "${deliverable.what}" is ${deliverable.state}`,
+                 obligation: deliverable.index, then: "tell the other party with send_message" };
+      }
+      const delivered = (st.evidence || []).some((e) => e.kind === "delivery");
+      if (delivered && iAmPayer) {
+        return { action: "settle", why: "the deliverable is in and I am the payer" };
+      }
+      const blocked = mineUnmet.find((o) => o.state === "blocked");
+      if (blocked) return { action: "none", why: `my "${blocked.what}" is blocked on obligation ${blocked.depends_on}` };
+      return { action: "none", why: "nothing outstanding on my side" };
+    }
+    return { action: "none", why: `stage ${st.stage}` };
+  }
+
   async status(id) {
     const path = agreementPath(id);
     const [proposal, acceptance, lock, ruling, evidence] = await Promise.all([
