@@ -119,7 +119,25 @@ writes are valid. The daemon's rev is `SBO_REV` in mingo
 `deploy/sbo-daemon/Dockerfile`.
 
 Publish a policy change with `make policy-update` (`--dry-run` first); the sys
-key holds `govern` on `/**`, so this never needs a regenesis.
+key holds `govern` on `/**`, so this never needs a regenesis. Republish
+`/sys/contribution` separately with `dsp-genesis contribution-update` — the two
+objects are independent, and changing the floor without the suggestion leaves
+them inconsistent.
+
+**A published policy is not an enforced policy until the daemon has synced to
+it.** `policy-update` submits through the daemon's queue (a batch to TurboDA,
+finalized a minute or two later), and the daemon validates against its *own
+confirmed state* plus the mempool. Between leaving the mempool and being
+replayed from the chain, the new policy is in neither, so the OLD one governs.
+After a redeploy the daemon replays from its last checkpoint and can be
+thousands of blocks behind — watch `Processed block N` in
+`dokku logs sbo-daemon` and wait for it to pass the block `policy-update`
+reported.
+
+Verify enforcement with `dsp-genesis policy-probe`, which submits a proposal
+that breaches the floor and expects a refusal. A refused write never lands, so
+a passing probe leaves nothing behind — but a probe run against a lagging
+daemon reports a false failure *and* leaves a junk proposal on chain.
 
 **The gap, stated plainly.** The design says "evidence by the two parties,
 `ruling` by the named adjudicator, `lock` by the named custodian". The policy

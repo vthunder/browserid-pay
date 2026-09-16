@@ -115,6 +115,45 @@ enum Commands {
         #[arg(long)]
         direct: bool,
     },
+    /// Verify the chain-enforced contribution floor by submitting a proposal
+    /// that BREACHES it and asserting the daemon refuses. A refused write never
+    /// reaches the chain, so a passing probe leaves nothing behind. Exits
+    /// non-zero if the write is ACCEPTED.
+    ///
+    /// **Only meaningful once the daemon has synced past the block carrying the
+    /// policy.** The daemon validates against its own confirmed state plus the
+    /// mempool; while it is replaying, a freshly published policy is neither, so
+    /// the OLD policy governs and this probe reports a false failure — and does
+    /// leave a junk proposal behind. Check `Processed block N` in the daemon log
+    /// against the block `policy-update` reported before trusting a failure.
+    PolicyProbe {
+        #[arg(long, default_value = "~/secure-backup/dsp-sys.key")]
+        key_file: String,
+        #[arg(long, default_value = DEFAULT_DAEMON)]
+        daemon: String,
+        #[arg(long, default_value = "sbo+raw://avail:turing:530/")]
+        repo: String,
+        /// Contribution percentage to claim. The default breaches the 0.01 floor.
+        #[arg(long, default_value_t = 0.0)]
+        percentage: f64,
+    },
+    /// Republish `/sys/contribution` (the suggested contribution and the
+    /// policy-enforced minimum). A governed update like `policy-update`; the
+    /// root policy is NOT touched, so run both after changing the floor.
+    ContributionUpdate {
+        #[arg(long, default_value = "~/secure-backup/dsp-sys.key")]
+        key_file: String,
+        #[arg(long, default_value = DEFAULT_DAEMON)]
+        daemon: String,
+        #[arg(long, default_value = "sbo+raw://avail:turing:530/")]
+        repo: String,
+        #[arg(long, default_value = "fund@dsp.fyi")]
+        recipient: String,
+        #[arg(long, default_value_t = 0.5)]
+        percentage: f64,
+        #[arg(long)]
+        dry_run: bool,
+    },
     DnssecRefresh {
         #[arg(long, default_value = DEFAULT_DAEMON)]
         daemon: String,
@@ -322,6 +361,26 @@ fn root_policy(sys: &SigningKey) -> serde_json::Value {
     })
 }
 
+
+/// The `/sys/contribution` payload: what an agent SHOULD offer, plus the floor
+/// the root policy actually enforces. Shared by genesis and `contribution-update`
+/// so the two can never drift.
+fn contribution_payload(recipient: &str, pct: f64) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "recipient": recipient,
+        "fn": "max",
+        "suggested_amount": fmt_minor_str(MIN_CONTRIBUTION_AMOUNT_MINOR),
+        "suggested_percentage": pct,
+        "minimum": {
+            "fn": "max",
+            "amount": fmt_minor_str(MIN_CONTRIBUTION_AMOUNT_MINOR),
+            "percentage": MIN_CONTRIBUTION_PERCENTAGE
+        },
+        "note": "The suggestion is what an agent should offer; `minimum` is the floor the root policy enforces on every proposal."
+    }))
+    .unwrap()
+}
+
 /// Build the genesis batch, in dependency order (everything before the root
 /// policy is admitted in genesis mode):
 ///   0. /sys/dnssec/<broker>     (optional; sys-signed; self-authenticating)
@@ -342,19 +401,7 @@ fn build_genesis(sys: &SigningKey, broker: &str, dnssec_proof: Option<&[u8]>, re
     // 2. brokers
     batch.extend(set_trust_brokers(sys, &[broker]));
     // 3. contribution suggestion
-    let contribution = serde_json::to_vec(&serde_json::json!({
-        "recipient": recipient,
-        "fn": "max",
-        "suggested_amount": fmt_minor_str(MIN_CONTRIBUTION_AMOUNT_MINOR),
-        "suggested_percentage": pct,
-        "minimum": {
-            "fn": "max",
-            "amount": fmt_minor_str(MIN_CONTRIBUTION_AMOUNT_MINOR),
-            "percentage": MIN_CONTRIBUTION_PERCENTAGE
-        },
-        "note": "The suggestion is what an agent should offer; `minimum` is the floor the root policy enforces on every proposal."
-    }))
-    .unwrap();
+    let contribution = contribution_payload(recipient, pct);
     batch.extend(signed_object(sys, "/sys/", "contribution", "contribution.v1", "application/json", contribution, None, None, None));
     // 4. root policy
     let policy = serde_json::to_vec(&root_policy(sys)).unwrap();
@@ -498,6 +545,41 @@ async fn main() -> Result<()> {
                     bail!("timed out waiting for the daemon to serve the new policy (submission {sub})");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            }
+        }
+        Commands::ContributionUpdate { key_file, daemon, repo, recipient, percentage, dry_run } => {
+            let sys = load_key(&key_file)?;
+            let payload = contribution_payload(&recipient, percentage);
+            println!("{}", String::from_utf8_lossy(&payload));
+            if dry_run {
+                return Ok(());
+            }
+            let wire = signed_object(&sys, "/sys/", "contribution", "contribution.v1", "application/json", payload, None, None, None);
+            let v = daemon_submit(&daemon, &repo, &wire).await?;
+            println!("✓ daemon accepted: {}", serde_json::to_string(&v)?);
+        }
+        Commands::PolicyProbe { key_file, daemon, repo, percentage } => {
+            let sys = load_key(&key_file)?;
+            // A path that no real agreement uses, so an accepted probe is
+            // recognizable as one (and means the floor failed).
+            let id = format!("_policyprobe_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs());
+            let proposal = serde_json::json!({
+                "v": 1, "id": id, "mode": "commitment", "commitment": "sha256:probe",
+                "contribution": { "recipient": "fund@dsp.fyi", "fn": "max", "amount": "0.00", "percentage": percentage }
+            });
+            let payload = serde_json::to_vec(&proposal)?;
+            let wire = signed_object(
+                &sys, &format!("/agreements/{id}/"), "proposal",
+                "agreement.proposal.v1", "application/json", payload, None, None, None,
+            );
+            println!("probing with contribution amount 0.00, percentage {percentage} (floor is 0.01 / 0.01)");
+            match daemon_submit(&daemon, &repo, &wire).await {
+                Err(e) => println!("✓ refused, as it should be:\n  {e}"),
+                Ok(v) => {
+                    println!("✗ ACCEPTED — the contribution floor is NOT being enforced: {}", serde_json::to_string(&v)?);
+                    println!("  a junk proposal now exists at /agreements/{id}/proposal");
+                    std::process::exit(1);
+                }
             }
         }
         Commands::DnssecRefresh { daemon, repo, domains } => {
