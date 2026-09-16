@@ -1,11 +1,11 @@
 ---
 # browserid-pay-9nq1
 title: 'Enforce min_reputation: custodian at lock, SDK at accept; demo grant'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-09-16T13:44:25Z
-updated_at: 2026-09-16T13:44:39Z
+updated_at: 2026-09-16T14:01:05Z
 parent: browserid-pay-h1f5
 ---
 
@@ -15,4 +15,8 @@ Reputation-gated grants (docs/plans/2026-09-16-reputation-design-draft.md, 'Plug
 - [x] custodian check + tests
 - [x] SDK + MCP
 - [x] demo + README
-- [ ] deploy verified
+- [x] deploy verified
+
+## Summary of Changes
+
+Custodian enforces min_reputation at lock (signed card from the grantor-named indexer, stored on the escrow); SDK checks at accept; propose/MCP take min_reputation; demo contract 3 + negative case; browserid-ng pin f7df6bb. Commit 7920e30.
