@@ -5,7 +5,8 @@
 // and judge verify presentations themselves; the stub only has to behave
 // like an honest indexer of what was posted.
 import { createServer } from "node:http";
-import { parseEnvelope } from "@browserid-ng/agreements";
+import { parseEnvelope, canonicalize } from "@browserid-ng/agreements";
+import { createHash } from "node:crypto";
 
 const b64uJson = (s) => JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
 
@@ -35,7 +36,10 @@ export class StubDaemon {
   }
 
   #view(o) {
-    return { path: o.path, id: o.id, creator: o.creator, value: o.value, payload: o.value, content_schema: o.content_schema, block: o.block, confirmed: true };
+    // object_hash mirrors the SDK's proposal_hash (sha256 over the canonical
+    // payload) so the indexer's acceptance ↔ proposal match works in local mode.
+    const object_hash = createHash("sha256").update(typeof o.value === "string" ? o.value : canonicalize(o.value)).digest("hex");
+    return { path: o.path, id: o.id, creator: o.creator, value: o.value, payload: o.value, content_schema: o.content_schema, block: o.block, object_hash, confirmed: true };
   }
 
   async listen(port = 0) {
@@ -48,8 +52,14 @@ export class StubDaemon {
         return o ? json(200, this.#view(o)) : json(404, { error: "not found" });
       }
       if (req.method === "GET" && u.pathname === "/v1/list") {
-        const prefix = u.searchParams.get("prefix") || "";
-        return json(200, this.objects.filter((o) => o.path.startsWith(prefix)).map((o) => this.#view(o)));
+        const prefix = u.searchParams.get("prefix");
+        const schema = u.searchParams.get("schema");
+        return json(200, this.objects
+          .filter((o) => (prefix ? o.path.startsWith(prefix) : true) && (schema ? o.content_schema === schema : true))
+          .map((o) => this.#view(o)));
+      }
+      if (req.method === "GET" && u.pathname === "/v1/state-root") {
+        return json(200, { block: 100 + this.objects.length, state_root: `stub-${this.objects.length}` });
       }
       if (req.method === "POST" && u.pathname === "/v1/submit") {
         const chunks = [];

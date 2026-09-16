@@ -1473,6 +1473,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
+ "browserid-core",
  "chrono",
  "reqwest 0.12.28",
  "rusqlite",

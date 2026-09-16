@@ -16,6 +16,16 @@ pub struct Ruling {
     pub split: Option<Split>,
     pub fee: String,
     pub reasoning: String,
+    /// Which party was late against the terms' deadlines: `payee` | `payer` | `none`.
+    #[serde(default = "none")]
+    pub late_party: String,
+    /// The performance was partial (some but not all of what the terms required).
+    #[serde(default)]
+    pub partial: bool,
+}
+
+fn none() -> String {
+    "none".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,6 +69,15 @@ pub fn validate(raw: &Value, contract_id: &str, terms: &Value) -> Result<Ruling>
     if reasoning.is_empty() {
         bail!("ruling: reasoning is required");
     }
+    let late_party = raw["late_party"].as_str().unwrap_or("none").to_string();
+    if !matches!(late_party.as_str(), "payee" | "payer" | "none") {
+        bail!("ruling: late_party must be payee | payer | none");
+    }
+    let partial = match &raw["partial"] {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        _ => bail!("ruling: partial must be a boolean"),
+    };
     let split = if outcome == "split" {
         let s = &raw["split"];
         let payee = s["payee"].as_str().context("ruling: split.payee")?.to_string();
@@ -76,7 +95,7 @@ pub fn validate(raw: &Value, contract_id: &str, terms: &Value) -> Result<Ruling>
     } else {
         None
     };
-    Ok(Ruling { v: 1, id: contract_id.to_string(), outcome, split, fee, reasoning: reasoning.chars().take(4000).collect() })
+    Ok(Ruling { v: 1, id: contract_id.to_string(), outcome, split, fee, reasoning: reasoning.chars().take(4000).collect(), late_party, partial })
 }
 
 /// Dev/demo ruler: returns a fixed JSON ruling (`JUDGE_FAKE_RULING`), so the
@@ -115,8 +134,12 @@ something. Decide who the escrowed \
 price goes to: \"payee\" (the performer delivered as agreed), \"payer\" (delivery failed or was not shown \
 as the terms require), or \"split\" with exact amounts summing to the price when the terms themselves \
 support partial performance. The adjudicator fee is normally taken from escrow (\"escrow\"). \
+Also report two facts the record supports (they feed the parties' reputation): \"late_party\" — which party \
+missed a deadline in the terms after sliding for dependencies (\"payee\", \"payer\", or \"none\"), and \"partial\" — \
+true when the performance proven was some but not all of what the terms required. \
 Respond with ONLY a JSON object: {\"outcome\": \"payee\"|\"payer\"|\"split\", \"split\"?: {\"payee\": \"<amount>\", \
-\"payer\": \"<amount>\"}, \"fee\": \"escrow\", \"reasoning\": \"<plain prose citing the terms and evidence>\"}.";
+\"payer\": \"<amount>\"}, \"fee\": \"escrow\", \"late_party\": \"payee\"|\"payer\"|\"none\", \"partial\": true|false, \
+\"reasoning\": \"<plain prose citing the terms and evidence>\"}.";
 
 /// Verbatim from docs/specs/evidence-patterns.md "Adjudication reading":
 /// how evidence is read by kind (inputs by handoff + receipt, deliverables
@@ -213,6 +236,22 @@ mod tests {
         assert!(validate(&json!({ "outcome": "maybe", "reasoning": "x" }), "a", &terms()).is_err());
         assert!(validate(&json!({ "outcome": "payer", "reasoning": "" }), "a", &terms()).is_err());
         assert!(validate(&json!({ "outcome": "payer", "fee": "everyone", "reasoning": "x" }), "a", &terms()).is_err());
+    }
+
+    #[test]
+    fn late_party_and_partial_flags() {
+        let r = validate(&json!({ "outcome": "split", "split": { "payee": "30.00", "payer": "20.00" }, "reasoning": "x", "late_party": "payee", "partial": true }), "a", &terms()).unwrap();
+        assert_eq!(r.late_party, "payee");
+        assert!(r.partial);
+        let d = validate(&json!({ "outcome": "payee", "reasoning": "x" }), "a", &terms()).unwrap();
+        assert_eq!(d.late_party, "none");
+        assert!(!d.partial);
+        assert!(validate(&json!({ "outcome": "payee", "reasoning": "x", "late_party": "bob" }), "a", &terms()).is_err());
+        assert!(validate(&json!({ "outcome": "payee", "reasoning": "x", "partial": "yes" }), "a", &terms()).is_err());
+        // Round-trips through serde with the defaults.
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["late_party"], "none");
+        assert_eq!(v["partial"], false);
     }
 
     #[test]

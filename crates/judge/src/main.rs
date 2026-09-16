@@ -438,6 +438,43 @@ fn canonical(v: &Value) -> String {
     }
 }
 
+/// `payer` | `payee` | `party` (a proposal that names no roles) for an identity.
+fn party_role<'a>(proposal: &'a serde_json::Value, who: &str) -> &'a str {
+    if proposal["roles"]["payer"].as_str() == Some(who) {
+        "payer"
+    } else if proposal["roles"]["payee"].as_str() == Some(who) {
+        "payee"
+    } else {
+        "party"
+    }
+}
+
+/// The fraction of the price the ruling awards to `role` (0..1).
+fn share_for(ruling: &llm::Ruling, role: &str) -> f64 {
+    let payee = match ruling.outcome.as_str() {
+        "payee" => 1.0,
+        "payer" => 0.0,
+        _ => {
+            let (a, b) = ruling
+                .split
+                .as_ref()
+                .map(|s| {
+                    (
+                        browserid_core::device::parse_money_minor(&s.payee).unwrap_or(0) as f64,
+                        browserid_core::device::parse_money_minor(&s.payer).unwrap_or(0) as f64,
+                    )
+                })
+                .unwrap_or((0.0, 0.0));
+            if a + b > 0.0 { a / (a + b) } else { 0.5 }
+        }
+    };
+    match role {
+        "payee" => payee,
+        "payer" => 1.0 - payee,
+        _ => 0.5,
+    }
+}
+
 async fn rule_and_deliver(app: &App, id: &str) -> anyhow::Result<()> {
     let case = app.cases.get(id)?.ok_or_else(|| anyhow::anyhow!("case vanished"))?;
     let file = CaseFile {
@@ -466,10 +503,29 @@ async fn rule_and_deliver(app: &App, id: &str) -> anyhow::Result<()> {
     let sub = app.writer.submit(wire).await?;
     app.cases.update(id, "ruled", None, Some(&sub), None)?;
 
-    // 2. Attestations on both parties.
+    // 2. Attestations on both parties, with the reputation-bearing facts the
+    //    ruling established (draft 2026-09-16): each party's share of the
+    //    price, whether it was late, whether performance was partial, and
+    //    whether the disputed party answered with matching reveals.
     if let Some(me) = app.identity.email().await {
+        let responded = case.response.is_some();
+        let reveals_matched = case
+            .response
+            .as_ref()
+            .and_then(|r| r["reveals"].as_array())
+            .map(|rs| !rs.is_empty() && rs.iter().all(|r| r["matched"].as_bool() == Some(true)))
+            .unwrap_or(false);
         for p in &case.parties {
-            let payload = json!({ "subject": p, "type": "agreement:ruled", "value": { "contract": id, "outcome": ruling.outcome }, "issued_at": cases::now(), "expires": null, "issuer": me });
+            let role = party_role(&case.proposal, p);
+            let value = json!({
+                "contract": id, "outcome": ruling.outcome, "role": role,
+                "share": format!("{:.4}", share_for(&ruling, role)),
+                "late": ruling.late_party == role, "partial": ruling.partial,
+                "disputed_by": case.disputed_by,
+                "responded": if p != &case.disputed_by { responded } else { true },
+                "reveals_matched": if p != &case.disputed_by { reveals_matched } else { true },
+            });
+            let payload = json!({ "subject": p, "type": "agreement:ruled", "value": value, "issued_at": cases::now(), "expires": null, "issuer": me });
             let w = app
                 .identity
                 .sign_write(
@@ -537,6 +593,20 @@ async fn api_deliver(State(app): State<App>, Path(id): Path<String>) -> Response
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[test]
+    fn shares_and_roles_from_a_ruling() {
+        let split = llm::Ruling { v: 1, id: "a".into(), outcome: "split".into(), split: Some(llm::Split { payee: "30.00".into(), payer: "20.00".into() }), fee: "escrow".into(), reasoning: "x".into(), late_party: "payee".into(), partial: true };
+        assert!((share_for(&split, "payee") - 0.6).abs() < 1e-9);
+        assert!((share_for(&split, "payer") - 0.4).abs() < 1e-9);
+        let payee = llm::Ruling { outcome: "payee".into(), split: None, late_party: "none".into(), partial: false, ..split.clone() };
+        assert_eq!(share_for(&payee, "payee"), 1.0);
+        assert_eq!(share_for(&payee, "payer"), 0.0);
+        let p = serde_json::json!({ "roles": { "payer": "a@x", "payee": "b@y" } });
+        assert_eq!(party_role(&p, "a@x"), "payer");
+        assert_eq!(party_role(&p, "b@y"), "payee");
+        assert_eq!(party_role(&p, "c@z"), "party");
+    }
     use super::*;
     use async_trait::async_trait;
     use browserid_core::device::{AccessCert, Binding, DeviceCert, Holder, HolderMatcher, Purpose, ScopeEntry, Warrant};

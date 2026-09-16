@@ -47,8 +47,28 @@ pub struct Agreement {
     pub acceptance_block: Option<u64>,
     pub lock_block: Option<u64>,
     pub ruling_block: Option<u64>,
+    /// The controlling account (warrant grantor) behind each party, read from
+    /// the presentation `bundle` on the proposal / acceptance. NOT a person
+    /// and not sybil-proof — anyone can mint accounts; it only lets an
+    /// indexer refuse to count an agreement an account made with itself.
+    pub proposer_grantor: Option<String>,
+    pub acceptor_grantor: Option<String>,
+    /// The ruling payload (outcome, split, late_party, partial) when ruled.
+    pub ruling: Option<Value>,
     pub evidence: Vec<Value>,
     pub references: Vec<Reference>,
+}
+
+/// The `grantor` of the warrant inside a four-object presentation bundle
+/// (`access_cert~assertion~warrant~config_cert`), read structurally — the
+/// object is already on chain and attributed, so no signature check here.
+pub fn grantor_of_bundle(bundle: &str) -> Option<String> {
+    use base64::Engine;
+    let warrant = bundle.split('~').nth(2)?;
+    let payload = warrant.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    v.get("grantor").and_then(|g| g.as_str()).map(norm)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,8 +115,11 @@ impl Index {
                proposer TEXT NOT NULL, acceptor TEXT NOT NULL, payer TEXT NOT NULL, payee TEXT NOT NULL,
                adjudicator TEXT NOT NULL, custodian TEXT NOT NULL, mode TEXT NOT NULL, expires INTEGER,
                proposal_block INTEGER NOT NULL, acceptance_block INTEGER, lock_block INTEGER, ruling_block INTEGER,
+               proposer_grantor TEXT, acceptor_grantor TEXT, ruling TEXT,
                evidence TEXT NOT NULL, refs TEXT NOT NULL
              );
+             CREATE INDEX IF NOT EXISTS agreements_pg ON agreements(proposer_grantor);
+             CREATE INDEX IF NOT EXISTS agreements_ag ON agreements(acceptor_grantor);
              CREATE INDEX IF NOT EXISTS agreements_proposer ON agreements(proposer);
              CREATE INDEX IF NOT EXISTS agreements_acceptor ON agreements(acceptor);
              CREATE INDEX IF NOT EXISTS agreements_adjudicator ON agreements(adjudicator);
@@ -127,10 +150,11 @@ impl Index {
             tx.execute_batch("DELETE FROM agreements; DELETE FROM attestations; DELETE FROM providers;")?;
             for a in &derived {
                 tx.execute(
-                    "INSERT INTO agreements(id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires,proposal_block,acceptance_block,lock_block,ruling_block,evidence,refs)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                    "INSERT INTO agreements(id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires,proposal_block,acceptance_block,lock_block,ruling_block,proposer_grantor,acceptor_grantor,ruling,evidence,refs)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                     params![a.id, a.state, a.proposer, a.acceptor, a.payer, a.payee, a.adjudicator, a.custodian, a.mode, a.expires,
                             a.proposal_block as i64, a.acceptance_block.map(|b| b as i64), a.lock_block.map(|b| b as i64), a.ruling_block.map(|b| b as i64),
+                            a.proposer_grantor, a.acceptor_grantor, a.ruling.as_ref().map(|r| r.to_string()),
                             serde_json::to_string(&a.evidence)?, serde_json::to_string(&a.references)?],
                 )?;
             }
@@ -172,7 +196,7 @@ impl Index {
         let p = norm(party);
         self.with(|c| {
             let mut st = c.prepare(&format!(
-                "SELECT {AG_COLS} FROM agreements WHERE proposer=?1 OR acceptor=?1 OR payer=?1 OR payee=?1 OR adjudicator=?1 OR custodian=?1 ORDER BY proposal_block DESC"
+                "SELECT {AG_COLS} FROM agreements WHERE proposer=?1 OR acceptor=?1 OR payer=?1 OR payee=?1 OR adjudicator=?1 OR custodian=?1 OR proposer_grantor=?1 OR acceptor_grantor=?1 ORDER BY proposal_block DESC"
             ))?;
             let v = st.query_map(params![p], ag_row)?.collect::<Result<Vec<_>, _>>()?;
             Ok(v)
@@ -222,9 +246,10 @@ impl Index {
         })
     }
 
-    /// One indexer's subjective view. Inputs are verifiable; the counts are
-    /// not a protocol quantity.
-    pub fn reputation(&self, subject: &str) -> Result<Value> {
+    /// The raw counts view (kept under `counts` on the scorecard). One
+    /// indexer's subjective view; inputs are verifiable, the counts are not a
+    /// protocol quantity.
+    pub fn counts(&self, subject: &str) -> Result<Value> {
         let s = norm(subject);
         let atts = self.attestations_by_subject(&s, None)?;
         let now = chrono::Utc::now().timestamp();
@@ -245,7 +270,7 @@ impl Index {
     }
 }
 
-const AG_COLS: &str = "id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires,proposal_block,acceptance_block,lock_block,ruling_block,evidence,refs";
+const AG_COLS: &str = "id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires,proposal_block,acceptance_block,lock_block,ruling_block,evidence,refs,proposer_grantor,acceptor_grantor,ruling";
 
 fn ag_row(r: &rusqlite::Row) -> rusqlite::Result<Agreement> {
     Ok(Agreement {
@@ -263,6 +288,9 @@ fn ag_row(r: &rusqlite::Row) -> rusqlite::Result<Agreement> {
         acceptance_block: r.get::<_, Option<i64>>(11)?.map(|b| b as u64),
         lock_block: r.get::<_, Option<i64>>(12)?.map(|b| b as u64),
         ruling_block: r.get::<_, Option<i64>>(13)?.map(|b| b as u64),
+        proposer_grantor: r.get(16)?,
+        acceptor_grantor: r.get(17)?,
+        ruling: r.get::<_, Option<String>>(18)?.and_then(|t| serde_json::from_str(&t).ok()),
         evidence: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
         references: serde_json::from_str::<Vec<Value>>(&r.get::<_, String>(15)?)
             .unwrap_or_default()
@@ -392,6 +420,10 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
         references.extend(lock.map(Reference::from));
         references.extend(ruling.map(Reference::from));
         references.extend(evidence.iter().map(|o| Reference::from(*o)));
+        let grantor_of = |o: Option<&Obj>| o.and_then(|o| o.json().get("bundle").and_then(|b| b.as_str()).and_then(grantor_of_bundle));
+        let proposer_grantor = grantor_of(Some(proposal));
+        let acceptor_grantor = grantor_of(acceptance);
+        let ruling_value = ruling.map(|r| r.json());
         out.push(Agreement {
             id,
             state: state.into(),
@@ -407,6 +439,9 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
             acceptance_block: acceptance.map(|a| a.block),
             lock_block: lock.map(|l| l.block),
             ruling_block: ruling.map(|r| r.block),
+            proposer_grantor,
+            acceptor_grantor,
+            ruling: ruling_value,
             evidence: evidence.iter().map(|o| json!({ "id": o.id, "block": o.block, "kind": kind(o), "by": o.json().get("by"), "commitment": o.json().get("commitment") })).collect(),
             references,
         });
@@ -506,7 +541,7 @@ mod tests {
         assert_eq!(ix.providers("adjudicators").unwrap().len(), 1, "the flat-layout object is not a listing");
         assert!(ix.providers("custodians").unwrap().is_empty());
         assert_eq!(ix.meta("contribution").unwrap().unwrap()["value"]["recipient"], "fund@dsp.fyi");
-        let rep = ix.reputation("alice@x.test").unwrap();
+        let rep = ix.counts("alice@x.test").unwrap();
         assert_eq!(rep["attestations"]["agreement:completed"]["distinct_issuers"], 1);
         assert!(rep["attestations"].get("agreement:ruled").is_none(), "expired attestations drop out");
         assert_eq!(rep["agreements"]["as_party"], 1);

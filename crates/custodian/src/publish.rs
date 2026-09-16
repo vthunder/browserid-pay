@@ -64,12 +64,46 @@ impl Publisher for ChainPublisher {
         .await;
     }
 
-    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str) {
+    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str, price_minor: i64, currency: &str) {
         // A ruling-driven settlement is a dispute in the reputation record.
         let kind = if outcome.starts_with("ruled:") { "agreement:disputed" } else { "agreement:settled" };
-        for p in [parties.0, parties.1] {
-            self.attest(p, kind, json!({ "contract": contract_id, "outcome": outcome })).await;
+        let band = value_band(price_minor);
+        for (p, role) in [(parties.0, "payer"), (parties.1, "payee")] {
+            self.attest(
+                p,
+                kind,
+                json!({ "contract": contract_id, "outcome": outcome, "role": role, "value_band": band, "currency": currency }),
+            )
+            .await;
         }
+    }
+}
+
+/// The price as a band, never the amount (reputation draft: "value bands
+/// only"). Bands are in major units of the deployment currency.
+pub fn value_band(price_minor: i64) -> &'static str {
+    let major = price_minor / 100;
+    match major {
+        m if m < 10 => "lt10",
+        m if m < 100 => "10-100",
+        m if m < 1_000 => "100-1k",
+        m if m < 10_000 => "1k-10k",
+        _ => "gte10k",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::value_band;
+    #[test]
+    fn value_bands() {
+        assert_eq!(value_band(999), "lt10");
+        assert_eq!(value_band(1_000), "10-100");
+        assert_eq!(value_band(5_600), "10-100");
+        assert_eq!(value_band(10_000), "100-1k");
+        assert_eq!(value_band(99_999), "100-1k");
+        assert_eq!(value_band(100_000), "1k-10k");
+        assert_eq!(value_band(1_000_000), "gte10k");
     }
 }
 

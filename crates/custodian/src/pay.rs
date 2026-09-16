@@ -252,6 +252,7 @@ mod tests {
             cap: Some(Cap { amount: amount.into(), currency: "USD".into(), window: window.map(String::from) }),
             counterparties: None,
             max_duration: None,
+            min_reputation: None,
         })
     }
 

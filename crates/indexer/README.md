@@ -39,6 +39,46 @@ wrote a lock or ruling is not checked here — the daemon exposes creators as
 key hashes, not identities; the custodian and adjudicator enforce that on their
 side (the root policy cannot, see `deploy/GENESIS.md`).
 
+## Reputation: the scorecard (`/v1/reputation?subject=…`)
+
+One indexer's **subjective** view, formula `browserid-pay-reputation-v1`
+(docs/plans/2026-09-16-reputation-design-draft.md). The subject is an agent
+identity, or a **controlling account** (a warrant grantor) — then its
+agents' agreements are pooled. Nothing here is sybil-proof: accounts are
+cheap to mint; the grantor only lets us refuse to count an agreement an
+account made with itself.
+
+Inputs per agreement (all referenced so a client can re-fetch from the
+daemon): the subject's role (payer/payee), the counterparty and its
+controlling account (read structurally from the warrant inside each party's
+presentation `bundle`), state, outcome, and on a ruling this side's
+`share`, `late`, `responded`, `reveals_matched` from the judge's
+`agreement:ruled` attestation (falling back to the ruling's split).
+
+An agreement **counts** iff it reached lock and the two controlling
+accounts are known and differ. With `total` counted agreements and `n`
+distinct counterparty accounts:
+
+| component | formula |
+|---|---|
+| completion | `(settled_ok + 0.5·ruled_mostly_for + 1) / (total + 2)` — acknowledged settlements, rulings awarding ≥ 0.8 of the price; a one-win-one-loss prior |
+| dispute_record | `1 − rulings_against / max(total, 1)` — rulings awarding < 0.5 |
+| responsiveness | `0.5 ^ misses` — a miss is a dispute against the subject with no response in the window or a reveal that did not match |
+| promptness | `1 − late / max(total, 1)` (informational in v1; not in the headline) |
+| tenure | `min(1, blocks_since_first_proposal / 388 800)` (≈ 90 days at ~20 s blocks) |
+
+`score = 100 · completion · dispute_record · (0.7 + 0.3·responsiveness) ·
+(0.5 + 0.5·min(1, log2(1+n)/4))`, rounded to 0.1. A fresh identity with one
+clean agreement scores ≈ 50; three clean agreements with three different
+accounts ≈ 60; a lost ruling early → 0.
+
+The card carries `inputs` (with `counted` / `why_not_counted` per
+agreement), `counts`, `constants`, the `state_root` the reads were taken
+against, and a `signature`: a compact EdDSA JWS over the canonical JSON
+(sorted keys, no whitespace) of the card without `signature`, by the key at
+`/v1/reputation/key` (generated into `INDEX_DATA_DIR`, next to the
+database). Hold the indexer to its view by re-verifying and recomputing.
+
 ## Identity matching
 
 Exact string, with the domain part lowercased (local part byte-exact, as the

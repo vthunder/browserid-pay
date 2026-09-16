@@ -7,6 +7,7 @@
 
 mod chain;
 mod index;
+mod reputation;
 
 use axum::{
     extract::{Path, Query, State},
@@ -27,6 +28,7 @@ struct App {
     daemon: String,
     repo: String,
     origin: String,
+    signer: Arc<reputation::Signer>,
 }
 
 #[tokio::main]
@@ -40,12 +42,20 @@ async fn main() -> anyhow::Result<()> {
     let repo = env("REPO", "sbo+raw://avail:turing:530/");
     let origin = env("INDEX_ORIGIN", &format!("http://localhost:{port}"));
     let interval: u64 = env("POLL_SECS", "30").parse()?;
-    let index = Index::open(&env("DATABASE_PATH", "indexer.db"))?;
+    let db_path = env("DATABASE_PATH", "indexer.db");
+    let index = Index::open(&db_path)?;
+    // The indexer's signing key (scorecards are signed so a consumer can hold
+    // this indexer to its published view). Lives next to the database.
+    let data_dir = std::env::var("INDEX_DATA_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| {
+        std::path::Path::new(&db_path).parent().map(|p| p.to_path_buf()).filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::PathBuf::from("."))
+    });
+    let signer = Arc::new(reputation::Signer::load_or_create(&data_dir.join("indexer-key.json"))?);
+    tracing::info!(key = %signer.public_key_b64(), "scorecard signing key");
 
     let chain = Arc::new(Daemon::new(&daemon, &repo));
     tokio::spawn(poll_loop(chain, index.clone(), interval));
 
-    let app = App { index, daemon: daemon.clone(), repo: repo.clone(), origin: origin.clone() };
+    let app = App { index, daemon: daemon.clone(), repo: repo.clone(), origin: origin.clone(), signer };
     let router = Router::new()
         .route("/", get(page))
         .route("/healthz", get(|| async { "ok" }))
@@ -55,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/providers/:kind", get(providers))
         .route("/v1/contribution", get(contribution))
         .route("/v1/reputation", get(reputation))
+        .route("/v1/reputation/key", get(reputation_key))
         .with_state(app)
         .layer(tower_http::cors::CorsLayer::permissive())
         .layer(tower_http::trace::TraceLayer::new_for_http());
@@ -175,14 +186,33 @@ async fn contribution(State(app): State<App>) -> Response {
     }
 }
 
+/// The scorecard (`browserid-pay-reputation-v1`): one indexer's signed view
+/// of a subject — an agent identity, or a controlling account (its agents'
+/// agreements pooled). See reputation.rs and the README.
 async fn reputation(State(app): State<App>, Query(q): Query<SubjectQ>) -> Response {
     let Some(subject) = q.subject.filter(|s| !s.is_empty()) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "subject (an identity) is required" }))).into_response();
     };
-    match app.index.reputation(&subject) {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => internal(e),
+    let root = app.index.meta("state_root").ok().flatten();
+    let block = root.as_ref().and_then(|r| r["block"].as_u64()).unwrap_or(0);
+    let mut card = match reputation::scorecard(&app.index, &subject, block) {
+        Ok(c) => c,
+        Err(e) => return internal(e),
+    };
+    if let Ok(counts) = app.index.counts(&subject) {
+        card["counts"]["attestations"] = counts["attestations"].clone();
     }
+    card["indexed_at"] = app.index.meta("indexed_at").ok().flatten().unwrap_or(Value::Null);
+    card["state_root"] = root.unwrap_or(Value::Null);
+    card["indexer"] = json!(app.origin);
+    card["key"] = json!({ "alg": "Ed25519", "public_key": app.signer.public_key_b64(), "url": format!("{}/v1/reputation/key", app.origin) });
+    let sig = app.signer.sign(&card);
+    card["signature"] = json!(sig);
+    Json(card).into_response()
+}
+
+async fn reputation_key(State(app): State<App>) -> Response {
+    Json(json!({ "alg": "Ed25519", "public_key": app.signer.public_key_b64(), "formula": reputation::FORMULA, "indexer": app.origin })).into_response()
 }
 
 async fn page(State(app): State<App>) -> Html<String> {

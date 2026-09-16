@@ -34,7 +34,7 @@ release-index:
 # and demo-idp, then runs two contracts (settle; dispute + ruling) against
 # them with a stub daemon. Exits non-zero on any failed assertion.
 demo-local:
-	$(LT) cargo build -p custodian -p judge -p demo-idp 2>&1 | sed "s/\x1b\[[0-9;]*m//g" | grep -E "^error" -A5; test $${PIPESTATUS[0]} -eq 0'
+	$(LT) cargo build -p custodian -p judge -p demo-idp -p indexer 2>&1 | sed "s/\x1b\[[0-9;]*m//g" | grep -E "^error" -A5; test $${PIPESTATUS[0]} -eq 0'
 	$(LT) cd demo && (test -d node_modules || npm install --silent) && node run-local.mjs'
 
 dev-pay:

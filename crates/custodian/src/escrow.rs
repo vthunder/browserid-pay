@@ -30,7 +30,9 @@ fn err(error: &'static str, d: impl Into<String>) -> EscrowError {
 #[async_trait::async_trait]
 pub trait Publisher: Send + Sync {
     async fn lock(&self, contract_id: &str, locked_at: i64);
-    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str);
+    /// `price_minor`/`currency` feed the attestation's value band (never the
+    /// amount); `parties` = (payer, payee), the acting identities.
+    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str, price_minor: i64, currency: &str);
 }
 #[allow(dead_code)]
 pub struct Log;
@@ -39,8 +41,8 @@ impl Publisher for Log {
     async fn lock(&self, contract_id: &str, locked_at: i64) {
         tracing::info!(contract_id, locked_at, "escrow lock (publisher: log only)");
     }
-    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str) {
-        tracing::info!(contract_id, payer = parties.0, payee = parties.1, outcome, "escrow settled (publisher: log only)");
+    async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str, price_minor: i64, currency: &str) {
+        tracing::info!(contract_id, payer = parties.0, payee = parties.1, outcome, price_minor, currency, "escrow settled (publisher: log only)");
     }
 }
 
@@ -511,7 +513,7 @@ fn settle(db: &Db, id: &str, decide: impl FnOnce(&Escrow) -> Result<Settlement, 
 }
 
 async fn publish_settled(publisher: &dyn Publisher, e: &Escrow) {
-    publisher.settled(&e.id, (&e.payer, &e.payee), e.outcome.as_deref().unwrap_or("")).await;
+    publisher.settled(&e.id, (&e.payer, &e.payee), e.outcome.as_deref().unwrap_or(""), e.price_minor, &e.currency).await;
 }
 
 pub fn view(e: &Escrow) -> Value {
@@ -562,6 +564,7 @@ mod tests {
             cap: Some(Cap { amount: amount.into(), currency: "USD".into(), window: None }),
             counterparties: counterparties.map(|v| v.into_iter().map(String::from).collect()),
             max_duration: None,
+            min_reputation: None,
         })
     }
 

@@ -178,6 +178,24 @@ After settlement each party MAY post `/<issuer>/attestations/<subject>/agreement
 `agreement:settled`; on a ruling the adjudicator posts `agreement:ruled` on
 both parties and the custodian `agreement:disputed`.
 
+Reputation-bearing fields (2026-09-16, `docs/plans/2026-09-16-reputation-design-draft.md`;
+all additive, never the amount):
+
+- custodian `agreement:settled` / `agreement:disputed` value:
+  `{ "contract", "outcome", "role": "payer"|"payee", "value_band": "lt10"|"10-100"|"100-1k"|"1k-10k"|"gte10k", "currency" }`.
+- adjudicator `agreement:ruled` value: `{ "contract", "outcome", "role",
+  "share": "<0..1, 4 decimals>" (this subject's share of the price),
+  "late": bool (this subject missed a deadline after sliding for
+  dependencies), "partial": bool (performance proven was some but not all),
+  "disputed_by", "responded": bool, "reveals_matched": bool }` — the last two
+  describe the disputed party; they are `true` on the disputer's own record.
+  The ruling object itself gains `late_party` (`payee`|`payer`|`none`) and
+  `partial`.
+
+Scores are never on chain: an indexer computes a scorecard from these
+(`GET https://index.dsp.fyi/v1/reputation?subject=…`, formula
+`browserid-pay-reputation-v1`, signed by the indexer) — one indexer's view.
+
 ## Providers (discovery)
 
 `Path: /providers/custodians/<identity>/` and `/providers/adjudicators/<identity>/`,

@@ -21,7 +21,7 @@ import { DemoAgent, verifyVia } from "./lib/agent.mjs";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET = process.env.CARGO_TARGET_DIR || join(homedir(), ".cache", "cargo-target");
 const BIN = (name) => join(TARGET, "debug", name);
-const PORTS = { idp: 3900, pay: 3300, judge: 3400 };
+const PORTS = { idp: 3900, pay: 3300, judge: 3400, index: 3500 };
 const REPO = "sbo+raw://avail:turing:530/";
 // Humans (accounts) and their delegated agents (the parties on chain).
 const ALICE = "alice@x.test", BOB = "bob@y.test", JUDGE = "judge@dsp.test", ESCROW = "escrow@dsp.test", FUND = "fund@dsp.test";
@@ -105,6 +105,11 @@ async function main() {
   assert.equal(listing.creator, JUDGE, "listing is attributed to the judge");
   assert.ok(listing.value.sealing_key, "listing carries the sealing key");
   log(`judge ${judgeOrigin} listed as ${JUDGE}, sealing key ${listing.value.sealing_key.slice(0, 12)}…`);
+
+  // The indexer: polls the stub daemon every second; its scorecard is asserted at the end.
+  const indexOrigin = `http://127.0.0.1:${PORTS.index}`;
+  run("index", BIN("indexer"), { INDEX_PORT: String(PORTS.index), INDEX_ORIGIN: indexOrigin, DAEMON: daemonOrigin, REPO, POLL_SECS: "1", DATABASE_PATH: join(tmp, "indexer.db"), INDEX_DATA_DIR: tmp });
+  await waitFor("indexer", () => fetch(`${indexOrigin}/healthz`).then((r) => r.ok));
 
   // ---- agents --------------------------------------------------------------------
   step("two agents with test credit");
@@ -242,7 +247,37 @@ async function main() {
   assert.equal((await alice.sdk.status(p2.id)).stage, "ruled");
   log(`ruled split 30/20: bob 90.00, alice 113.00, judge paid 5.00`);
 
-  console.log("\nOK — two contracts: one settled by acknowledgement, one by ruling.");
+  // ---- reputation ----------------------------------------------------------------
+  step("reputation — the indexer's signed scorecard for bob");
+  const rep = await waitFor("bob's scorecard counting both agreements", async () => {
+    const c = await getJson(`${indexOrigin}/v1/reputation?subject=${encodeURIComponent(BOB_AGENT)}`);
+    return c.counts?.counted === 2 ? c : null;
+  }, { tries: 60, ms: 500 });
+  assert.equal(rep.formula, "browserid-pay-reputation-v1");
+  assert.equal(rep.grantor, BOB, "bob's controlling account is read from his bundle");
+  assert.equal(rep.n_counterparty_accounts, 1, "alice's account is the only counterparty account");
+  assert.ok(rep.score > 0 && rep.score <= 100, `score ${rep.score}`);
+  const ruled = rep.inputs.agreements.find((i) => i.outcome?.startsWith("ruled:"));
+  assert.ok(ruled, "the ruled agreement is an input");
+  assert.equal(ruled.role, "payee");
+  assert.ok(Math.abs(ruled.share - 0.6) < 1e-6, `bob's share of the split is 0.6, got ${ruled.share}`);
+  assert.equal(ruled.responded, true, "bob answered the dispute");
+  assert.equal(ruled.reveals_matched, true, "his reveal matched");
+  // The signature verifies against the published key (Ed25519 over the canonical card).
+  const { createPublicKey, verify: edVerify } = await import("node:crypto");
+  const key = await getJson(`${indexOrigin}/v1/reputation/key`);
+  const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(key.public_key, "base64url")]);
+  const [h, pl, sig] = rep.signature.split(".");
+  const unsigned = { ...rep }; delete unsigned.signature;
+  const canonical = (v) => Array.isArray(v) ? `[${v.map(canonical).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}` : JSON.stringify(v);
+  assert.equal(Buffer.from(pl, "base64url").toString("utf8"), canonical(unsigned), "JWS payload is the canonical card");
+  assert.ok(edVerify(null, Buffer.from(`${h}.${pl}`), createPublicKey({ key: spki, format: "der", type: "spki" }), Buffer.from(sig, "base64url")), "signature verifies");
+  // Aggregated to the controlling account: same two agreements.
+  const acct = await getJson(`${indexOrigin}/v1/reputation?subject=${encodeURIComponent(BOB)}`);
+  assert.equal(acct.counts.counted, 2, "the account's card pools its agent's agreements");
+  log(`bob's scorecard: score ${rep.score} (completion ${rep.components.completion.toFixed(2)}, dispute_record ${rep.components.dispute_record.toFixed(2)}, responsiveness ${rep.components.responsiveness.toFixed(2)}, promptness ${rep.components.promptness.toFixed(2)}, tenure ${rep.components.tenure.toFixed(2)}), ${rep.n_counterparty_accounts} counterparty account, signed by ${key.public_key.slice(0, 12)}…`);
+
+  console.log("\nOK — two contracts: one settled by acknowledgement, one by ruling; bob's scorecard signed and verified.");
 }
 
 main()
