@@ -136,6 +136,13 @@ enum Commands {
         /// Contribution percentage to claim. The default breaches the 0.01 floor.
         #[arg(long, default_value_t = 0.0)]
         percentage: f64,
+        /// Contribution amount to claim. The default breaches the floor.
+        #[arg(long, default_value = "0.00")]
+        amount: String,
+        /// Expect the write to be ACCEPTED (the compliant case) rather than
+        /// refused. A junk proposal is left on chain, so use sparingly.
+        #[arg(long)]
+        expect_accept: bool,
     },
     /// Republish `/sys/contribution` (the suggested contribution and the
     /// policy-enforced minimum). A governed update like `policy-update`; the
@@ -558,26 +565,31 @@ async fn main() -> Result<()> {
             let v = daemon_submit(&daemon, &repo, &wire).await?;
             println!("✓ daemon accepted: {}", serde_json::to_string(&v)?);
         }
-        Commands::PolicyProbe { key_file, daemon, repo, percentage } => {
+        Commands::PolicyProbe { key_file, daemon, repo, percentage, amount, expect_accept } => {
             let sys = load_key(&key_file)?;
             // A path that no real agreement uses, so an accepted probe is
             // recognizable as one (and means the floor failed).
             let id = format!("_policyprobe_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs());
             let proposal = serde_json::json!({
                 "v": 1, "id": id, "mode": "commitment", "commitment": "sha256:probe",
-                "contribution": { "recipient": "fund@dsp.fyi", "fn": "max", "amount": "0.00", "percentage": percentage }
+                "contribution": { "recipient": "fund@dsp.fyi", "fn": "max", "amount": amount, "percentage": percentage }
             });
             let payload = serde_json::to_vec(&proposal)?;
             let wire = signed_object(
                 &sys, &format!("/agreements/{id}/"), "proposal",
                 "agreement.proposal.v1", "application/json", payload, None, None, None,
             );
-            println!("probing with contribution amount 0.00, percentage {percentage} (floor is 0.01 / 0.01)");
-            match daemon_submit(&daemon, &repo, &wire).await {
-                Err(e) => println!("✓ refused, as it should be:\n  {e}"),
-                Ok(v) => {
+            println!("probing with contribution amount {amount}, percentage {percentage} (floor is 0.01 / 0.01)");
+            match (daemon_submit(&daemon, &repo, &wire).await, expect_accept) {
+                (Err(e), false) => println!("✓ refused, as it should be:\n  {e}"),
+                (Ok(_), true) => println!("✓ accepted, as it should be — a compliant proposal still writes"),
+                (Ok(v), false) => {
                     println!("✗ ACCEPTED — the contribution floor is NOT being enforced: {}", serde_json::to_string(&v)?);
                     println!("  a junk proposal now exists at /agreements/{id}/proposal");
+                    std::process::exit(1);
+                }
+                (Err(e), true) => {
+                    println!("✗ REFUSED — the floor is rejecting a COMPLIANT proposal:\n  {e}");
                     std::process::exit(1);
                 }
             }

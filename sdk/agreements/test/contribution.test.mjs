@@ -36,11 +36,26 @@ test("totalOf includes the combined contribution", () => {
   assert.equal(totalOf(terms({ fn: "max", amount: "0.01", percentage: 1 })), 10400);
 });
 
-test("normalizeContribution omits absent operands and always carries a percentage", () => {
+test("normalizeContribution always emits all three fields, at or above the floor", () => {
+  // The root policy fails closed on a missing field, so a percentage-only
+  // caller must still get `fn` and `amount` or the chain refuses the proposal.
   assert.deepEqual(normalizeContribution({ recipient: "f@x.test", percentage: 0.5 }), {
-    recipient: "f@x.test", percentage: 0.5,
+    recipient: "f@x.test", fn: "max", amount: "0.01", percentage: 0.5,
   });
-  assert.deepEqual(normalizeContribution({ recipient: "f@x.test", fn: "max", amount: 0.01, percentage: 0.01 }), {
+  // Nothing configured still clears the floor rather than contributing zero.
+  assert.deepEqual(normalizeContribution(null), {
+    recipient: null, fn: "max", amount: "0.01", percentage: 0.01,
+  });
+  // A caller below the floor is raised to it, not silently refused at submit.
+  assert.deepEqual(normalizeContribution({ recipient: "f@x.test", amount: "0.00", percentage: 0 }), {
     recipient: "f@x.test", fn: "max", amount: "0.01", percentage: 0.01,
   });
+  // Above the floor is preserved.
+  assert.deepEqual(normalizeContribution({ recipient: "f@x.test", amount: "2.50", percentage: 3 }), {
+    recipient: "f@x.test", fn: "max", amount: "2.50", percentage: 3,
+  });
+});
+
+test("normalizeContribution refuses fn=min, which the chain would reject", () => {
+  assert.throws(() => normalizeContribution({ fn: "min", amount: "1.00", percentage: 1 }), /contribution_fn_unsupported/);
 });

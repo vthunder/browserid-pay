@@ -717,13 +717,30 @@ export function contributionOf(c, priceMinor) {
   throw new AgreementError("contribution_fn_required");
 }
 
-/** Normalize a contribution to the object that goes on chain and into the terms. */
+/**
+ * The chain-enforced contribution floor, mirrored client-side: `max(1 cent, 1bp)`.
+ * Kept in step with the root policy (`crates/genesis`, bean browserid-pay-er8j).
+ */
+export const CONTRIBUTION_FLOOR = { amount: "0.01", percentage: 0.01 };
+
+/**
+ * Normalize a contribution to the object that goes on chain and into the terms.
+ *
+ * The root policy requires `fn`, `amount` and `percentage` to all be PRESENT and
+ * at or above the floor — a missing field fails closed and the proposal is
+ * refused on chain. So all three are always emitted, and a caller asking for
+ * less than the floor is raised to it rather than silently rejected later by the
+ * daemon.
+ */
 export function normalizeContribution(c) {
-  const out = { recipient: c?.recipient ?? null };
-  if (c?.fn != null) out.fn = c.fn;
-  if (c?.amount != null) out.amount = String(c.amount);
-  out.percentage = Number(c?.percentage ?? 0);
-  return out;
+  if (c?.fn != null && c.fn !== "max") {
+    // `min` would let a proposal pay the smaller operand, so the chain pins
+    // `max`. Fail here rather than at submit, where the error is opaque.
+    throw new AgreementError("contribution_fn_unsupported");
+  }
+  const amountMinor = Math.max(c?.amount != null ? money(c.amount) : 0, money(CONTRIBUTION_FLOOR.amount));
+  const percentage = Math.max(Number(c?.percentage ?? 0), CONTRIBUTION_FLOOR.percentage);
+  return { recipient: c?.recipient ?? null, fn: "max", amount: fmt(amountMinor), percentage };
 }
 
 function defaultVerify(http) {
