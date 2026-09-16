@@ -3,3 +3,4 @@
 \#*\#
 .\#*
 *.key
+sdk/*/package-lock.json
