@@ -390,11 +390,24 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
             }
             v.as_str().map(norm).unwrap_or_default()
         };
+        // The acceptance's `proposal_hash` is what the SDK computed: sha256
+        // over the CANONICAL proposal payload (JCS). The daemon's `object_hash`
+        // is an object-level hash of its own; accept any of the three forms.
+        let proposal_hashes: Vec<String> = {
+            use sha2::{Digest, Sha256};
+            let hex = |b: &[u8]| Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect::<String>();
+            let mut v = vec![proposal.object_hash.to_ascii_lowercase()];
+            v.push(hex(crate::reputation::canonical(&proposal.json()).as_bytes()));
+            if !proposal.payload_text.is_empty() {
+                v.push(hex(proposal.payload_text.as_bytes()));
+            }
+            v
+        };
         let acceptance = find("acceptance").filter(|a| {
             a.block >= proposal.block
                 && a.json().get("proposal_hash").and_then(|h| h.as_str()).map_or(false, |h| {
-                    let h = h.strip_prefix("sha256:").unwrap_or(h);
-                    h.eq_ignore_ascii_case(&proposal.object_hash)
+                    let h = h.strip_prefix("sha256:").unwrap_or(h).to_ascii_lowercase();
+                    proposal_hashes.contains(&h)
                 })
         });
         let lock = acceptance.and_then(|a| find("lock").filter(|l| l.block >= a.block));
@@ -501,6 +514,9 @@ mod tests {
         assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 11, "nope")], &[])[0].state, "proposed");
         let acc = acceptance("agr_1", 11, &h);
         assert_eq!(derive_agreements(&[p.clone(), acc.clone()], &[])[0].state, "accepted");
+        // …or the SDK's hash of the canonical payload (what the live chain carries).
+        let jcs = { use sha2::Digest; sha2::Sha256::digest(crate::reputation::canonical(&p.json()).as_bytes()).iter().map(|x| format!("{x:02x}")).collect::<String>() };
+        assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 11, &jcs)], &[])[0].state, "accepted");
         let lock = obj("/agreements/agr_1/", "lock", 12, json!({ "v": 1, "id": "agr_1", "locked_at": 1 }));
         assert_eq!(derive_agreements(&[p.clone(), acc.clone(), lock.clone()], &[])[0].state, "locked");
         let disp = evidence("agr_1", "e1", 13, "dispute");
