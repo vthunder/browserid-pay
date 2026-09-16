@@ -5,8 +5,7 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-15T14:32:06Z
-updated_at: 2026-09-15T14:32:30Z
-parent: browserid-pay-h1f5
+updated_at: 2026-09-16T16:31:32Z
 ---
 
 Policy spec + daemon: restriction condition on a payload field (contribution.percentage ≥ N) on /agreements/**. Needed only to enforce the chain minimum.

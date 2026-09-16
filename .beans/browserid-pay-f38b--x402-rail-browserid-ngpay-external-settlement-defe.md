@@ -5,8 +5,7 @@ status: todo
 type: feature
 priority: normal
 created_at: 2026-09-15T14:32:06Z
-updated_at: 2026-09-16T16:18:22Z
-parent: browserid-pay-h1f5
+updated_at: 2026-09-16T16:31:32Z
 blocked_by:
     - browserid-pay-6dlx
 ---
