@@ -11,10 +11,10 @@ repository = "https://github.com/vthunder/browserid-pay"
 [workspace.dependencies]
 # browserid-ng crates, pinned by git rev (bump to adopt changes). During
 # development against a local checkout, use the [patch] section below.
-browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "a310de7" }
-browserid-rp = { git = "https://github.com/vthunder/browserid-ng", rev = "a310de7" }
-browserid-dnssec = { git = "https://github.com/vthunder/browserid-ng", rev = "a310de7" }
-browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "a310de7" }
+browserid-core = { git = "https://github.com/vthunder/browserid-ng", rev = "f7df6bb" }
+browserid-rp = { git = "https://github.com/vthunder/browserid-ng", rev = "f7df6bb" }
+browserid-dnssec = { git = "https://github.com/vthunder/browserid-ng", rev = "f7df6bb" }
+browserid-agent = { git = "https://github.com/vthunder/browserid-ng", rev = "f7df6bb" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 serde = { version = "1", features = ["derive"] }

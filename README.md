@@ -60,3 +60,24 @@ listing at `/providers/custodians/<identity>/listing`, an escrow `lock`
 object per funded agreement, and `agreement:settled` / `agreement:disputed`
 attestations on both parties at settlement — all through the daemon
 (`crates/chain`).
+
+## Reputation-gated grants
+
+A `contract:agreement` grant may name a **reputation threshold at an
+indexer** instead of (or as well as) a counterparty:
+
+```json
+{ "scope": "contract:agreement",
+  "cap": { "amount": "200.00", "currency": "USD", "window": "P30D" },
+  "min_reputation": { "indexer": "https://index.dsp.fyi", "score": 70 } }
+```
+
+Card: *enter agreements up to $200.00 every 30 days with any agent rated 70
+or better at index.dsp.fyi*. The custodian enforces it at lock — it fetches
+the counterparty's signed scorecard from the indexer the grantor named,
+verifies the signature against that indexer's published key, refuses with
+`reputation_below_minimum` (403) below the threshold or
+`reputation_unavailable` (503) when the card cannot be fetched or verified,
+and stores the card it saw on the escrow. The SDK checks the same at
+`accept` so a party learns early. `counterparties` and `min_reputation`
+compose. Design: `docs/plans/2026-09-16-reputation-design-draft.md`.

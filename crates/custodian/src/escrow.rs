@@ -56,6 +56,9 @@ pub struct Escrow {
     /// Whose money: the grantor behind each party's contract warrant.
     pub payer_account: String,
     pub payee_account: String,
+    /// The reputation cards the custodian saw at lock (when a grant required
+    /// one), as JSON: `{ "payee": card, "payer": card }`.
+    pub reputation_seen: Option<String>,
     pub adjudicator: String,
     pub price_minor: i64,
     pub custodian_fee_minor: i64,
@@ -95,7 +98,8 @@ pub fn schema(c: &Connection) -> anyhow::Result<()> {
            outcome TEXT,
            ruling TEXT,
            payer_account TEXT NOT NULL DEFAULT '',
-           payee_account TEXT NOT NULL DEFAULT ''
+           payee_account TEXT NOT NULL DEFAULT '',
+           reputation_seen TEXT
          );
          CREATE INDEX IF NOT EXISTS escrows_party ON escrows(payer, payee);",
     )?;
@@ -103,6 +107,7 @@ pub fn schema(c: &Connection) -> anyhow::Result<()> {
     for col in ["payer_account", "payee_account"] {
         let _ = c.execute(&format!("ALTER TABLE escrows ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"), []);
     }
+    let _ = c.execute("ALTER TABLE escrows ADD COLUMN reputation_seen TEXT", []);
     Ok(())
 }
 
@@ -126,9 +131,10 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Escrow> {
         outcome: r.get(15)?,
         payer_account: r.get(16)?,
         payee_account: r.get(17)?,
+        reputation_seen: r.get(18)?,
     })
 }
-const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome, payer_account, payee_account";
+const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome, payer_account, payee_account, reputation_seen";
 
 pub fn get(c: &Connection, id: &str) -> anyhow::Result<Option<Escrow>> {
     Ok(c.query_row(&format!("SELECT {COLS} FROM escrows WHERE id=?1"), params![id], row).optional()?)
@@ -142,6 +148,7 @@ pub fn for_party(c: &Connection, identity: &str) -> anyhow::Result<Vec<Escrow>> 
 
 /// The `contract:agreement` entry and its bounds.
 struct ContractGrant {
+    min_reputation: Option<browserid_core::MinReputation>,
     cap_minor: i64,
     currency: String,
     counterparties: Option<Vec<String>>,
@@ -160,7 +167,7 @@ fn contract_grant(scopes: &[ScopeEntry]) -> Result<ContractGrant, EscrowError> {
             Some(d) => Some(parse_iso_duration_secs(d).ok_or_else(|| err("no_grant", "malformed max_duration"))? as i64),
             None => None,
         };
-        return Ok(ContractGrant { cap_minor, currency: cap.currency.clone(), counterparties: p.counterparties.clone(), max_duration_secs });
+        return Ok(ContractGrant { min_reputation: p.min_reputation.clone(), cap_minor, currency: cap.currency.clone(), counterparties: p.counterparties.clone(), max_duration_secs });
     }
     Err(EscrowError { error: "no_grant", detail: None })
 }
@@ -262,6 +269,7 @@ pub async fn lock(
     verify: &Verify,
     db: &Db,
     publisher: &dyn Publisher,
+    reputation: &crate::reputation::Reputation,
     origin: &str,
     deployment_currency: &str,
     req: LockRequest,
@@ -308,6 +316,24 @@ pub async fn lock(
     if !covers(&grant.counterparties, &payee) {
         return Err(err("counterparty_not_allowed", payee.clone()));
     }
+    // Reputation-gated grants: each side's `min_reputation` (if any) is
+    // checked against the OTHER party's signed card at the indexer that side's
+    // grantor named. Composes with `counterparties` (both must hold).
+    let mut seen = serde_json::Map::new();
+    for (whose, g, other, key) in [("payer", &grant, &payee, "payee"), ("payee", &payee_grant, &payer, "payer")] {
+        if let Some(mr) = &g.min_reputation {
+            match reputation.require(&mr.indexer, other, mr.score).await {
+                Ok(card) => { seen.insert(key.to_string(), card); }
+                Err(crate::reputation::ReputationError::Below { score, threshold, indexer }) => {
+                    return Err(err("reputation_below_minimum", format!("{other} is rated {score} at {indexer}; the {whose}'s grant requires {threshold}")));
+                }
+                Err(crate::reputation::ReputationError::Unavailable(d)) => {
+                    return Err(err("reputation_unavailable", d));
+                }
+            }
+        }
+    }
+    let reputation_seen = if seen.is_empty() { None } else { Some(Value::Object(seen).to_string()) };
     let price = money(&req.price, "price")?;
     let custodian_fee = req.fees.get("custodian").map(|v| money(v, "fees.custodian")).transpose()?.unwrap_or(0);
     let adjudicator_fee = req.fees.get("adjudicator").map(|v| money(v, "fees.adjudicator")).transpose()?.unwrap_or(0);
@@ -341,9 +367,9 @@ pub async fn lock(
                 return Ok(Err(EscrowError { error: "insufficient_funds", detail: None }));
             }
             tx.execute(
-                "INSERT INTO escrows(id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, warrant_key, locked_at, payer_account, payee_account)
-                 VALUES(?1,'locked',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
-                params![id, payer, payee, adjudicator, price, custodian_fee, adjudicator_fee, contribution, contribution_recipient, deployment_currency, req.sealed_terms, p.to_string(), warrant_key, now, payer_account, payee_account],
+                "INSERT INTO escrows(id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, warrant_key, locked_at, payer_account, payee_account, reputation_seen)
+                 VALUES(?1,'locked',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                params![id, payer, payee, adjudicator, price, custodian_fee, adjudicator_fee, contribution, contribution_recipient, deployment_currency, req.sealed_terms, p.to_string(), warrant_key, now, payer_account, payee_account, reputation_seen],
             )?;
             Db::insert_receipt(
                 &tx,
@@ -520,6 +546,7 @@ pub fn view(e: &Escrow) -> Value {
     json!({
         "id": e.id, "state": e.state, "payer": e.payer, "payee": e.payee,
         "payer_account": e.payer_account, "payee_account": e.payee_account, "adjudicator": e.adjudicator,
+        "reputation": e.reputation_seen.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
         "price": crate::pay::fmt_minor(e.price_minor),
         "fees": { "custodian": crate::pay::fmt_minor(e.custodian_fee_minor), "adjudicator": crate::pay::fmt_minor(e.adjudicator_fee_minor) },
         "contribution": { "amount": crate::pay::fmt_minor(e.contribution_minor), "recipient": e.contribution_recipient },
@@ -568,6 +595,67 @@ mod tests {
         })
     }
 
+    fn contract_scope_rated(amount: &str, indexer: &str, score: u8) -> ScopeEntry {
+        ScopeEntry::Parameterized(ScopeParams {
+            scope: CONTRACT_SCOPE.into(), mode: None,
+            cap: Some(Cap { amount: amount.into(), currency: "USD".into(), window: None }),
+            counterparties: None, max_duration: None,
+            min_reputation: Some(browserid_core::MinReputation { indexer: indexer.into(), score }),
+        })
+    }
+
+    /// An in-process indexer stub: serves a signed card with `score` for
+    /// every subject (or a card signed by the wrong key when `bad_sig`).
+    async fn stub_indexer(score: u8, bad_sig: bool) -> (String, KeyPair) {
+        use axum::{routing::get, Router, extract::Query, Json};
+        let key = KeyPair::generate();
+        let signer = std::sync::Arc::new(if bad_sig { KeyPair::generate() } else { KeyPair::from_seed(&key_seed(&key)).unwrap() });
+        let pk = key.public_key().to_base64();
+        let pk2 = pk.clone();
+        let app = Router::new()
+            .route("/v1/reputation/key", get(move || { let pk = pk2.clone(); async move { Json(json!({ "alg": "Ed25519", "public_key": pk })) } }))
+            .route("/v1/reputation", get(move |Query(q): Query<std::collections::HashMap<String, String>>| {
+                let signer = signer.clone();
+                async move {
+                    let mut card = json!({ "subject": q.get("subject").cloned().unwrap_or_default(), "score": score, "formula": "browserid-pay-reputation-v1", "components": { "tenure": 0.5 } });
+                    card["signature"] = json!(crate::reputation::sign_for_tests(&card, &signer));
+                    Json(card)
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        (origin, key)
+    }
+    fn key_seed(k: &KeyPair) -> [u8; 32] { *k.secret_bytes() }
+
+    #[tokio::test]
+    async fn min_reputation_gates_the_lock() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        // Bob is rated 61: a grant requiring 40 locks; one requiring 80 is refused.
+        let (idx, _) = stub_indexer(61, false).await;
+        let mut ok = lock_req(&s, "agr_r1", "60.00", None);
+        ok.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r1"), vec![contract_scope_rated("60.00", &idx, 40)], 1);
+        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", ok).await.unwrap();
+        let seen: Value = serde_json::from_str(e.reputation_seen.as_deref().unwrap()).unwrap();
+        assert_eq!(seen["payee"]["score"], 61, "the card seen is stored with the escrow");
+        let mut low = lock_req(&s, "agr_r2", "60.00", None);
+        low.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r2"), vec![contract_scope_rated("60.00", &idx, 80)], 2);
+        let err = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", low).await.err().unwrap();
+        assert_eq!(err.error, "reputation_below_minimum");
+        assert!(err.detail.unwrap().contains("rated 61"));
+        // A card signed by the wrong key is unavailable, never a pass.
+        let (bad, _) = stub_indexer(99, true).await;
+        let mut b = lock_req(&s, "agr_r3", "60.00", None);
+        b.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r3"), vec![contract_scope_rated("60.00", &bad, 10)], 3);
+        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", b).await.err().unwrap().error, "reputation_unavailable");
+        // An unreachable indexer is unavailable too.
+        let mut u = lock_req(&s, "agr_r4", "60.00", None);
+        u.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r4"), vec![contract_scope_rated("60.00", "http://127.0.0.1:9", 10)], 4);
+        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", u).await.err().unwrap().error, "reputation_unavailable");
+    }
+
     fn proposal(id: &str) -> Value {
         json!({ "v": 1, "id": id, "mode": "commitment", "commitment": "sha256:00",
             "parties": { "proposer": "alice+agent@x.test", "acceptor": "bob+agent@y.test" },
@@ -602,21 +690,21 @@ mod tests {
     #[tokio::test]
     async fn lock_then_acknowledge_pays_everyone() {
         let s = setup();
-        let e = lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_1", "60.00", None)).await.unwrap();
+        let e = lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_1", "60.00", None)).await.unwrap();
         assert_eq!(e.state, "locked");
         assert_eq!((e.payer.as_str(), e.payer_account.as_str()), ("alice+agent@x.test", "alice@x.test"));
         assert_eq!((e.payee.as_str(), e.payee_account.as_str()), ("bob+agent@y.test", "bob@y.test"));
         // The lock needs the payee's bundle, and it must be the payee's.
         let mut r = lock_req(&s, "agr_9", "60.00", None);
         r.acceptance_bundle = None;
-        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", r).await.err().unwrap().error, "bad_request");
+        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", r).await.err().unwrap().error, "bad_request");
         let mut r = lock_req(&s, "agr_9", "60.00", None);
         r.acceptance_bundle = Some(presentation(&s.issuer, "carol@z.test", "carol+agent@z.test", &contract_audience("agr_9"), vec![contract_scope("60.00", None)], 8));
-        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", r).await.err().unwrap().error, "payee_bundle_invalid");
+        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", r).await.err().unwrap().error, "payee_bundle_invalid");
         // 50 + 0.50 + 5 + 1% of 50 (0.50) = 56.00 locked
         assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600);
         // Locking twice is refused.
-        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_1", "60.00", None)).await.err().unwrap().error, "already_locked");
+        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_1", "60.00", None)).await.err().unwrap().error, "already_locked");
 
         let aud = contract_audience("agr_1");
         let ack = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &aud, vec![contract_scope("60.00", None)], 1);
@@ -634,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn lock_records_both_parties_grants_as_budgets() {
         let s = setup();
-        lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_b", "60.00", Some(vec!["bob+agent@y.test"]))).await.unwrap();
+        lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_b", "60.00", Some(vec!["bob+agent@y.test"]))).await.unwrap();
         // Alice (the payer's human) sees her agent's agreement cap with the lock spent against it.
         let alice = s.db.warrants_for("alice@x.test").unwrap();
         let g = alice.iter().find(|w| w.agreement_id.as_deref() == Some("agr_b")).expect("payer grant recorded");
@@ -654,20 +742,20 @@ mod tests {
     #[tokio::test]
     async fn cap_and_counterparties_bound_the_lock() {
         let s = setup();
-        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_2", "55.00", None)).await.err().unwrap().error, "cap_exceeded");
-        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_2", "60.00", Some(vec!["*@z.test"]))).await.err().unwrap().error, "counterparty_not_allowed");
-        lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_2", "60.00", Some(vec!["*@y.test"]))).await.unwrap();
+        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_2", "55.00", None)).await.err().unwrap().error, "cap_exceeded");
+        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_2", "60.00", Some(vec!["*@z.test"]))).await.err().unwrap().error, "counterparty_not_allowed");
+        lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_2", "60.00", Some(vec!["*@y.test"]))).await.unwrap();
         // The payee cannot lock (not the payer), even with a grant.
         let aud = contract_audience("agr_3");
         let mut r = lock_req(&s, "agr_3", "60.00", None);
         r.presentation = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", &aud, vec![contract_scope("60.00", None)], 2);
-        assert_eq!(lock(&s.verify, &s.db, &Log, ORIGIN, "USD", r).await.err().unwrap().error, "not_payer");
+        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", r).await.err().unwrap().error, "not_payer");
     }
 
     #[tokio::test]
     async fn dispute_then_ruling_only_from_the_named_adjudicator() {
         let s = setup();
-        lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_4", "60.00", None)).await.unwrap();
+        lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_4", "60.00", None)).await.unwrap();
         let aud = contract_audience("agr_4");
         let bob = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", &aud, vec![contract_scope("60.00", None)], 3);
         let (e, sealed) = dispute(&s.verify, &s.db, "agr_4", &bob).await.unwrap();

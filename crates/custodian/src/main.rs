@@ -7,6 +7,7 @@ mod config;
 mod db;
 mod escrow;
 mod pay;
+mod reputation;
 mod publish;
 mod session;
 mod verify;
@@ -31,6 +32,7 @@ struct App {
     verify: Arc<verify::Verify>,
     publisher: Arc<dyn escrow::Publisher>,
     identity: Arc<chain::Identity>,
+    reputation: Arc<reputation::Reputation>,
 }
 
 #[tokio::main]
@@ -66,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
         writer: writer.clone(),
         chain_audience: cfg.chain_audience.clone(),
     });
-    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: publisher.clone(), identity: identity.clone() };
+    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: publisher.clone(), identity: identity.clone(), reputation: Arc::new(reputation::Reputation::new(cfg.dev)) };
 
     // Load the identity, or provision it in the background (prints the approval
     // URL). In dev mode without a credential nothing is provisioned unless
@@ -357,6 +359,8 @@ fn escrow_status(e: &escrow::EscrowError) -> StatusCode {
         "verification_failed" | "revoked" => StatusCode::UNAUTHORIZED,
         "no_grant" | "cap_exceeded" | "not_payer" | "not_party" | "not_adjudicator" | "payee_bundle_invalid" | "counterparty_not_allowed" | "duration_exceeded" => StatusCode::FORBIDDEN,
         "insufficient_funds" => StatusCode::PAYMENT_REQUIRED,
+        "reputation_below_minimum" => StatusCode::FORBIDDEN,
+        "reputation_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
         "not_found" => StatusCode::NOT_FOUND,
         "already_locked" | "bad_state" => StatusCode::CONFLICT,
         "bad_request" | "unsupported_currency" | "wrong_custodian" => StatusCode::BAD_REQUEST,
@@ -365,7 +369,7 @@ fn escrow_status(e: &escrow::EscrowError) -> StatusCode {
 }
 
 async fn escrow_lock(State(app): State<App>, Json(req): Json<escrow::LockRequest>) -> Response {
-    match escrow::lock(&app.verify, &app.db, app.publisher.as_ref(), &app.cfg.origin, &app.cfg.currency, req).await {
+    match escrow::lock(&app.verify, &app.db, app.publisher.as_ref(), &app.reputation, &app.cfg.origin, &app.cfg.currency, req).await {
         Ok(e) => Json(json!({ "lock": escrow::view(&e) })).into_response(),
         Err(e) => (escrow_status(&e), Json(e)).into_response(),
     }

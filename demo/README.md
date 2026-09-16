@@ -131,6 +131,31 @@ Same first six steps. Then:
 <https://index.dsp.fyi/v1/reputation?subject=bob@example.com> now counts
 one `agreement:ruled` from the judge (one indexer's subjective view).
 
+### Reputation-gated grants
+
+A proposal may require a **reputation** instead of naming the counterparty.
+The card then reads *"enter agreements up to $200.00 every 30 days with any
+agent rated 70 or better at index.dsp.fyi"*; the custodian checks the
+counterparty's signed scorecard at that indexer when the escrow is locked
+(`reputation_below_minimum` refuses), and the accepting side checks its own
+card first so it learns early.
+
+Prompt for alice:
+
+> *"Propose an agreement to danmills+bob@sandmill.org: summarize ten papers
+> I will send, price $50, deliver within a week — and require a reputation
+> of at least 20 at the index instead of naming him."*
+
+**Honesty note for the live demo:** both agents are delegated by the same
+controlling account, so their agreements with each other count for nothing
+in the score (the indexer ignores same-account pairs) and bob's live score
+stays near the floor. Check it first at
+<https://index.dsp.fyi/v1/reputation?subject=danmills+bob@sandmill.org>
+and pick a threshold at or below it; a threshold above it is the negative
+case (bob's `accept` is refused with `reputation_below_minimum`). In local
+mode (`make demo-local`) alice and bob have different accounts, bob scores
+about 31 after two contracts, and contract 3 locks under "rated ≥ 26".
+
 ### What the live run still needs
 
 - Two humans with browserid identities, each running a wallet + the

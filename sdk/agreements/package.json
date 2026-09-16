@@ -10,7 +10,7 @@
   "engines": { "node": ">=18" },
   "scripts": { "test": "node --test" },
   "dependencies": {
-    "@browserid-ng/agent": "^0.6.0",
+    "@browserid-ng/agent": "^0.6.1",
     "@browserid-ng/verify": "^0.3.1"
   },
   "license": "MPL-2.0",

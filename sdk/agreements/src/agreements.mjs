@@ -67,6 +67,8 @@ export class Agreements {
     this.repo = o.repo || this.chain.repo || DEFAULTS.repo;
     this.verify = o.verify || defaultVerify(this.http);
     this.broker = o.broker || "https://browserid.me";
+    // The indexer whose scorecards reputation-gated grants default to.
+    this.index = (o.index || DEFAULTS.index || "https://index.dsp.fyi").replace(/\/+$/, "");
     this.onApproveUrl = o.onApproveUrl || ((u) => console.error(`APPROVE: ${u}`));
     // Extra grants a host wants on the SAME agreement card (e.g. the relay's
     // `message` scope), so a run is one card per agent per agreement.
@@ -91,9 +93,12 @@ export class Agreements {
       this.overrides.adjudicator ? [this.overrides.adjudicator] : listingsOf(this.chain, "/providers/adjudicators/"),
       this.overrides.contribution ? this.overrides.contribution : this.chain.get("/sys/", "contribution").then((o) => o?.payload || null),
     ]);
+    const me = await this.reputationOf(this.email).catch(() => null);
     return {
       custodians: cust, adjudicators: adj,
       contribution: contrib ? { recipient: contrib.recipient, percentage: contrib.suggested_percentage ?? contrib.percentage ?? 0 } : null,
+      index: this.index,
+      my_reputation: me ? { score: me.score, n_counterparty_accounts: me.n_counterparty_accounts, formula: me.formula, indexer: this.index } : null,
     };
   }
 
@@ -124,16 +129,30 @@ export class Agreements {
    * per-contract grant, the standing ledger-write grant (first agreement
    * only), and the adjudicator's audience (so a later dispute needs no card).
    */
-  async #contractWarrant(id, totalMinor, currency, counterparty, adjudicatorOrigin) {
+  async #contractWarrant(id, totalMinor, currency, counterparty, adjudicatorOrigin, minReputation) {
     const aud = contractAudience(id, this.repo);
     const held = this.agent.warrantedAudiences();
     const grants = [];
-    if (!held.includes(aud)) grants.push({ audience: aud, scopes: [{ scope: AGREEMENT_SCOPE, cap: { amount: fmt(totalMinor), currency }, counterparties: [counterparty] }] });
+    if (!held.includes(aud)) {
+      // A reputation-gated grant names a threshold at an indexer instead of
+      // (or as well as) the counterparty: "any agent rated ≥ N at …".
+      const entry = { scope: AGREEMENT_SCOPE, cap: { amount: fmt(totalMinor), currency } };
+      if (minReputation) entry.min_reputation = { indexer: (minReputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(minReputation.score)) };
+      if (!minReputation || minReputation.also_counterparty) entry.counterparties = [counterparty];
+      grants.push({ audience: aud, scopes: [entry] });
+    }
     if (!held.includes(this.repo)) grants.push({ audience: this.repo, scopes: CHAIN_SCOPES(this.email) });
     if (adjudicatorOrigin && !held.includes(adjudicatorOrigin)) grants.push({ audience: adjudicatorOrigin, scopes: ["dispute"] });
     for (const g of this.extraGrants) if (!held.includes(g.audience)) grants.push(g);
     if (grants.length) await this.obtainWarrants(grants);
     return this.agent.assertionFor(aud);
+  }
+
+  /** One indexer's signed scorecard for `subject` (default: the configured index). */
+  async reputationOf(subject, indexer = this.index) {
+    const r = await this.http(`${indexer.replace(/\/+$/, "")}/v1/reputation?subject=${encodeURIComponent(subject)}`);
+    if (!r.ok) throw new AgreementError("reputation_unavailable", `${indexer} → ${r.status}`);
+    return r.json();
   }
 
   /** Verify a counterparty's bundle for the contract and check its cap covers the total. */
@@ -146,6 +165,13 @@ export class Agreements {
     if (typeof entry === "object" && entry.cap) {
       if (entry.cap.currency !== currency || money(entry.cap.amount) < totalMinor) throw new AgreementError("cap_too_small", `cap ${entry.cap.amount} ${entry.cap.currency} < ${fmt(totalMinor)} ${currency}`);
       if (entry.counterparties && !entry.counterparties.some((c) => c === this.email || (c.startsWith("*@") && this.email.endsWith(c.slice(1))))) throw new AgreementError("counterparty_excluded");
+      // Reputation-gated grant: learn early (the custodian enforces it at lock).
+      if (entry.min_reputation) {
+        const { indexer, score: min } = entry.min_reputation;
+        const card = await this.reputationOf(this.email, indexer);
+        const score = Math.round(Number(card.score ?? 0));
+        if (score < min) throw new AgreementError("reputation_below_minimum", `${this.email} is rated ${score} at ${indexer}; the grant requires ${min}`);
+      }
     }
     return r;
   }
@@ -154,7 +180,7 @@ export class Agreements {
 
   /**
    * @param {object} terms   { title, description, obligations:[{by,what,deadline}], price:{amount,currency}, fees?:{custodian,adjudicator}, evidence }
-   * @param {object} o       { acceptor, payer? (default: me), adjudicator?, custodian?, contribution?, expires?, mode? }
+   * @param {object} o       { acceptor, payer? (default: me), adjudicator?, custodian?, contribution?, expires?, mode?, min_reputation?: { indexer?, score, also_counterparty? } }
    * @returns {{ id, terms, salt, commitment, proposal, sealed_terms, submission }}
    */
   async propose(terms, o) {
@@ -186,7 +212,7 @@ export class Agreements {
     const com = commitment(full);
     const totalMinor = totalOf(full);
     const currency = full.price.currency;
-    const bundle = await this.#contractWarrant(id, totalMinor, currency, o.acceptor, adjudicator.origin);
+    const bundle = await this.#contractWarrant(id, totalMinor, currency, o.acceptor, adjudicator.origin, o.min_reputation);
     const mode = o.mode || "commitment";
     const proposal = {
       v: 1, id, mode,

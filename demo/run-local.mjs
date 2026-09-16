@@ -116,7 +116,7 @@ async function main() {
   const chain = new LocalChain({ daemon: daemonOrigin, repo: REPO });
   const mk = async (email) => {
     const agent = await DemoAgent.create(idp.origin, email);
-    const sdk = new Agreements({ agent: agent.agent, chain, repo: REPO, verify: verifyVia(idp.origin), obtainWarrants: agent.obtainAll, broker: idp.origin });
+    const sdk = new Agreements({ agent: agent.agent, chain, repo: REPO, verify: verifyVia(idp.origin), obtainWarrants: agent.obtainAll, broker: idp.origin, index: indexOrigin });
     return { agent, sdk };
   };
   const alice = await mk(ALICE), bob = await mk(BOB);
@@ -277,7 +277,28 @@ async function main() {
   assert.equal(acct.counts.counted, 2, "the account's card pools its agent's agreements");
   log(`bob's scorecard: score ${rep.score} (completion ${rep.components.completion.toFixed(2)}, dispute_record ${rep.components.dispute_record.toFixed(2)}, responsiveness ${rep.components.responsiveness.toFixed(2)}, promptness ${rep.components.promptness.toFixed(2)}, tenure ${rep.components.tenure.toFixed(2)}), ${rep.n_counterparty_accounts} counterparty account, signed by ${key.public_key.slice(0, 12)}…`);
 
-  console.log("\nOK — two contracts: one settled by acknowledgement, one by ruling; bob's scorecard signed and verified.");
+  // ---- contract 3: a reputation-gated grant -----------------------------------------
+  step("contract 3 — a grant for any agent rated ≥ N at the index, no counterparty named");
+  const threshold = Math.max(1, Math.floor(rep.score) - 5);
+  const p3 = await alice.sdk.propose(TERMS, { acceptor: BOB_AGENT, min_reputation: { score: threshold } });
+  const card3 = alice.agent.cards.at(-1);
+  const entry3 = card3[0].scopes[0];
+  assert.deepEqual(entry3.min_reputation, { indexer: indexOrigin, score: threshold }, "the card names the indexer and the threshold");
+  assert.equal(entry3.counterparties, undefined, "no counterparty named: any agent rated ≥ threshold may accept");
+  await bob.sdk.accept(p3.id, p3.terms);
+  const lock3 = await alice.sdk.fund(p3.id);
+  assert.equal(lock3.lock.state, "locked");
+  assert.equal(lock3.lock.reputation.payee.subject, BOB_AGENT, "the custodian stored the card it checked");
+  assert.equal(lock3.lock.reputation.payee.formula, "browserid-pay-reputation-v1");
+  assert.ok(Math.round(lock3.lock.reputation.payee.score) >= threshold);
+  log(`funded ${p3.id} under "any agent rated ≥ ${threshold}": bob is rated ${rep.score}, card stored on the escrow`);
+  // The negative case: a threshold above bob's score is refused before anything is posted.
+  const p4 = await alice.sdk.propose(TERMS, { acceptor: BOB_AGENT, min_reputation: { score: 99 } });
+  await assert.rejects(bob.sdk.accept(p4.id, p4.terms), (e) => e.code === "reputation_below_minimum", "accept is refused early: rated below 99");
+  assert.equal(daemon.get(`/agreements/${p4.id}/`, "acceptance"), null, "nothing was posted for the refused agreement");
+  log(`refused ${p4.id} under "rated ≥ 99": reputation_below_minimum (the custodian would refuse the lock the same way)`);
+
+  console.log("\nOK — three contracts: settled by acknowledgement, settled by ruling, and one locked under a reputation-gated grant (plus one refused).");
 }
 
 main()
