@@ -92,6 +92,32 @@ test("next_step walks both agents through the whole settle path", async () => {
   }
 });
 
+test("the accept step carries enough to judge the work before accepting", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+    const p = await w.alice.propose(TERMS, { acceptor: "bob@y.test" });
+    await w.bob.accept(p.id, p.terms).catch(() => {});
+    // Re-read from a fresh bob who holds the terms but has not accepted.
+    const w2 = world(servers);
+    const p2 = await w2.alice.propose(TERMS, { acceptor: "bob@y.test" });
+    w2.bob.terms.set(p2.id, { terms: p2.terms, proposal: p2.proposal });
+
+    const s = await w2.bob.nextStep();
+    assert.equal(s.action, "accept");
+    const r = s.review;
+    assert.equal(r.from, "alice@x.test");
+    assert.equal(r.title, "Summarize 10 papers");
+    // Only MY obligations, so a responder can ask "can I actually do this?"
+    assert.deepEqual(r.i_must.map((o) => o.what), ["deliver summaries"]);
+    assert.equal(r.i_am_paid.amount, "50.00");
+    assert.equal(r.i_pay, null, "bob is the payee, not the payer");
+    assert.ok(r.adjudicator, "the adjudicator is named before accepting");
+  } finally {
+    await servers.close();
+  }
+});
+
 test("next_step sends the disputed party to respond", async () => {
   const servers = await fakeServers();
   try {

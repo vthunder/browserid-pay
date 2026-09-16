@@ -588,11 +588,29 @@ export class Agreements {
     }
     if (st.stage === "proposed") {
       if (!iAmAcceptor) return { action: "none", why: "proposed; waiting for the acceptor" };
-      const haveTerms = !!this.terms.get(id)?.terms || !!p?.terms;
-      return haveTerms
-        ? { action: "accept", why: `${parties.proposer} proposed this and I am the acceptor`,
-            then: "tell the proposer you accepted with send_message" }
-        : { action: "check_messages", why: "I am the acceptor but do not hold the full terms yet; they arrive off-chain" };
+      const terms = this.terms.get(id)?.terms || p?.terms;
+      if (!terms) {
+        return { action: "check_messages", why: "I am the acceptor but do not hold the full terms yet; they arrive off-chain" };
+      }
+      // Everything needed to judge whether to accept, so a standing policy
+      // ("take what I can do alone, otherwise ask") can be applied without a
+      // second call — the workflow says do one step per turn.
+      const owed = (terms.obligations || []).filter((o) => o.by === me);
+      return {
+        action: "accept",
+        why: `${parties.proposer} proposed this and I am the acceptor`,
+        review: {
+          from: parties.proposer,
+          title: terms.title ?? null,
+          description: terms.description ?? null,
+          i_must: owed.map((o) => ({ what: o.what, kind: o.kind || "deliverable", deadline: o.deadline ?? null })),
+          i_am_paid: roles.payee === me ? terms.price : null,
+          i_pay: roles.payer === me ? terms.price : null,
+          adjudicator: p?.adjudicator ?? null,
+          expires: p?.expires ?? null,
+        },
+        then: "decide FIRST whether you can actually do what `i_must` asks; accept only then, and tell the proposer with send_message",
+      };
     }
     // Funded is the custodian's escrow record, not the on-chain lock: the
     // custodian posts that object asynchronously, so the chain lags the truth.
