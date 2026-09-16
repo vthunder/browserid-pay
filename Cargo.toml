@@ -33,7 +33,7 @@ rand = "0.8"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 # The SBO reference implementation (vthunder/sbo), pinned by rev like mingo does.
-sbo-core = { git = "https://github.com/vthunder/sbo", rev = "4a2b056", default-features = false }
+sbo-core = { git = "https://github.com/vthunder/sbo", rev = "fb19728", default-features = false }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
 chacha20poly1305 = "0.10"
