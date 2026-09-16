@@ -110,6 +110,12 @@ impl Index {
         c.execute_batch(
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+             -- The index is a cache rebuilt from chain reads on every poll, so a
+             -- schema change simply drops the derived tables (a live database
+             -- that predates a new column would otherwise break the indexes).
+             DROP TABLE IF EXISTS agreements;
+             DROP TABLE IF EXISTS attestations;
+             DROP TABLE IF EXISTS providers;
              CREATE TABLE IF NOT EXISTS agreements (
                id TEXT PRIMARY KEY, state TEXT NOT NULL,
                proposer TEXT NOT NULL, acceptor TEXT NOT NULL, payer TEXT NOT NULL, payee TEXT NOT NULL,
