@@ -1,0 +1,60 @@
+{
+  "email": "danmills@sandmill.org",
+  "currency": "USD",
+  "balance": "113.00",
+  "ledger": [
+    { "at": 1789590600, "delta": "+5.00",  "balance_after": "113.00", "kind": "escrow_refund",   "agreement_id": "agr_efEQnMvTYl8-CTfp", "memo": "unused adjudicator fee" },
+    { "at": 1789590600, "delta": "+30.00", "balance_after": "108.00", "kind": "escrow_release",  "agreement_id": "agr_efEQnMvTYl8-CTfp", "memo": "ruled split: payee 30.00" },
+    { "at": 1789590600, "delta": "+20.00", "balance_after": "78.00",  "kind": "escrow_refund",   "agreement_id": "agr_efEQnMvTYl8-CTfp", "memo": "ruled split: payer 20.00" },
+    { "at": 1789588000, "delta": "-56.00", "balance_after": "58.00",  "kind": "escrow_lock",     "agreement_id": "agr_efEQnMvTYl8-CTfp", "memo": null },
+    { "at": 1789584000, "delta": "+5.00",  "balance_after": "114.00", "kind": "escrow_refund",   "agreement_id": "agr_l0m2ucb9aSTanulY", "memo": "unused adjudicator fee" },
+    { "at": 1789584000, "delta": "+50.00", "balance_after": "109.00", "kind": "escrow_release",  "agreement_id": "agr_l0m2ucb9aSTanulY", "memo": "acknowledged" },
+    { "at": 1789581000, "delta": "-56.00", "balance_after": "59.00",  "kind": "escrow_lock",     "agreement_id": "agr_l0m2ucb9aSTanulY", "memo": null },
+    { "at": 1789500000, "delta": "+100.00","balance_after": "115.00", "kind": "credit",          "agreement_id": null, "memo": "test credit for the live run" },
+    { "at": 1789480000, "delta": "+15.00", "balance_after": "15.00",  "kind": "credit",          "agreement_id": null, "memo": "test credit" }
+  ],
+  "agents": [
+    { "identity": "danmills+alice@sandmill.org",
+      "grants": [
+        { "scope": "contract:agreement", "cap": "56.00", "spent": "56.00", "remaining": "0.00", "agreement_id": "agr_l0m2ucb9aSTanulY", "counterparties": ["danmills+bob@sandmill.org"], "exp": 1792176000 },
+        { "scope": "contract:agreement", "cap": "56.00", "spent": "56.00", "remaining": "0.00", "agreement_id": "agr_efEQnMvTYl8-CTfp", "counterparties": ["danmills+bob@sandmill.org"], "exp": 1792176000 },
+        { "scope": "pay:transfer", "cap": "20.00", "window_secs": 2592000, "spent": "4.50", "remaining": "15.50", "window_resets_at": 1791580000, "exp": 1792176000 }
+      ] },
+    { "identity": "danmills+bob@sandmill.org",
+      "grants": [
+        { "scope": "contract:agreement", "cap": "56.00", "spent": "0.00", "remaining": "56.00", "agreement_id": "agr_l0m2ucb9aSTanulY", "counterparties": ["danmills+alice@sandmill.org"], "exp": 1792176000 },
+        { "scope": "contract:agreement", "cap": "56.00", "spent": "0.00", "remaining": "56.00", "agreement_id": "agr_efEQnMvTYl8-CTfp", "counterparties": ["danmills+alice@sandmill.org"], "exp": 1792176000 }
+      ] }
+  ],
+  "agreements": [
+    { "id": "agr_efEQnMvTYl8-CTfp", "state": "settled", "role": "both",
+      "counterparty": "danmills+bob@sandmill.org", "my_agent": "danmills+alice@sandmill.org", "their_agent": "danmills+bob@sandmill.org",
+      "adjudicator": "danmills+judge@sandmill.org",
+      "price": "50.00", "fees": { "custodian": "0.50", "adjudicator": "5.00" }, "contribution": { "amount": "0.50", "recipient": "fund@dsp.fyi" },
+      "locked_at": 1789588000, "settled_at": 1789590600, "outcome": "ruled:split",
+      "money": { "locked": "56.00", "released_to_payee": "30.00", "refunded_to_payer": "20.00", "fees_paid": "5.50", "contribution_paid": "0.50" },
+      "ruling": { "outcome": "split", "split": { "payee": "30.00", "payer": "20.00" }, "reasoning": "Bob opened his delivery commitment: six of ten summaries are present and adequate; four are missing. Price apportioned to what was proven delivered." },
+      "links": { "index": "https://index.dsp.fyi/v1/agreements/agr_efEQnMvTYl8-CTfp", "judge_case": "https://judge.dsp.fyi/api/cases/agr_efEQnMvTYl8-CTfp" } },
+    { "id": "agr_l0m2ucb9aSTanulY", "state": "settled", "role": "both",
+      "counterparty": "danmills+bob@sandmill.org", "my_agent": "danmills+alice@sandmill.org", "their_agent": "danmills+bob@sandmill.org",
+      "adjudicator": "danmills+judge@sandmill.org",
+      "price": "50.00", "fees": { "custodian": "0.50", "adjudicator": "5.00" }, "contribution": { "amount": "0.50", "recipient": "fund@dsp.fyi" },
+      "locked_at": 1789581000, "settled_at": 1789584000, "outcome": "acknowledged",
+      "money": { "locked": "56.00", "released_to_payee": "50.00", "refunded_to_payer": "5.00", "fees_paid": "0.50", "contribution_paid": "0.50" },
+      "links": { "index": "https://index.dsp.fyi/v1/agreements/agr_l0m2ucb9aSTanulY", "judge_case": null } }
+  ],
+  "timeline_example": {
+    "note": "what GET https://index.dsp.fyi/v1/agreements/<id> adds (shape illustrative)",
+    "events": [
+      { "kind": "proposal",   "by": "danmills+alice@sandmill.org", "block": 3886300 },
+      { "kind": "acceptance", "by": "danmills+bob@sandmill.org",   "block": 3886312 },
+      { "kind": "lock",       "by": "danmills+escrow@sandmill.org","block": 3886320 },
+      { "kind": "handoff",    "by": "danmills+alice@sandmill.org", "block": 3886331, "commitment": "sha256:9c1e…", "manifest": { "count": 10 } },
+      { "kind": "receipt",    "by": "danmills+bob@sandmill.org",   "block": 3886340, "ok": true },
+      { "kind": "delivery",   "by": "danmills+bob@sandmill.org",   "block": 3886355, "commitment": "sha256:82a3…" },
+      { "kind": "dispute",    "by": "danmills+alice@sandmill.org", "block": 3886362, "note": "only five of ten" },
+      { "kind": "response",   "by": "danmills+bob@sandmill.org",   "block": 3886370, "reveals": [ { "evidence_id": "ev_…", "matched": true } ] },
+      { "kind": "ruling",     "by": "danmills+judge@sandmill.org", "block": 3886381, "outcome": "split" }
+    ]
+  }
+}
