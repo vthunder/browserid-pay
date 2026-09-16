@@ -57,7 +57,7 @@ enum Commands {
         #[arg(long, default_value = "fund@dsp.fyi")]
         contribution_recipient: String,
         /// Suggested contribution percentage published in /sys/contribution.
-        #[arg(long, default_value = "1.0")]
+        #[arg(long, default_value = "0.5")]
         contribution_percentage: f64,
         /// Daemon whose `/v1/dnssec` captures the broker's DNSSEC proof for
         /// `/sys/dnssec/<broker>` at genesis (so broker-attributed writes work
@@ -245,6 +245,21 @@ async fn capture_proof(daemon: &str, domain: &str, repo: Option<&str>, force: bo
 
 /// The root policy (policy.v2) for this database. See deploy/GENESIS.md
 /// ("Policy") for what each grant is for and what it cannot express.
+/// The chain-enforced contribution floor: 1 basis point, or at least one cent,
+/// whichever is larger. Deliberately tiny — it exists so that "contributes
+/// nothing" is not expressible, not to price the ecosystem. The *suggested*
+/// contribution (published in `/sys/contribution`, 0.5% by default) is what an
+/// agent should actually offer.
+const MIN_CONTRIBUTION_PERCENTAGE: f64 = 0.01;
+const MIN_CONTRIBUTION_AMOUNT_MINOR: i64 = 1;
+/// The same floor as a decimal, for the policy's numeric comparison.
+const MIN_CONTRIBUTION_AMOUNT: f64 = 0.01;
+
+/// Minor units as a decimal string (money is carried as decimal strings).
+fn fmt_minor_str(minor: i64) -> String {
+    format!("{}.{:02}", minor / 100, minor % 100)
+}
+
 fn root_policy(sys: &SigningKey) -> serde_json::Value {
     let (dnssec_grant, dnssec_restriction) = dnssec_self_auth_policy_entries();
     let sys_pubkey = pubkey_str(sys);
@@ -280,6 +295,28 @@ fn root_policy(sys: &SigningKey) -> serde_json::Value {
         "restrictions": [
             { "on": "/providers/**", "require": { "schema": "provider.v1", "max_size": 16384 } },
             { "on": "/agreements/**", "require": { "max_size": 65536 } },
+            // The ecosystem contribution floor. Scoped by `id` to the proposal:
+            // an agreement's other objects (acceptance, lock, ruling, evidence)
+            // share the container and carry no contribution, so without the id
+            // this would reject all of them. Requires the object-id + payload-
+            // field policy features (sbo-pu34) — a daemon older than those
+            // IGNORES both fields, silently not enforcing this, so never publish
+            // this policy to a chain whose validators have not been upgraded.
+            //
+            // `fn` is pinned because without it a proposer picks `min` and pays
+            // the smaller operand. Flooring both operands is conservative for a
+            // floor on max() — stricter than strictly necessary, and sound. The
+            // custodian does the exact arithmetic at lock (it has the price,
+            // which is sealed on chain in commitment mode).
+            {
+                "on": "/agreements/*/",
+                "id": "proposal",
+                "require": { "fields": [
+                    { "pointer": "/contribution/fn", "eq": "max" },
+                    { "pointer": "/contribution/amount", "min": MIN_CONTRIBUTION_AMOUNT },
+                    { "pointer": "/contribution/percentage", "min": MIN_CONTRIBUTION_PERCENTAGE }
+                ]}
+            },
             dnssec_restriction
         ]
     })
@@ -307,8 +344,15 @@ fn build_genesis(sys: &SigningKey, broker: &str, dnssec_proof: Option<&[u8]>, re
     // 3. contribution suggestion
     let contribution = serde_json::to_vec(&serde_json::json!({
         "recipient": recipient,
+        "fn": "max",
+        "suggested_amount": fmt_minor_str(MIN_CONTRIBUTION_AMOUNT_MINOR),
         "suggested_percentage": pct,
-        "note": "Suggestion only. A chain-enforced minimum would be a root-policy restriction (browserid-pay-er8j)."
+        "minimum": {
+            "fn": "max",
+            "amount": fmt_minor_str(MIN_CONTRIBUTION_AMOUNT_MINOR),
+            "percentage": MIN_CONTRIBUTION_PERCENTAGE
+        },
+        "note": "The suggestion is what an agent should offer; `minimum` is the floor the root policy enforces on every proposal."
     }))
     .unwrap();
     batch.extend(signed_object(sys, "/sys/", "contribution", "contribution.v1", "application/json", contribution, None, None, None));

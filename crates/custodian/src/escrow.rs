@@ -338,11 +338,7 @@ pub async fn lock(
     let custodian_fee = req.fees.get("custodian").map(|v| money(v, "fees.custodian")).transpose()?.unwrap_or(0);
     let adjudicator_fee = req.fees.get("adjudicator").map(|v| money(v, "fees.adjudicator")).transpose()?.unwrap_or(0);
     let contribution_recipient = req.contribution.get("recipient").and_then(|v| v.as_str()).map(String::from);
-    let contribution = match (req.contribution.get("percentage").and_then(|v| v.as_f64()), req.contribution.get("amount")) {
-        (_, Some(a)) => money(a, "contribution.amount")?,
-        (Some(pct), None) if pct >= 0.0 => ((price as f64) * pct / 100.0).round() as i64,
-        _ => 0,
-    };
+    let contribution = contribution_minor(&req.contribution, price)?;
     let total = price + custodian_fee + adjudicator_fee + contribution;
     if price <= 0 {
         return Err(err("bad_request", "price must be positive"));
@@ -554,9 +550,79 @@ pub fn view(e: &Escrow) -> Value {
     })
 }
 
+/// The contribution in minor units, for a price in minor units.
+///
+/// `fn` combines the two operands — `max` (the usual floor: "1bp, or at least a
+/// cent"), `min` (a ceiling on both) — and is REQUIRED when both are present:
+/// guessing would silently charge the wrong party. A single operand needs no
+/// `fn`. A malformed contribution is a refusal, never a silent zero: charging
+/// nothing because a field did not parse is exactly the failure a chain-enforced
+/// floor exists to prevent.
+///
+/// The chain policy bounds the *declared* operands (see the root policy in
+/// `crates/genesis`); this is the arithmetic the policy deliberately cannot do,
+/// because it needs the price, which is sealed in commitment mode.
+pub fn contribution_minor(c: &Value, price_minor: i64) -> Result<i64, EscrowError> {
+    let pct = match c.get("percentage") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let p = v.as_f64().filter(|p| p.is_finite() && *p >= 0.0)
+                .ok_or_else(|| err("bad_request", "contribution.percentage must be a non-negative number"))?;
+            Some(((price_minor as f64) * p / 100.0).ceil() as i64)
+        }
+    };
+    let abs = match c.get("amount") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(money(v, "contribution.amount")?),
+    };
+    match (abs, pct) {
+        (None, None) => Ok(0),
+        (Some(a), None) => Ok(a),
+        (None, Some(p)) => Ok(p),
+        (Some(a), Some(p)) => match c.get("fn").and_then(|v| v.as_str()) {
+            Some("max") => Ok(a.max(p)),
+            Some("min") => Ok(a.min(p)),
+            _ => Err(err(
+                "bad_request",
+                "contribution carries both amount and percentage; fn must be \"max\" or \"min\"",
+            )),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn contrib(v: serde_json::Value, price: i64) -> Result<i64, EscrowError> {
+        contribution_minor(&v, price)
+    }
+
+    #[test]
+    fn contribution_combines_operands_and_refuses_ambiguity() {
+        // max(): the floor. 0.01% of $100 is 1 cent; on a $1 deal the absolute wins.
+        assert_eq!(contrib(json!({"fn": "max", "amount": "0.01", "percentage": 0.01}), 10000).unwrap(), 1);
+        assert_eq!(contrib(json!({"fn": "max", "amount": "0.01", "percentage": 0.01}), 100).unwrap(), 1);
+        assert_eq!(contrib(json!({"fn": "max", "amount": "0.01", "percentage": 1.0}), 100000).unwrap(), 1000);
+        // min(): a ceiling on both.
+        assert_eq!(contrib(json!({"fn": "min", "amount": "0.01", "percentage": 1.0}), 100000).unwrap(), 1);
+        // One operand needs no fn.
+        assert_eq!(contrib(json!({"percentage": 1.0}), 10000).unwrap(), 100);
+        assert_eq!(contrib(json!({"amount": "0.25"}), 10000).unwrap(), 25);
+        assert_eq!(contrib(json!({}), 10000).unwrap(), 0);
+        // Both operands with no fn: refused, not guessed.
+        assert!(contrib(json!({"amount": "0.01", "percentage": 1.0}), 10000).is_err());
+    }
+
+    #[test]
+    fn a_malformed_contribution_refuses_instead_of_charging_zero() {
+        // The old behavior silently fell through to 0 — the exact failure a
+        // chain-enforced floor exists to prevent.
+        assert!(contrib(json!({"percentage": "lots"}), 10000).is_err());
+        assert!(contrib(json!({"percentage": -1.0}), 10000).is_err());
+        assert!(contrib(json!({"amount": "free"}), 10000).is_err());
+    }
+
     use crate::config::Config;
     use browserid_core::device::{AccessCert, Binding, Cap, DeviceCert, Holder, HolderMatcher, Purpose, ScopeParams, Warrant};
     use browserid_core::{Assertion, KeyPair, StatusRef};

@@ -55,7 +55,7 @@ export class AgreementError extends Error {
  * @param {string} [o.broker]
  * @param {object} [o.custodian]    { origin } override discovery
  * @param {object} [o.adjudicator]  { identity, origin, sealing_key, price } override discovery
- * @param {object} [o.contribution] { recipient, percentage } override /sys/contribution
+ * @param {object} [o.contribution] { recipient, fn?, amount?, percentage } override /sys/contribution
  * @param {function} [o.http]
  */
 export class Agreements {
@@ -96,7 +96,14 @@ export class Agreements {
     const me = await this.reputationOf(this.email).catch(() => null);
     return {
       custodians: cust, adjudicators: adj,
-      contribution: contrib ? { recipient: contrib.recipient, percentage: contrib.suggested_percentage ?? contrib.percentage ?? 0 } : null,
+      contribution: contrib
+        ? normalizeContribution({
+            recipient: contrib.recipient,
+            fn: contrib.fn,
+            amount: contrib.suggested_amount ?? contrib.amount,
+            percentage: contrib.suggested_percentage ?? contrib.percentage ?? 0,
+          })
+        : null,
       index: this.index,
       my_reputation: me ? { score: me.score, n_counterparty_accounts: me.n_counterparty_accounts, formula: me.formula, indexer: this.index } : null,
     };
@@ -208,7 +215,8 @@ export class Agreements {
     const payer = o.payer || this.email;
     const payee = payer === this.email ? o.acceptor : this.email;
     const fees = { custodian: terms.fees?.custodian ?? custodian.price?.amount ?? "0.00", adjudicator: terms.fees?.adjudicator ?? adjudicator.price?.amount ?? "0.00" };
-    const full = { v: 1, id, salt, ...terms, fees, contribution: { recipient: contribution.recipient, percentage: contribution.percentage } };
+    const contributionOut = normalizeContribution(contribution);
+    const full = { v: 1, id, salt, ...terms, fees, contribution: contributionOut };
     const com = commitment(full);
     const totalMinor = totalOf(full);
     const currency = full.price.currency;
@@ -220,7 +228,11 @@ export class Agreements {
       parties: { proposer: this.email, acceptor: o.acceptor },
       roles: { payer, payee },
       adjudicator: adjudicator.identity, custodian: custodian.origin,
-      contribution: { recipient: contribution.recipient, percentage: contribution.percentage },
+      contribution: contributionOut,
+      // Fees are CLEAR on the proposal even in commitment mode: a chain policy
+      // can only cap what it can read, and capping adjudication / escrow fees is
+      // an ecosystem-health lever. This publishes fee pricing, never deal value.
+      fees,
       expires: o.expires || nowS() + 7 * 86400,
       bundle,
     };
@@ -680,9 +692,38 @@ export class Agreements {
 export function totalOf(terms) {
   const price = money(terms.price.amount);
   const fees = money(terms.fees?.custodian ?? "0") + money(terms.fees?.adjudicator ?? "0");
-  const pct = Number(terms.contribution?.percentage ?? 0);
-  const contrib = Math.ceil((price * pct) / 100);
-  return price + fees + contrib;
+  return price + fees + contributionOf(terms.contribution, price);
+}
+
+/**
+ * The contribution in minor units, for a price in minor units.
+ *
+ * `fn` combines the two operands: `max` (the usual floor — "1bp, or at least a
+ * cent"), `min` (a ceiling on both), or absent for a single operand. Kept as
+ * STRUCTURE rather than an expression string so a chain policy can pin `fn` and
+ * bound each operand with plain value conditions — no parser in the policy
+ * language. See the SBO Policy Specification, "Payload-field conditions".
+ */
+export function contributionOf(c, priceMinor) {
+  if (!c) return 0;
+  const pct = c.percentage == null ? null : Math.ceil((priceMinor * Number(c.percentage)) / 100);
+  const abs = c.amount == null ? null : money(c.amount);
+  if (pct == null && abs == null) return 0;
+  if (pct == null) return abs;
+  if (abs == null) return pct;
+  if (c.fn === "max") return Math.max(abs, pct);
+  if (c.fn === "min") return Math.min(abs, pct);
+  // Both operands present with no `fn` is ambiguous — refuse rather than guess.
+  throw new AgreementError("contribution_fn_required");
+}
+
+/** Normalize a contribution to the object that goes on chain and into the terms. */
+export function normalizeContribution(c) {
+  const out = { recipient: c?.recipient ?? null };
+  if (c?.fn != null) out.fn = c.fn;
+  if (c?.amount != null) out.amount = String(c.amount);
+  out.percentage = Number(c?.percentage ?? 0);
+  return out;
 }
 
 function defaultVerify(http) {

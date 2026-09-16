@@ -1,11 +1,11 @@
 ---
 # browserid-pay-er8j
 title: Chain-enforced contribution floor + fee caps (policy restriction on payload fields)
-status: todo
+status: in-progress
 type: task
 priority: normal
 created_at: 2026-09-15T14:32:06Z
-updated_at: 2026-09-16T20:24:58Z
+updated_at: 2026-09-16T20:31:45Z
 ---
 
 Policy spec + daemon: restriction condition on a payload field (contribution.percentage ≥ N) on /agreements/**. Needed only to enforce the chain minimum.
