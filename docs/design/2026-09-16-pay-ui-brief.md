@@ -110,6 +110,39 @@ Non-goals: no admin tooling here, no key material, no revocation controls
   agreement", not "escrow warrant presentation"). Copy rules in
   `docs/principles.md` (browserid-ng) apply.
 
+## Funding
+
+The page models where money comes from as a list of **funding sources**, not
+as "a deposit". A source is one of two modes, and the difference is when the
+money moves:
+
+- **`deposit`** — funds are pushed in ahead of time and sit as a balance:
+  test credit today; a chain deposit address or a bank transfer later.
+- **`charge`** — nothing sits here; the source is charged at the moment money
+  is needed (a card charged when an escrow locks, an x402 settlement drawn
+  against a card or an account elsewhere).
+
+"Add funds" therefore opens a *list of sources*, with test credit the only
+row today. A charge-mode source is a new row plus its own rail, never a
+reshaped page: the dialog already renders "charged when needed" instead of an
+amount field for such a source, and `GET /api/me` carries
+
+```jsonc
+"funding": {
+  "test_credit_enabled": true,
+  "sources": [ { "id": "test_credit", "kind": "test_credit", "mode": "deposit",
+                 "label": "Test credit", "note": "…",
+                 "available": "500.00", "max_per_request": "500.00", "ceiling": "1000.00" } ]
+}
+```
+
+Test credit is self-serve: `POST /api/deposit { amount }`, authenticated by
+the **signed-in session** (never the admin token), gated by `PAY_TEST_CREDIT`,
+bounded per request (`PAY_TEST_CREDIT_MAX`), by a per-account ceiling
+(`PAY_TEST_CREDIT_CEILING`) and by a one-a-minute cooldown. It writes the same
+`credit` ledger row and receipt as the admin route. Turning the flag off
+removes the button and the route together.
+
 ## Data contract — `GET /api/me`
 
 ```jsonc

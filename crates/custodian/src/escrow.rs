@@ -571,6 +571,7 @@ mod tests {
             broker: "https://idp.test".into(), accepted_fallbacks: vec![ISSUER.into()], session_secret: "s".into(),
             dev: true, trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())], currency: "USD".into(),
             data_dir: String::new(), chain_audience: String::new(), handle: String::new(), fee: "0.50".into(), daemon: String::new(), repo: String::new(), index_origin: String::new(), judge_origin: String::new(),
+            test_credit: true, test_credit_max_minor: 50_000, test_credit_ceiling_minor: 100_000,
         }
     }
 

@@ -31,6 +31,8 @@ struct App {
     db: Db,
     verify: Arc<verify::Verify>,
     publisher: Arc<dyn escrow::Publisher>,
+    /// Last self-serve deposit per account (rate limit).
+    deposits: Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>>,
     identity: Arc<chain::Identity>,
     reputation: Arc<reputation::Reputation>,
 }
@@ -68,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         writer: writer.clone(),
         chain_audience: cfg.chain_audience.clone(),
     });
-    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: publisher.clone(), identity: identity.clone(), reputation: Arc::new(reputation::Reputation::new(cfg.dev)) };
+    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: publisher.clone(), identity: identity.clone(), reputation: Arc::new(reputation::Reputation::new(cfg.dev)), deposits: Default::default() };
 
     // Load the identity, or provision it in the background (prints the approval
     // URL). In dev mode without a credential nothing is provisioned unless
@@ -111,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/me", get(api_me))
         .route("/api/pay", post(api_pay))
         .route("/admin/credit", post(admin_credit))
+        .route("/api/deposit", post(api_deposit))
         .route("/api/escrow/lock", post(escrow_lock))
         .route("/api/escrow/:id", get(escrow_get))
         .route("/api/escrow/:id/acknowledge", post(escrow_acknowledge))
@@ -273,10 +276,29 @@ async fn api_me(State(app): State<App>, headers: HeaderMap) -> Response {
         })
         .collect();
 
+    // Funding sources, not "deposit": a source either PUSHES funds in ahead of
+    // time (`mode: "deposit"` — test credit today, a chain address or a bank
+    // transfer later) or is CHARGED on demand when money is needed (`mode:
+    // "charge"` — a card at escrow lock). The page renders the list, so a
+    // charge-mode source drops in without reshaping it.
+    let balance_minor = account.as_ref().map(|a| a.balance_minor).unwrap_or(0);
+    let mut sources = vec![];
+    if app.cfg.test_credit {
+        sources.push(json!({
+            "id": "test_credit", "kind": "test_credit", "mode": "deposit",
+            "label": "Test credit",
+            "note": "Play money until a real rail lands. It spends like any balance here.",
+            "available": fm((app.cfg.test_credit_ceiling_minor - balance_minor).clamp(0, app.cfg.test_credit_max_minor)),
+            "max_per_request": fm(app.cfg.test_credit_max_minor),
+            "ceiling": fm(app.cfg.test_credit_ceiling_minor),
+        }));
+    }
+
     Json(json!({
         "email": identity,
         "currency": app.cfg.currency,
-        "balance": fm(account.map(|a| a.balance_minor).unwrap_or(0)),
+        "balance": fm(balance_minor),
+        "funding": { "sources": sources, "test_credit_enabled": app.cfg.test_credit },
         "ledger": ledger,
         "agents": agents,
         "agreements": agreements,
@@ -352,6 +374,78 @@ async fn admin_credit(State(app): State<App>, headers: HeaderMap, Json(body): Js
     });
     match res {
         Ok(bal) => Json(json!({ "balance": pay::fmt_minor(bal) })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DepositBody {
+    amount: String,
+}
+
+/// Self-serve funding from the page. Authenticated by the SESSION (never the
+/// admin token), gated by `PAY_TEST_CREDIT`, and bounded three ways: per
+/// request, by a balance ceiling, and by a short cooldown — this mints money
+/// out of nothing, so the limits are the whole safety story.
+async fn api_deposit(State(app): State<App>, headers: HeaderMap, Json(body): Json<DepositBody>) -> Response {
+    let Some(identity) = session_identity(&app, &headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "not_signed_in" }))).into_response();
+    };
+    if !app.cfg.test_credit {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "test_credit_disabled", "detail": "this custodian offers no self-serve funding" }))).into_response();
+    }
+    let Some(minor) = browserid_core::device::parse_money_minor(&body.amount).map(|m| m as i64) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "bad_amount" }))).into_response();
+    };
+    if minor <= 0 || minor > app.cfg.test_credit_max_minor {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "amount_out_of_range",
+            "detail": format!("between 0.01 and {} per request", pay::fmt_minor(app.cfg.test_credit_max_minor)) }))).into_response();
+    }
+    // One top-up a minute per account, and never past the ceiling.
+    {
+        let mut last = app.deposits.lock().expect("deposits");
+        let now = std::time::Instant::now();
+        last.retain(|_, t: &mut std::time::Instant| now.duration_since(*t).as_secs() < 3600);
+        if let Some(t) = last.get(&identity) {
+            let wait = 60u64.saturating_sub(now.duration_since(*t).as_secs());
+            if wait > 0 {
+                return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "rate_limited", "detail": format!("try again in {wait}s") }))).into_response();
+            }
+        }
+        last.insert(identity.clone(), now);
+    }
+    let currency = app.cfg.currency.clone();
+    let ceiling = app.cfg.test_credit_ceiling_minor;
+    let res = app.db.with(|c| {
+        let have = c
+            .query_row("SELECT balance_minor FROM accounts WHERE identity=?1", rusqlite::params![identity], |r| r.get::<_, i64>(0))
+            .unwrap_or(0);
+        if have + minor > ceiling {
+            return Ok(Err(json!({ "error": "ceiling_reached",
+                "detail": format!("test credit stops at {} per account; this account holds {}", pay::fmt_minor(ceiling), pay::fmt_minor(have)) })));
+        }
+        let id = format!("dep_{}", pay::random_id());
+        let bal = Db::adjust(c, &identity, &currency, minor, "credit", Some(&id))?;
+        Db::insert_receipt(
+            c,
+            &db::Receipt {
+                id,
+                kind: "credit".into(),
+                grantor: identity.clone(),
+                grantee: identity.clone(),
+                warrant_key: None,
+                amount_minor: minor,
+                currency: currency.clone(),
+                payee: None,
+                memo: Some("test credit".into()),
+                at: db::now(),
+            },
+        )?;
+        Ok(Ok(bal))
+    });
+    match res {
+        Ok(Ok(bal)) => Json(json!({ "balance": pay::fmt_minor(bal) })).into_response(),
+        Ok(Err(e)) => (StatusCode::FORBIDDEN, Json(e)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }

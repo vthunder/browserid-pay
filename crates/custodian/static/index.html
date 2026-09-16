@@ -111,6 +111,38 @@
   .empty { color:var(--sec); font-size:13px; }
   details > summary { cursor:pointer; color:var(--sec); font-size:12.5px; margin-bottom:10px; }
 
+  /* header identity menu */
+  .whobtn { font:12px ui-monospace, Menlo, monospace; color:var(--sec); background:none; border:0; padding:2px 4px; border-radius:6px; cursor:pointer; }
+  .whobtn:hover, .whobtn[aria-expanded="true"] { background:var(--chip); border:0; }
+  .whobtn b { color:var(--ink); }
+  .whowrap { position:relative; }
+  .menu { position:absolute; right:0; top:calc(100% + 6px); background:var(--card); border:1px solid var(--hair); border-radius:10px; box-shadow:var(--cardshadow); padding:6px; min-width:210px; z-index:20; }
+  .menu .mid2 { font:11.5px ui-monospace, Menlo, monospace; color:var(--sec); padding:6px 8px 8px; border-bottom:1px solid var(--hair3); word-break:break-all; }
+  .menu button { display:block; width:100%; text-align:left; font:13px system-ui, sans-serif; background:none; border:0; border-radius:6px; padding:7px 8px; margin-top:4px; color:var(--ink); cursor:pointer; }
+  .menu button:hover, .menu button:focus-visible { background:var(--chip); border:0; }
+
+  /* balance row + funding */
+  .balrow { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  .addfunds { font:600 12px system-ui, sans-serif; padding:5px 12px; border-radius:999px; }
+  .src { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; border:1px solid var(--hair); border-radius:10px; padding:12px 14px; margin-top:10px; }
+  .src .lab { font-size:13px; font-weight:600; }
+  .src .note { font-size:12px; color:var(--sec); margin-top:2px; }
+  .src .avail { font-size:11.5px; color:var(--faint); white-space:nowrap; }
+  .amounts { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0 0; }
+  .amounts button { font:12px system-ui, sans-serif; padding:4px 10px; border-radius:999px; }
+  .amounts button[aria-pressed="true"] { border-color:var(--ok); color:var(--ok); }
+  .amtrow { display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap; }
+  .amtrow input { font:13.5px ui-monospace, Menlo, monospace; padding:7px 10px; border:1px solid var(--hair); border-radius:8px; background:var(--card); color:var(--ink); width:120px; }
+  .amtrow input:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
+  .srcerr { font-size:12px; color:var(--warn); margin-top:8px; }
+  .srcok { font-size:12px; color:var(--ok); margin-top:8px; }
+
+  /* a long ruling is clamped to a few lines with a toggle */
+  .clamp { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; max-height:7.5em; }
+  @supports (-webkit-line-clamp:4) { .clamp { max-height:none; } }
+  .more { font:normal 11.5px system-ui, sans-serif; color:var(--link); background:none; border:0; padding:2px 0 0; cursor:pointer; display:block; }
+  .more:hover { border:0; text-decoration:underline; }
+
   /* popups */
   .overlay { position:fixed; inset:0; background:var(--overlay); display:flex; align-items:center; justify-content:center; padding:24px; z-index:10; }
   .panel { background:var(--bg); border-radius:12px; box-shadow:var(--shadow); width:100%; padding:18px 22px; max-height:calc(100vh - 48px); overflow-y:auto; }
@@ -186,7 +218,13 @@
 <main>
   <div class="top">
     <div class="brand">pay.dsp.fyi</div>
-    <div class="who mono" id="who"></div>
+    <div class="whowrap" id="whowrap" hidden>
+      <button class="whobtn mono" id="whobtn" aria-haspopup="true" aria-expanded="false"></button>
+      <div class="menu" id="whomenu" hidden>
+        <div class="mid2" id="whofull"></div>
+        <button id="logout" type="button">Sign out</button>
+      </div>
+    </div>
   </div>
 
   <div id="signedout" class="signin" hidden>
@@ -197,7 +235,10 @@
   </div>
 
   <div id="body" hidden>
-    <div class="balance num" id="balance">—</div>
+    <div class="balrow">
+      <div class="balance num" id="balance">—</div>
+      <button class="addfunds" id="addfunds" hidden>Add funds</button>
+    </div>
     <div class="lede" id="lede"></div>
     <div class="needs" id="needs" hidden></div>
 
@@ -211,8 +252,6 @@
     <div class="sechead gap"><span>Agreements</span><span class="rule"></span></div>
     <div id="agreements"></div>
 
-    <div class="agfoot" style="margin-top:24px">Signed in as <span class="mono" id="whofoot"></span> ·
-      <a href="#" id="logout">sign out</a></div>
   </div>
 </main>
 <div id="popup"></div>
@@ -348,12 +387,29 @@ function capGroups(grants) {
     return { words: e.words, used };
   });
 }
+// Grants are only recorded from a payment or an escrow lock, so an agent that
+// acted before budget tracking existed has no warrant row. Union the recorded
+// agents with the ones seen in our agreements, so the section is never empty
+// while agreements exist.
+function agentList() {
+  const byId = new Map((me.agents || []).map(a => [a.identity, { ...a, acted: [] }]));
+  for (const g of me.agreements || []) {
+    const ours = g.role === 'both' ? [g.my_agent, g.their_agent] : [g.my_agent];
+    for (const id of ours) {
+      if (!id) continue;
+      if (!byId.has(id)) byId.set(id, { identity: id, grants: [], acted: [] });
+      byId.get(id).acted.push(g);
+    }
+  }
+  return [...byId.values()];
+}
 function agentsHtml() {
-  if (!me.agents || !me.agents.length) {
+  const agents = agentList();
+  if (!agents.length) {
     return `<div class="card empty">No agent has a budget yet. Budgets appear here once an agent you
       authorized at ${esc(host(BROKER))} makes a payment or funds an agreement from this account.</div>`;
   }
-  return me.agents.map(a => {
+  return agents.map(a => {
     const standing = a.grants.filter(g => !g.agreement_id);
     const caps = capGroups(a.grants.filter(g => g.agreement_id));
     const rep = reps.get(a.identity);
@@ -372,6 +428,13 @@ function agentsHtml() {
         </div>`;
       }).join('')}
       ${caps.map(c => `<div class="cap"><span>${c.words}</span><span class="used">${esc(c.used)}</span></div>`).join('')}
+      ${!standing.length && !caps.length ? `<div class="budget">
+        <div class="bmeta">No recorded budget — this agent’s grants predate budget tracking.</div>
+        ${(a.acted || []).length ? `<div class="cap" style="border-top:0;padding-top:6px;margin-top:4px">
+          <span>acted in ${(a.acted || []).length} agreement${a.acted.length === 1 ? '' : 's'}</span>
+          <span class="used">${(a.acted || []).slice(0, 3).map(g => `<span class="agr mono" data-agr="${esc(g.id)}">${esc(short(g.id))}</span>`).join(' ')}</span>
+        </div>` : ''}
+      </div>` : ''}
     </div>`;
   }).join('');
 }
@@ -480,7 +543,7 @@ function agreementHtml(a) {
     ${a.state === 'disputed' ? evidenceChips(a) : ''}
     <div class="money">${m.rows.map(r => `<div><span class="lab">${esc(r.lab)}</span><span class="num ${r.cls}">${esc(r.v)}</span></div>`).join('')}</div>
     ${a.state !== 'settled' ? `<div class="terms" style="margin-top:6px">still held in escrow · price ${esc(plain(a.price))} · fees ${esc((m.custFee + m.adjFee).toFixed(2))} · contribution ${esc(plain(a.contribution && a.contribution.amount))}</div>` : ''}
-    ${ruled && ruled.reasoning ? `<div class="quote">“${esc(ruled.reasoning)}”<span class="by"> — ${esc(split(a.adjudicator).local)}</span></div>` : ''}
+    ${ruled && ruled.reasoning ? `<div class="quote"><span class="clampable ${expanded.has(a.id + ':card') ? '' : 'clamp'}">“${esc(ruled.reasoning)}”</span><span class="by"> — ${esc(split(a.adjudicator).local)}</span>${long(ruled.reasoning) ? `<button class="more" data-more="${esc(a.id)}:card" data-stop>${expanded.has(a.id + ':card') ? 'less' : 'more'}</button>` : ''}</div>` : ''}
     <div class="agr-foot">
       <a href="${esc((a.links && a.links.index) || INDEX + '/v1/agreements/' + a.id)}" target="_blank" rel="noopener" data-stop>public record ↗</a>
       ${a.links && a.links.judge_case ? `<span class="sep"> · </span><a href="${esc(a.links.judge_case)}" target="_blank" rel="noopener" data-stop>dispute case ↗</a>` : ''}
@@ -587,9 +650,11 @@ function timelinePanel(a) {
             ${meta ? `<div class="meta">${meta}</div>` : ''}</div></div>`;
         }
         const metaB = `${ev.sub ? esc(ev.sub) + ' ' : ''}${ev.block ? 'block ' + esc(ev.block) : ''}`.trim();
-        const card = `<div class="evc ${ev.side}">${ev.side === 'a'
-          ? `<span class="nm">${esc(ev.who)}</span> <span>${esc(ev.words)}</span>`
-          : `<span>${esc(ev.words)}</span> <span class="nm">${esc(ev.who)}</span>`}
+        // Name first on BOTH sides — "bob confirmed receipt", not "confirmed
+        // receipt bob". The artboard trails the name on the right column; read
+        // aloud it parses badly, so the column keeps its alignment, border and
+        // mirrored meta, but the sentence starts with the actor.
+        const card = `<div class="evc ${ev.side}"><span class="nm">${esc(ev.who)}</span> <span>${esc(ev.words)}</span>
           ${meta ? `<div class="meta">${ev.side === 'a' ? meta : metaB}</div>` : ''}</div>`;
         return `<div class="ev"><div>${ev.side === 'a' ? card : ''}</div>
           <div class="dot"><i style="background:${accent}"></i></div>
@@ -621,7 +686,7 @@ function timelinePanel(a) {
       ${ruled ? `<div class="ruling">
         <div class="rh"><span>Ruling — ${esc(ruled.outcome)}</span>
           <span class="mono">${esc(split(a.adjudicator).local)}${a.links && a.links.judge_case ? ` · <a href="${esc(a.links.judge_case)}" target="_blank" rel="noopener" data-stop>case ↗</a>` : ''}</span></div>
-        ${ruled.reasoning ? `<div class="rq">“${esc(ruled.reasoning)}”</div>` : ''}
+        ${ruled.reasoning ? `<div class="rq"><span class="clampable ${expanded.has(a.id + ':tl') ? '' : 'clamp'}">“${esc(ruled.reasoning)}”</span>${long(ruled.reasoning) ? `<button class="more" data-more="${esc(a.id)}:tl" data-stop>${expanded.has(a.id + ':tl') ? 'less' : 'more'}</button>` : ''}</div>` : ''}
         ${ruled.split ? `<div class="rs"><span><b>${esc(money(ruled.split.payee))}</b> <span class="sec">to ${esc(m.payee)}</span></span>
           <span><b>${esc(money(ruled.split.payer))}</b> <span class="sec">back to ${esc(m.payer)}</span></span></div>` : ''}
         ${kase && kase.response && (kase.response.reveals || []).some(r => r.matched) ? `<div class="proved">what ${esc(m.payee)} proved: delivery commitment opened, matched ✓</div>` : ''}
@@ -631,6 +696,10 @@ function timelinePanel(a) {
 }
 
 // ---- reputation popup ------------------------------------------------------
+// A reasoning longer than roughly four lines is clamped until asked for.
+const expanded = new Set();
+const long = t => String(t || '').length > 260;
+
 const COMP_LABEL = { completion:'completion', dispute_record:'dispute record', responsiveness:'responsiveness', promptness:'promptness', tenure:'tenure' };
 function compNote(key, card) {
   const c = card.counts || {};
@@ -670,21 +739,91 @@ function repPanel(identity) {
 }
 const repPending = new Set();
 
+// ---- add funds -------------------------------------------------------------
+// The dialog lists FUNDING SOURCES, not "a deposit". A source either pushes
+// funds in ahead of time (`mode: "deposit"` — test credit now, a chain address
+// or a bank transfer later) or is charged on demand when money is needed
+// (`mode: "charge"` — a card at escrow lock). Adding a charge-mode source is a
+// new row here, not a new dialog.
+let fundState = { amount: '25.00', busy: false, err: '', ok: '' };
+const QUICK = ['10.00', '25.00', '100.00'];
+function fundPanel() {
+  const sources = (me.funding && me.funding.sources) || [];
+  return `<div class="overlay" data-close>
+    <div class="panel rep" role="dialog" aria-modal="true" aria-label="Add funds">
+      <div class="phead"><span style="font:600 14px system-ui,sans-serif">Add funds</span>
+        <button class="x" data-close aria-label="Close">×</button></div>
+      <div class="lede" style="margin:6px 0 0">Where the money in this account comes from. ${sources.length > 1 ? 'Pick a source.' : ''}</div>
+      ${sources.map(src => `<div class="src">
+        <span><span class="lab">${esc(src.label)}</span><div class="note">${esc(src.note || '')}</div></span>
+        <span class="avail">${src.mode === 'charge' ? 'charged when needed' : 'up to ' + esc(money(src.available)) + ' now'}</span>
+      </div>`).join('')}
+      ${sources.some(x => x.mode === 'deposit') ? `
+        <div class="amounts">${QUICK.map(q => `<button type="button" data-amt="${q}" data-stop aria-pressed="${fundState.amount === q}">${esc(money(q))}</button>`).join('')}</div>
+        <div class="amtrow">
+          <input id="fundamt" inputmode="decimal" aria-label="Amount" value="${esc(fundState.amount)}" data-stop>
+          <button id="fundgo" type="button" data-stop ${fundState.busy ? 'disabled' : ''}>${fundState.busy ? 'Adding…' : 'Add ' + esc(money(fundState.amount))}</button>
+        </div>` : ''}
+      ${fundState.err ? `<div class="srcerr">${esc(fundState.err)}</div>` : ''}
+      ${fundState.ok ? `<div class="srcok">${esc(fundState.ok)}</div>` : ''}
+    </div>
+  </div>`;
+}
+async function addFunds() {
+  fundState.busy = true; fundState.err = ''; fundState.ok = ''; renderPopup();
+  let j = null, ok = false;
+  try {
+    const r = await fetch('/api/deposit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amount: fundState.amount }) });
+    j = await r.json().catch(() => ({})); ok = r.ok;
+  } catch { j = { detail: 'the custodian did not answer' }; }
+  fundState.busy = false;
+  if (ok) { fundState.ok = `Added ${money(fundState.amount)}. Balance ${money(j.balance)}.`; await refresh(); }
+  else fundState.err = j.detail || j.error || 'could not add funds';
+  renderPopup();
+}
+
 // ---- render ----------------------------------------------------------------
-function renderPopup() {
+// Re-rendering must never yank a pane the reader is looking at. Keep the
+// scroll offset across renders; follow the newest event only when the popup
+// has just opened, or when the reader is already tailing the bottom.
+const TAIL_PX = 40;
+function renderPopup(justOpened) {
   const el = $('popup');
   if (!popup) { el.innerHTML = ''; return; }
-  if (popup.kind === 'rep') { el.innerHTML = repPanel(popup.id); return; }
+  if (popup.kind === 'fund') {
+    const focused = document.activeElement && document.activeElement.id;
+    const sel = focused === 'fundamt' && document.activeElement.selectionStart;
+    el.innerHTML = fundPanel();
+    if (focused === 'fundamt') { const i = $('fundamt'); if (i) { i.focus(); if (sel != null) i.setSelectionRange(sel, sel); } }
+    return;
+  }
+  if (popup.kind === 'rep') {
+    const prev = el.querySelector('.panel.rep');
+    const top = prev ? prev.scrollTop : 0;
+    el.innerHTML = repPanel(popup.id);
+    const next = el.querySelector('.panel.rep'); if (next && top) next.scrollTop = top;
+    return;
+  }
   const a = (me.agreements || []).find(x => x.id === popup.id);
   if (!a) { popup = null; el.innerHTML = ''; return; }
+  const prevPane = el.querySelector('.pane');
+  const prevPanel = el.querySelector('.panel.tl');
+  const top = prevPane ? prevPane.scrollTop : 0;
+  const tailing = prevPane ? prevPane.scrollHeight - prevPane.scrollTop - prevPane.clientHeight <= TAIL_PX : false;
+  const panelTop = prevPanel ? prevPanel.scrollTop : 0;
   el.innerHTML = timelinePanel(a);
-  const pane = el.querySelector('.pane'); if (pane) pane.scrollTop = pane.scrollHeight;
+  const pane = el.querySelector('.pane');
+  if (pane) pane.scrollTop = (justOpened || tailing) ? pane.scrollHeight : top;
+  const panel = el.querySelector('.panel.tl');
+  if (panel && panelTop) panel.scrollTop = panelTop;
 }
 function render() {
   if (!me || !me.email) return;
-  $('who').innerHTML = idHtml(me.email);
-  $('whofoot').innerHTML = idHtml(me.email);
+  $('whowrap').hidden = false;
+  $('whobtn').innerHTML = idHtml(me.email);
+  $('whofull').innerHTML = idHtml(me.email);
   $('balance').textContent = '$' + plain(me.balance);
+  $('addfunds').hidden = !((me.funding && me.funding.sources || []).length);
   $('lede').textContent = `${me.currency || CURRENCY} test credit · what your agents may spend, and what they did`;
   const needs = needsHtml();
   $('needs').innerHTML = needs; $('needs').hidden = !needs;
@@ -698,7 +837,7 @@ function render() {
 // account is already on screen; a service that is down costs a line, not a page.
 function hydrate() {
   const jobs = [];
-  for (const a of me.agents || []) if (!reps.has(a.identity)) jobs.push(repCard(a.identity).then(render));
+  for (const a of agentList()) if (!reps.has(a.identity)) jobs.push(repCard(a.identity).then(render));
   if (!reps.has(me.email)) jobs.push(repCard(me.email).then(render));
   for (const a of me.agreements || []) {
     const ruled = a.outcome && a.outcome.indexOf('ruled:') === 0;
@@ -712,7 +851,7 @@ async function refresh() {
   me = j || { email: null };
   if (!me.email) {
     $('state').textContent = 'Not signed in.';
-    $('signedout').hidden = false; $('body').hidden = true; $('who').textContent = '';
+    $('signedout').hidden = false; $('body').hidden = true; $('whowrap').hidden = true; closeMenu();
     return;
   }
   $('signedout').hidden = true; $('body').hidden = false;
@@ -721,11 +860,11 @@ async function refresh() {
 }
 async function openTimeline(id) {
   popup = { kind: 'timeline', id };
-  renderPopup();
+  renderPopup(true);
   const a = (me.agreements || []).find(x => x.id === id);
   await chainEntry(id);
   if (a && (a.state === 'disputed' || (a.outcome || '').indexOf('ruled:') === 0)) await judgeCase(id);
-  if (popup && popup.id === id) renderPopup();
+  if (popup && popup.id === id) renderPopup(true);
 }
 async function openRep(identity) {
   popup = { kind: 'rep', id: identity };
@@ -737,7 +876,22 @@ async function openRep(identity) {
 }
 
 // ---- events ----------------------------------------------------------------
+function closeMenu() { $('whomenu').hidden = true; $('whobtn').setAttribute('aria-expanded', 'false'); }
 document.addEventListener('click', e => {
+  // The identity menu closes on any click outside itself.
+  if (!e.target.closest('#whowrap')) closeMenu();
+  const more = e.target.closest('[data-more]');
+  if (more) {
+    e.preventDefault();
+    const k = more.getAttribute('data-more');
+    expanded.has(k) ? expanded.delete(k) : expanded.add(k);
+    render();
+    return;
+  }
+  const amt = e.target.closest('[data-amt]');
+  if (amt) { fundState.amount = amt.getAttribute('data-amt'); fundState.err = ''; fundState.ok = ''; renderPopup(); return; }
+  if (e.target.closest('#fundgo')) { const i = $('fundamt'); if (i) fundState.amount = i.value.trim(); addFunds(); return; }
+  if (e.target.closest('#addfunds')) { fundState = { amount: '25.00', busy: false, err: '', ok: '' }; popup = { kind: 'fund' }; renderPopup(); return; }
   if (e.target.closest('[data-stop]')) return;                 // inner links keep working
   if (e.target.closest('[data-close]')) { popup = null; renderPopup(); return; }
   const rep = e.target.closest('[data-rep]');
@@ -748,7 +902,21 @@ document.addEventListener('click', e => {
   const open = e.target.closest('[data-open]');
   if (open) { e.preventDefault(); openTimeline(open.getAttribute('data-open')); }
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && popup) { popup = null; renderPopup(); } });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!$('whomenu').hidden) { closeMenu(); $('whobtn').focus(); return; }
+  if (popup) { popup = null; renderPopup(); }
+});
+$('whobtn').onclick = () => {
+  const open = $('whomenu').hidden;
+  $('whomenu').hidden = !open;
+  $('whobtn').setAttribute('aria-expanded', String(open));
+  if (open) $('logout').focus();
+};
+// Enter on the amount field submits.
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target && e.target.id === 'fundamt') { e.preventDefault(); fundState.amount = e.target.value.trim(); addFunds(); }
+});
 
 // Poll while the page is visible; an open timeline follows the chain with it.
 function startPolling() {
@@ -774,6 +942,7 @@ navigator.id.watch({
 $('login').onclick = () => navigator.id.request({ siteName: 'pay.dsp.fyi' });
 $('logout').onclick = async e => {
   e.preventDefault();
+  closeMenu();
   await fetch('/api/logout', { method: 'POST' });
   navigator.id.logout && navigator.id.logout();
   chain.clear(); cases.clear(); reps.clear(); popup = null;

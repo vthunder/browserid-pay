@@ -36,6 +36,7 @@ entry with a `cap` parameter — the budget the human signed.
 |---|---|---|
 | `POST /api/pay` | the agent | `{ presentation, amount, currency, payee, memo? }` → `{ receipt }`; errors `no_grant`, `cap_exceeded` (+`remaining`), `revoked`, `insufficient_funds`, `verification_failed`, `unsupported_currency` |
 | `POST /api/login` / `GET /api/me` / `POST /api/logout` | the human (browser) | account page session. `/api/me` → `{ email, currency, balance, ledger[] (every balance change, newest first, with `balance_after`), agents[] (grants I signed grouped by the agent holding them: standing `pay:` budgets and per-agreement `contract:` caps, each with spent / remaining), agreements[] (state locked / disputed / settled, my role, both agents, price + fees + contribution, `money` moved, links to the public record and the dispute case), receipts[] }` |
+| `POST /api/deposit` | the human (browser) | `{ amount }` — self-serve test credit for the signed-in account; gated by `PAY_TEST_CREDIT`, capped per request and by a per-account ceiling, one a minute. Writes the same `credit` row as the admin route. Funding sources are described in `GET /api/me` → `funding` (see the design brief's Funding section) |
 | `POST /admin/credit` | admin (`Authorization: Bearer $ADMIN_TOKEN`) | `{ identity, amount, memo? }` — test credit until a real rail lands |
 | `POST /api/escrow/lock` | payer's agent | lock price + fees + contribution against a contract under a `contract:agreement` warrant (audience = the contract), with the payee's bundle; parties are the agents, money moves between their grantors' accounts; see `docs/specs/agreement-v1.md` |
 | `POST /api/escrow/<id>/acknowledge` · `/dispute` | a party's agent | release to the payee / freeze and hand back the sealed terms |
@@ -50,7 +51,10 @@ Config (env): `PAY_ORIGIN`, `PAY_PORT`, `DATABASE_PATH`, `ADMIN_TOKEN`,
 `BROKER`, `PAY_ACCEPTED_FALLBACKS` (default `browserid.me`), `PAY_CURRENCY`
 (default `USD`), `PAY_SESSION_SECRET`, `PAY_DATA_DIR` (identity credential),
 `PAY_CHAIN_AUDIENCE`, `PAY_HANDLE` (default `escrow`), `PAY_FEE` (default
-`0.50`), `DAEMON`, `REPO`; dev only: `PAY_DEV=1`,
+`0.50`), `DAEMON`, `REPO`, `PAY_TEST_CREDIT` (default on — self-serve
+funding; off removes the button and `POST /api/deposit`),
+`PAY_TEST_CREDIT_MAX` (default `500.00`), `PAY_TEST_CREDIT_CEILING`
+(default `1000.00`); dev only: `PAY_DEV=1`,
 `PAY_TRUST_ISSUER=domain=base64key[,…]` (pinned issuers, no status checks),
 `PAY_SUBMIT_URL` (stub daemon), `PAY_PROVISION=1` (provision even in dev).
 

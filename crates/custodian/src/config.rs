@@ -43,6 +43,13 @@ pub struct Config {
     /// dispute case.
     pub index_origin: String,
     pub judge_origin: String,
+    /// Offer test credit as a funding source: the signed-in account may credit
+    /// itself from the page. Off in a deployment with a real rail.
+    pub test_credit: bool,
+    /// Most one request may add, in minor units.
+    pub test_credit_max_minor: i64,
+    /// Balance ceiling for self-credit, in minor units.
+    pub test_credit_ceiling_minor: i64,
 }
 
 impl Config {
@@ -89,6 +96,14 @@ impl Config {
             repo: env::var("REPO").unwrap_or_else(|_| get("PAY_CHAIN_AUDIENCE", "sbo+raw://avail:turing:530/")),
             index_origin: get("PAY_INDEX_ORIGIN", "https://index.dsp.fyi"),
             judge_origin: get("PAY_JUDGE_ORIGIN", "https://judge.dsp.fyi"),
+            test_credit: !matches!(get("PAY_TEST_CREDIT", "1").as_str(), "0" | "false" | "no"),
+            test_credit_max_minor: money_minor(&get("PAY_TEST_CREDIT_MAX", "500.00"), 50_000),
+            test_credit_ceiling_minor: money_minor(&get("PAY_TEST_CREDIT_CEILING", "1000.00"), 100_000),
         }
     }
+}
+
+/// A decimal-string money setting in minor units, falling back when malformed.
+fn money_minor(v: &str, fallback: i64) -> i64 {
+    browserid_core::device::parse_money_minor(v).map(|m| m as i64).unwrap_or(fallback)
 }
