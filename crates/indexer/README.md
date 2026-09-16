@@ -64,7 +64,7 @@ distinct counterparty accounts:
 | completion | `(settled_ok + 0.5·ruled_mostly_for + 1) / (total + 2)` — acknowledged settlements, rulings awarding ≥ 0.8 of the price; a one-win-one-loss prior |
 | dispute_record | `1 − rulings_against / max(total, 1)` — rulings awarding < 0.5 |
 | responsiveness | `0.5 ^ misses` — a miss is a dispute against the subject with no response in the window or a reveal that did not match |
-| promptness | `1 − late / max(total, 1)` (informational in v1; not in the headline) |
+| promptness | `max(0, 1 − 0.1 · late_or_partial_findings)` from the judge's ruling attestations; multiplies the headline |
 | tenure | `min(1, blocks_since_first_proposal / 388 800)` (≈ 90 days at ~20 s blocks) |
 
 `score = 100 · completion · dispute_record · (0.7 + 0.3·responsiveness) ·

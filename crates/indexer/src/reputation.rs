@@ -43,6 +43,7 @@ pub struct Input {
     /// This side's share of the price on a ruling (0..1).
     pub share: Option<f64>,
     pub late: bool,
+    pub partial: bool,
     pub responded: Option<bool>,
     pub reveals_matched: Option<bool>,
     pub references: Vec<crate::index::Reference>,
@@ -199,6 +200,7 @@ fn classify(a: &Agreement, subject: &str, ruled_att: Option<&Attestation>) -> Op
         outcome,
         share,
         late: flag("late").unwrap_or(false),
+        partial: flag("partial").unwrap_or(false),
         responded: flag("responded"),
         reveals_matched: flag("reveals_matched"),
         references: a.references.clone(),
@@ -245,8 +247,11 @@ pub fn scorecard(index: &Index, subject: &str, current_block: u64) -> Result<Val
     // matching reveals → 1; each miss halves it. Only rulings say.
     let misses = counted.iter().filter(|i| i.responded == Some(false) || i.reveals_matched == Some(false)).count() as i32;
     let responsiveness = 0.5f64.powi(misses);
+    // Promptness (draft "The scorecard"): each late or partial finding
+    // against me in a ruling costs 0.1, floor 0. Multiplies the headline.
     let late = counted.iter().filter(|i| i.late).count() as f64;
-    let promptness = 1.0 - late / total.max(1.0);
+    let late_findings = counted.iter().filter(|i| i.late || i.partial).count() as f64;
+    let promptness = (1.0 - 0.1 * late_findings).max(0.0);
     let tenure = first_block.map_or(0.0, |fb| ((current_block.saturating_sub(fb)) as f64 / BLOCKS_90_DAYS).min(1.0));
     let n_accounts = {
         let mut s: std::collections::BTreeSet<&str> = Default::default();
@@ -258,7 +263,7 @@ pub fn scorecard(index: &Index, subject: &str, current_block: u64) -> Result<Val
         s.len()
     };
     let breadth = 0.5 + 0.5 * ((1.0 + n_accounts as f64).log2() / 4.0).min(1.0);
-    let score = 100.0 * completion * dispute_record * (0.7 + 0.3 * responsiveness) * breadth;
+    let score = 100.0 * completion * dispute_record * (0.7 + 0.3 * responsiveness) * breadth * promptness;
     let grantor = inputs.iter().find_map(|i| i.my_grantor.clone());
     let att_refs: Vec<Value> = ruled_atts.iter().map(|t| json!(t.reference)).collect();
     Ok(json!({
@@ -354,7 +359,7 @@ mod tests {
         assert_eq!(i["late"], true);
         assert_eq!(card["counts"]["rulings_against"], 1.0);
         assert_eq!(card["components"]["dispute_record"], 0.0);
-        assert_eq!(card["components"]["promptness"], 0.0);
+        assert_eq!(card["components"]["promptness"], 0.9);
         assert_eq!(card["components"]["responsiveness"], 0.5);
         assert_eq!(card["score"], 0.0);
         // The payer side of the same ruling: share 0.8, mostly for.
