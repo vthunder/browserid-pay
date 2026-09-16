@@ -39,6 +39,10 @@ pub struct Config {
     pub daemon: String,
     /// Repo selector passed to the daemon (defaults to the chain audience).
     pub repo: String,
+    /// Where the account page links an agreement's public record and its
+    /// dispute case.
+    pub index_origin: String,
+    pub judge_origin: String,
 }
 
 impl Config {
@@ -83,6 +87,8 @@ impl Config {
             fee: get("PAY_FEE", "0.50"),
             daemon: get("DAEMON", "https://da.sandmill.org"),
             repo: env::var("REPO").unwrap_or_else(|_| get("PAY_CHAIN_AUDIENCE", "sbo+raw://avail:turing:530/")),
+            index_origin: get("PAY_INDEX_ORIGIN", "https://index.dsp.fyi"),
+            judge_origin: get("PAY_JUDGE_ORIGIN", "https://judge.dsp.fyi"),
         }
     }
 }

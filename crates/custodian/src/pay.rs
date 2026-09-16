@@ -141,6 +141,8 @@ pub async fn pay(verify: &Verify, db: &Db, deployment_currency: &str, req: PayRe
                     exp,
                     first_seen: now,
                     revoked_at: None,
+                    agreement_id: None,
+                    counterparties: None,
                 },
             )?;
             let since = db::window_start(iat, grant.window_secs, now);
@@ -212,7 +214,7 @@ mod tests {
             dev: true,
             trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())],
             currency: "USD".into(),
-            data_dir: String::new(), chain_audience: String::new(), handle: String::new(), fee: "0.50".into(), daemon: String::new(), repo: String::new(),
+            data_dir: String::new(), chain_audience: String::new(), handle: String::new(), fee: "0.50".into(), daemon: String::new(), repo: String::new(), index_origin: String::new(), judge_origin: String::new(),
         }
     }
 

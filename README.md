@@ -35,7 +35,7 @@ entry with a `cap` parameter — the budget the human signed.
 | route | who | what |
 |---|---|---|
 | `POST /api/pay` | the agent | `{ presentation, amount, currency, payee, memo? }` → `{ receipt }`; errors `no_grant`, `cap_exceeded` (+`remaining`), `revoked`, `insufficient_funds`, `verification_failed`, `unsupported_currency` |
-| `POST /api/login` / `GET /api/me` / `POST /api/logout` | the human (browser) | ledger UI session: balance, budgets (spent / remaining / window reset), receipts |
+| `POST /api/login` / `GET /api/me` / `POST /api/logout` | the human (browser) | account page session. `/api/me` → `{ email, currency, balance, ledger[] (every balance change, newest first, with `balance_after`), agents[] (grants I signed grouped by the agent holding them: standing `pay:` budgets and per-agreement `contract:` caps, each with spent / remaining), agreements[] (state locked / disputed / settled, my role, both agents, price + fees + contribution, `money` moved, links to the public record and the dispute case), receipts[] }` |
 | `POST /admin/credit` | admin (`Authorization: Bearer $ADMIN_TOKEN`) | `{ identity, amount, memo? }` — test credit until a real rail lands |
 | `POST /api/escrow/lock` | payer's agent | lock price + fees + contribution against a contract under a `contract:agreement` warrant (audience = the contract), with the payee's bundle; parties are the agents, money moves between their grantors' accounts; see `docs/specs/agreement-v1.md` |
 | `POST /api/escrow/<id>/acknowledge` · `/dispute` | a party's agent | release to the payee / freeze and hand back the sealed terms |

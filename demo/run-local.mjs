@@ -126,6 +126,7 @@ async function main() {
     assert.ok(r.ok, `login as ${who.agent.human}: ${r.status}`);
     const cookie = r.headers.get("set-cookie").split(";")[0];
     const me = await fetch(`${payOrigin}/api/me`, { headers: { cookie } }).then((x) => x.json());
+    if (process.env.DEMO_DUMP_ME) console.log(`ME ${who.agent.human} ${JSON.stringify(me)}`);
     return me;
   };
   assert.equal((await balance(alice)).balance, "100.00");

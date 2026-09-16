@@ -5,7 +5,7 @@
 //! deadline. The custodian never parses the private terms; it holds the
 //! sealed copy for the adjudicator.
 
-use crate::db::{self, Db, Receipt};
+use crate::db::{self, Db, Receipt, WarrantRow};
 use crate::verify::Verify;
 use browserid_core::device::{parse_iso_duration_secs, parse_money_minor, ScopeEntry};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -214,11 +214,46 @@ fn proposal_str<'a>(p: &'a Value, path: &[&str]) -> Result<&'a str, EscrowError>
 /// entries, warrant key). Parties in a proposal are acting identities
 /// (agents); money belongs to their grantors.
 async fn caller(verify: &Verify, audience: &str, presentation: &str) -> Result<(String, String, Vec<ScopeEntry>, Option<String>), EscrowError> {
+    let c = caller_full(verify, audience, presentation).await?;
+    Ok((c.account, c.actor, c.scopes, c.warrant_key))
+}
+
+/// Everything the lock needs to record a party's grant as a budget.
+struct Caller {
+    account: String,
+    actor: String,
+    scopes: Vec<ScopeEntry>,
+    warrant_key: Option<String>,
+    iat: i64,
+    exp: i64,
+}
+
+async fn caller_full(verify: &Verify, audience: &str, presentation: &str) -> Result<Caller, EscrowError> {
     let v = verify.presentation_for(audience, presentation).await.map_err(|e| {
         if e.contains("revoked") { err("revoked", e) } else { err("verification_failed", e) }
     })?;
-    let key = v.identity.warrant_status.as_ref().map(|s| format!("{}#{}", s.uri, s.idx));
-    Ok((v.identity.email, v.identity.grantee, v.scopes, key))
+    let warrant_key = v.identity.warrant_status.as_ref().map(|s| format!("{}#{}", s.uri, s.idx));
+    Ok(Caller { account: v.identity.email, actor: v.identity.grantee, scopes: v.scopes, warrant_key, iat: v.iat, exp: v.exp })
+}
+
+/// A party's `contract:agreement` grant as a budget row: cap, counterparties,
+/// pinned to this agreement. What the account page lists under the agent.
+fn grant_row(c: &Caller, key: &str, g: &ContractGrant, agreement_id: &str, now: i64) -> WarrantRow {
+    WarrantRow {
+        key: key.to_string(),
+        grantor: c.account.clone(),
+        grantee: c.actor.clone(),
+        scope: CONTRACT_SCOPE.to_string(),
+        cap_minor: g.cap_minor,
+        currency: g.currency.clone(),
+        window_secs: None,
+        iat: c.iat,
+        exp: c.exp,
+        first_seen: now,
+        revoked_at: None,
+        agreement_id: Some(agreement_id.to_string()),
+        counterparties: g.counterparties.as_ref().map(|l| serde_json::to_string(l).unwrap_or_default()),
+    }
 }
 
 pub async fn lock(
@@ -247,22 +282,24 @@ pub async fn lock(
         return Err(err("bad_request", "roles must be the two parties"));
     }
     let audience = contract_audience(&id);
-    let (payer_account, actor, scopes, warrant_key) = caller(verify, &audience, &req.presentation).await?;
+    let pc = caller_full(verify, &audience, &req.presentation).await?;
+    let (payer_account, actor) = (pc.account.clone(), pc.actor.clone());
     if actor != payer {
         return Err(err("not_payer", format!("{actor} is not the payer")));
     }
-    let Some(warrant_key) = warrant_key else { return Err(err("no_grant", "warrant has no status ref")) };
-    let grant = contract_grant(&scopes)?;
+    let Some(warrant_key) = pc.warrant_key.clone() else { return Err(err("no_grant", "warrant has no status ref")) };
+    let grant = contract_grant(&pc.scopes)?;
     // The payee's side: its bundle names the account the price is released to.
     let Some(acceptance_bundle) = req.acceptance_bundle.as_deref() else {
         return Err(err("bad_request", "acceptance_bundle (the payee's presentation for the contract) is required"));
     };
-    let (payee_account, payee_actor, payee_scopes, _) = caller(verify, &audience, acceptance_bundle).await
+    let yc = caller_full(verify, &audience, acceptance_bundle).await
         .map_err(|e| EscrowError { error: "payee_bundle_invalid", detail: e.detail })?;
-    if payee_actor != payee {
-        return Err(err("payee_bundle_invalid", format!("{payee_actor} is not the payee")));
+    let payee_account = yc.account.clone();
+    if yc.actor != payee {
+        return Err(err("payee_bundle_invalid", format!("{} is not the payee", yc.actor)));
     }
-    contract_grant(&payee_scopes).map_err(|_| err("payee_bundle_invalid", "no contract:agreement scope"))?;
+    let payee_grant = contract_grant(&yc.scopes).map_err(|_| err("payee_bundle_invalid", "no contract:agreement scope"))?;
     if grant.currency != deployment_currency {
         return Err(err("unsupported_currency", format!("cap is in {}", grant.currency)));
     }
@@ -308,8 +345,15 @@ pub async fn lock(
             )?;
             Db::insert_receipt(
                 &tx,
-                &Receipt { id: reference, kind: "escrow:lock".into(), grantor: payer_account.clone(), grantee: actor.clone(), warrant_key: Some(warrant_key.clone()), amount_minor: total, currency: deployment_currency.into(), payee: Some(payee.clone()), memo: Some(id.clone()), at: now },
+                &Receipt { id: reference.clone(), kind: "escrow:lock".into(), grantor: payer_account.clone(), grantee: actor.clone(), warrant_key: Some(warrant_key.clone()), amount_minor: total, currency: deployment_currency.into(), payee: Some(payee.clone()), memo: Some(id.clone()), at: now },
             )?;
+            // Both parties' agreement grants show up as budgets under their
+            // agents; the lock is the payer's spend against its cap.
+            Db::upsert_warrant(&tx, &grant_row(&pc, &warrant_key, &grant, &id, now))?;
+            Db::record_spend(&tx, &warrant_key, total, &reference)?;
+            if let Some(k) = &yc.warrant_key {
+                Db::upsert_warrant(&tx, &grant_row(&yc, k, &payee_grant, &id, now))?;
+            }
             let e = get(&tx, &id)?.expect("just inserted");
             tx.commit()?;
             Ok(Ok(e))
@@ -497,7 +541,7 @@ mod tests {
             port: 0, origin: ORIGIN.into(), database_path: ":memory:".into(), admin_token: "t".into(),
             broker: "https://idp.test".into(), accepted_fallbacks: vec![ISSUER.into()], session_secret: "s".into(),
             dev: true, trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())], currency: "USD".into(),
-            data_dir: String::new(), chain_audience: String::new(), handle: String::new(), fee: "0.50".into(), daemon: String::new(), repo: String::new(),
+            data_dir: String::new(), chain_audience: String::new(), handle: String::new(), fee: "0.50".into(), daemon: String::new(), repo: String::new(), index_origin: String::new(), judge_origin: String::new(),
         }
     }
 
@@ -582,6 +626,26 @@ mod tests {
         assert_eq!(bal(&s, "fund@dsp.test"), 50);
         assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600 + 500, "unused adjudicator fee returned to alice's human");
         assert_eq!(bal(&s, "judge+agent@dsp.test"), 0);
+    }
+
+    #[tokio::test]
+    async fn lock_records_both_parties_grants_as_budgets() {
+        let s = setup();
+        lock(&s.verify, &s.db, &Log, ORIGIN, "USD", lock_req(&s, "agr_b", "60.00", Some(vec!["bob+agent@y.test"]))).await.unwrap();
+        // Alice (the payer's human) sees her agent's agreement cap with the lock spent against it.
+        let alice = s.db.warrants_for("alice@x.test").unwrap();
+        let g = alice.iter().find(|w| w.agreement_id.as_deref() == Some("agr_b")).expect("payer grant recorded");
+        assert_eq!(g.scope, CONTRACT_SCOPE);
+        assert_eq!(g.grantee, "alice+agent@x.test");
+        assert_eq!(g.cap_minor, 6_000);
+        assert_eq!(g.counterparties.as_deref(), Some(r#"["bob+agent@y.test"]"#));
+        let spent = s.db.with(|c| Db::spent_since(c, &g.key, 0)).unwrap();
+        assert_eq!(spent, 5_600, "the lock is the spend against the cap");
+        // Bob's human sees his agent's grant too, unspent.
+        let bob = s.db.warrants_for("bob@y.test").unwrap();
+        let gb = bob.iter().find(|w| w.agreement_id.as_deref() == Some("agr_b")).expect("payee grant recorded");
+        assert_eq!(gb.grantee, "bob+agent@y.test");
+        assert_eq!(s.db.with(|c| Db::spent_since(c, &gb.key, 0)).unwrap(), 0);
     }
 
     #[tokio::test]

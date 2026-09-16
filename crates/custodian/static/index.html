@@ -3,46 +3,108 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pay.dsp.fyi</title>
 <style>
-  :root { --fg:#1a1a1a; --mute:#666; --line:#e4e4e4; --bg:#fafafa; --card:#fff; --ok:#1a7f37; --warn:#9a3412; }
-  @media (prefers-color-scheme: dark) { :root { --fg:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --bg:#141414; --card:#1c1c1c; --ok:#3fb950; --warn:#f0883e; } }
+  :root { --fg:#1a1a1a; --mute:#666; --line:#e4e4e4; --bg:#fafafa; --card:#fff; --ok:#1a7f37; --warn:#9a3412; --info:#1d4ed8; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --bg:#141414; --card:#1c1c1c; --ok:#3fb950; --warn:#f0883e; --info:#7aa2f7; } }
   body { font: 15px/1.55 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 2rem 1rem; }
-  main { max-width: 44rem; margin: 0 auto; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; } h2 { font-size: 1rem; margin: 1.5rem 0 .5rem; color: var(--mute); text-transform: uppercase; letter-spacing: .04em; }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; } h2 { font-size: 1rem; margin: 1.6rem 0 .5rem; color: var(--mute); text-transform: uppercase; letter-spacing: .04em; }
+  h3 { font-size: .95rem; margin: 0 0 .3rem; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: .6rem 0; }
   .row { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
   .big { font-size: 2rem; font-weight: 600; }
-  .mute { color: var(--mute); } .ok { color: var(--ok); } .warn { color: var(--warn); }
+  .mute { color: var(--mute); } .ok { color: var(--ok); } .warn { color: var(--warn); } .info { color: var(--info); }
   button { font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
   table { width: 100%; border-collapse: collapse; font-size: .92rem; } td, th { text-align: left; padding: .35rem .3rem; border-bottom: 1px solid var(--line); vertical-align: top; } th { color: var(--mute); font-weight: 500; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  code { font-size: .9em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { font-size: .9em; } a { color: var(--info); }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: .4rem; } .bar > i { display: block; height: 100%; background: var(--ok); }
+  .grant { padding: .5rem 0; border-top: 1px solid var(--line); } .grant:first-of-type { border-top: 0; }
+  .pill { display: inline-block; font-size: .78rem; padding: .1rem .5rem; border-radius: 999px; border: 1px solid var(--line); color: var(--mute); }
+  .pill.locked { color: var(--info); border-color: var(--info); } .pill.disputed { color: var(--warn); border-color: var(--warn); } .pill.settled { color: var(--ok); border-color: var(--ok); }
+  details > summary { cursor: pointer; color: var(--mute); margin: .6rem 0; }
+  .agr .money { font-size: .88rem; display: grid; grid-template-columns: max-content auto; gap: .1rem .8rem; margin-top: .5rem; }
   p.lede { color: var(--mute); margin: 0 0 1.2rem; }
+  .small { font-size: .85rem; }
 </style>
 <main>
   <h1>pay.dsp.fyi</h1>
-  <p class="lede">A custodian for agent spending. Your agents pay from here, within the budgets you signed. Balances are test credit for now.</p>
+  <p class="lede">A custodian for agent spending. Your agents pay and enter agreements from this account, within the budgets you signed. Balances are test credit for now.</p>
   <div class="card row" id="who"><span id="state">checking…</span><span><button id="login" hidden>Sign in</button><button id="logout" hidden>Sign out</button></span></div>
   <div id="body" hidden>
+    <h2>Account</h2>
     <div class="card row"><span class="mute">Balance</span><span class="big"><span id="balance">0.00</span> <span class="mute" style="font-size:1rem">{{CURRENCY}}</span></span></div>
-    <h2>Budgets</h2>
-    <div id="warrants"></div>
-    <h2>Escrows</h2>
-    <div id="escrows"></div>
-    <h2>Receipts</h2>
-    <div class="card"><table id="receipts"><thead><tr><th>When</th><th>What</th><th>Who</th><th class="num">Amount</th></tr></thead><tbody></tbody></table></div>
+    <div class="card"><table id="ledger"><thead><tr><th>When</th><th>What</th><th class="num">Change</th><th class="num">Balance</th></tr></thead><tbody></tbody></table></div>
+
+    <h2>Agents &amp; budgets</h2>
+    <div id="agents"></div>
+
+    <h2>Agreements</h2>
+    <div id="active"></div>
+    <details id="settled-wrap" hidden><summary><span id="settled-count"></span> settled</summary><div id="settled"></div></details>
   </div>
 </main>
 <script src="{{BROKER}}/include.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const when = t => new Date(t * 1000).toLocaleString();
+const when = t => t ? new Date(t * 1000).toLocaleString() : '';
+const BROKER = '{{BROKER}}';
 function windowWords(s) {
   if (!s) return 'in total';
   const d = s / 86400;
   if (d >= 1 && Number.isInteger(d)) return d === 1 ? 'every day' : d === 7 ? 'every week' : d === 30 ? 'every 30 days' : `every ${d} days`;
   const h = s / 3600; return h >= 1 ? `every ${h} hours` : `every ${s} seconds`;
+}
+// Ledger kinds → words. The reference on a row names the agreement.
+const KIND = {
+  credit: 'Test credit', pay: 'Payment by your agent', receive: 'Payment received',
+  escrow_lock: 'Locked for agreement', escrow_release: 'Released to you from agreement', escrow_refund: 'Returned unused from agreement',
+  adjudicator_fee: 'Adjudicator fee', custodian_fee: 'Custodian fee', contribution: 'Ecosystem contribution',
+};
+function agreementLink(id) { return id ? ` <a href="#agr-${esc(id)}"><code>${esc(id)}</code></a>` : ''; }
+function scopeWords(g) {
+  if (g.scope.startsWith('pay:')) {
+    const rail = g.scope.slice(4);
+    return `may spend up to ${esc(g.cap)} ${esc(g.currency)} ${windowWords(g.window_secs)}${rail === 'transfer' ? '' : ' over ' + esc(rail)}`;
+  }
+  if (g.scope === 'contract:agreement') {
+    const cps = Array.isArray(g.counterparties) && g.counterparties.length ? ' with ' + g.counterparties.map(esc).join(', ') : '';
+    return `may commit up to ${esc(g.cap)} ${esc(g.currency)}${cps}`;
+  }
+  return esc(g.scope) + ` — up to ${esc(g.cap)} ${esc(g.currency)}`;
+}
+function grantHtml(g) {
+  const pct = Math.min(100, Math.round(100 * parseFloat(g.spent) / Math.max(0.01, parseFloat(g.cap))));
+  const agr = g.agreement_id ? `for agreement${agreementLink(g.agreement_id)}` : 'standing budget';
+  return `<div class="grant"><div class="row"><span>${scopeWords(g)} <span class="mute small">· ${agr}</span></span>
+    <span class="num"><b>${esc(g.spent)}</b> <span class="mute">spent · ${esc(g.remaining)} left</span></span></div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="mute small" style="margin-top:.3rem">${g.window_resets_at ? 'resets ' + when(g.window_resets_at) + ' · ' : ''}expires ${when(g.exp)}</div></div>`;
+}
+function nextStep(a) {
+  if (a.state === 'locked') return a.role === 'payee' ? 'Waiting for the deliverable, then the payer settles.' : 'Funds are held. Settle when the deliverable is accepted, or dispute.';
+  if (a.state === 'disputed') return 'In dispute — the adjudicator rules after the other side responds, or when the response window ends.';
+  return '';
+}
+function agreementHtml(a) {
+  const who = a.role === 'both' ? 'you pay yourself (both agents are yours)' : a.role === 'payer' ? `you pay ${esc(a.counterparty)}` : `${esc(a.counterparty)} pays you`;
+  const extras = (parseFloat(a.fees.custodian) + parseFloat(a.fees.adjudicator) + parseFloat(a.contribution.amount)).toFixed(2);
+  const outcome = a.outcome ? (a.outcome === 'acknowledged' ? 'settled by acknowledgement' : a.outcome.startsWith('ruled:') ? 'settled by ruling: ' + esc(a.outcome.slice(6)) : esc(a.outcome)) : '';
+  const m = a.money;
+  return `<div class="card agr" id="agr-${esc(a.id)}">
+    <div class="row"><h3><code>${esc(a.id)}</code> <span class="pill ${esc(a.state)}">${esc(a.state)}</span></h3><span class="num"><b>${esc(a.price)}</b> <span class="mute">+ ${esc(extras)} fees &amp; contribution</span></span></div>
+    <div class="mute small">${who} · your agent <code>${esc(a.my_agent)}</code> · their agent <code>${esc(a.their_agent)}</code> · adjudicator <code>${esc(a.adjudicator)}</code></div>
+    <div class="small" style="margin-top:.4rem">${outcome ? '<span class="ok">' + outcome + '</span>' : nextStep(a)}</div>
+    <div class="money">
+      <span class="mute">locked</span><span>${esc(m.locked)}</span>
+      ${a.state === 'settled' ? `<span class="mute">released to payee</span><span>${esc(m.released_to_payee)}</span>
+      <span class="mute">returned to payer</span><span>${esc(m.refunded_to_payer)}</span>
+      <span class="mute">fees</span><span>${esc(m.fees_paid)}</span>
+      <span class="mute">contribution</span><span>${esc(m.contribution_paid)}</span>` : ''}
+    </div>
+    <div class="mute small" style="margin-top:.5rem">locked ${when(a.locked_at)}${a.settled_at ? ' · settled ' + when(a.settled_at) : ''} ·
+      <a href="${esc(a.links.index)}">public record</a>${a.links.judge_case ? ' · <a href="' + esc(a.links.judge_case) + '">dispute case</a>' : ''}</div>
+  </div>`;
 }
 async function refresh() {
   const me = await (await fetch('/api/me')).json();
@@ -50,34 +112,31 @@ async function refresh() {
   $('state').innerHTML = 'Signed in as <code>' + esc(me.email) + '</code>';
   $('login').hidden = true; $('logout').hidden = false; $('body').hidden = false;
   $('balance').textContent = me.balance;
-  const w = $('warrants'); w.innerHTML = '';
-  if (!me.warrants.length) w.innerHTML = '<div class="card mute">No agent has spent from this account yet. Budgets appear here after the first payment under a warrant you signed at ' + esc('{{BROKER}}'.replace(/^https?:\/\//, '')) + '.</div>';
-  for (const b of me.warrants) {
-    const pct = Math.min(100, Math.round(100 * parseFloat(b.spent) / Math.max(0.01, parseFloat(b.cap))));
+
+  const tb = $('ledger').querySelector('tbody'); tb.innerHTML = '';
+  if (!me.ledger.length) tb.innerHTML = '<tr><td colspan="4" class="mute">Nothing yet.</td></tr>';
+  for (const l of me.ledger) {
+    const neg = l.delta.startsWith('-');
+    tb.insertAdjacentHTML('beforeend', `<tr><td>${when(l.at)}</td><td>${esc(KIND[l.kind] || l.kind)}${agreementLink(l.agreement_id)}</td><td class="num ${neg ? 'warn' : 'ok'}">${neg ? '−' + esc(l.delta.slice(1)) : '+' + esc(l.delta)}</td><td class="num">${esc(l.balance_after)}</td></tr>`);
+  }
+
+  const ag = $('agents'); ag.innerHTML = '';
+  if (!me.agents.length) ag.innerHTML = `<div class="card mute">No agent has a budget yet. Budgets appear here once an agent you authorized at ${esc(BROKER.replace(/^https?:\/\//, ''))} makes a payment or funds an agreement from this account.</div>`;
+  for (const a of me.agents) {
+    const standing = a.grants.filter(g => !g.agreement_id), perAgr = a.grants.filter(g => g.agreement_id);
     const el = document.createElement('div'); el.className = 'card';
-    el.innerHTML = `<div class="row"><span><code>${esc(b.grantee)}</code> <span class="mute">may spend up to ${esc(b.cap)} ${esc(b.currency)} ${windowWords(b.window_secs)}</span></span>
-      <span class="num"><b>${esc(b.spent)}</b> <span class="mute">spent · ${esc(b.remaining)} left</span></span></div>
-      <div class="bar"><i style="width:${pct}%"></i></div>
-      <div class="mute" style="font-size:.85rem;margin-top:.3rem">${b.window_resets_at ? 'resets ' + when(b.window_resets_at) + ' · ' : ''}expires ${when(b.exp)} · revoke at <a href="{{BROKER}}/account">{{BROKER}}/account</a></div>`;
-    w.appendChild(el);
+    el.innerHTML = `<div class="row"><h3><code>${esc(a.identity)}</code></h3><span class="mute small">revoke at <a href="${BROKER}/account">${esc(BROKER.replace(/^https?:\/\//, ''))}/account</a></span></div>
+      ${standing.map(grantHtml).join('')}
+      ${perAgr.length ? `<details${standing.length ? '' : ' open'}><summary>${perAgr.length} agreement cap${perAgr.length === 1 ? '' : 's'}</summary>${perAgr.map(grantHtml).join('')}</details>` : ''}`;
+    ag.appendChild(el);
   }
-  const es = $('escrows'); es.innerHTML = '';
-  if (!me.escrows.length) es.innerHTML = '<div class="card mute">No agreements funded from this account yet.</div>';
-  for (const e of me.escrows) {
-    const mine = e.payer_account === me.email;
-    const el = document.createElement('div'); el.className = 'card';
-    el.innerHTML = `<div class="row"><span><code>${esc(e.id)}</code> <span class="mute">${mine ? 'you pay ' + esc(e.payee_account) + ' (your agent ' + esc(e.payer) + ')' : esc(e.payer_account) + ' pays you (their agent ' + esc(e.payer) + ')'}</span></span>
-      <span class="num"><b>${esc(e.price)}</b> <span class="mute">+ fees ${esc(e.fees.custodian)} / ${esc(e.fees.adjudicator)} + contribution ${esc(e.contribution.amount)}</span></span></div>
-      <div class="mute" style="font-size:.85rem;margin-top:.3rem">${esc(e.state)}${e.outcome ? ' · ' + esc(e.outcome) : ''} · adjudicator <code>${esc(e.adjudicator)}</code> · locked ${when(e.locked_at)}${e.settled_at ? ' · settled ' + when(e.settled_at) : ''}</div>`;
-    es.appendChild(el);
-  }
-  const tb = $('receipts').querySelector('tbody'); tb.innerHTML = '';
-  if (!me.receipts.length) tb.innerHTML = '<tr><td colspan="4" class="mute">Nothing yet.</td></tr>';
-  for (const r of me.receipts) {
-    const out = r.grantor === me.email && r.kind !== 'credit';
-    const who = r.kind === 'credit' ? 'test credit' : out ? `${esc(r.grantee)} → ${esc(r.payee)}` : `from ${esc(r.grantor)} (via ${esc(r.grantee)})`;
-    tb.insertAdjacentHTML('beforeend', `<tr><td>${when(r.at)}</td><td>${esc(r.kind)}${r.memo ? ' <span class="mute">' + esc(r.memo) + '</span>' : ''}</td><td>${who}</td><td class="num ${out ? 'warn' : 'ok'}">${out ? '−' : '+'}${esc(r.amount)}</td></tr>`);
-  }
+
+  const active = me.agreements.filter(a => a.state !== 'settled'), settled = me.agreements.filter(a => a.state === 'settled');
+  $('active').innerHTML = active.length ? active.map(agreementHtml).join('') : '<div class="card mute">No active agreements.' + (settled.length ? '' : ' Agreements your agents fund or are paid through appear here.') + '</div>';
+  $('settled-wrap').hidden = !settled.length;
+  $('settled-count').textContent = settled.length;
+  $('settled').innerHTML = settled.map(agreementHtml).join('');
+  if (location.hash) { const t = document.querySelector(location.hash); if (t) { const d = t.closest('details'); if (d) d.open = true; t.scrollIntoView(); } }
 }
 navigator.id.watch({
   loggedInUser: null,

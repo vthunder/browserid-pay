@@ -183,63 +183,102 @@ async fn api_me(State(app): State<App>, headers: HeaderMap) -> Response {
     };
     let account = app.db.account(&identity).ok().flatten();
     let now = db::now();
-    let warrants: Vec<_> = app
-        .db
-        .warrants_for(&identity)
-        .unwrap_or_default()
+    let fm = pay::fmt_minor;
+
+    // The account's ledger: every balance change, with the balance after
+    // each, newest first.
+    let ledger_rows = app.db.with(|c| Db::ledger_all(c, &identity)).unwrap_or_default();
+    let ledger: Vec<_> = db::with_running_balance(&ledger_rows)
         .into_iter()
-        .map(|w| {
-            let since = db::window_start(w.iat, w.window_secs, now);
-            let spent = app
-                .db
-                .with(|c| Db::spent_since(c, &w.key, since))
-                .unwrap_or(0);
+        .rev()
+        .map(|(l, after)| {
+            let agreement_id = l.reference.as_deref().and_then(|r| r.strip_prefix("escrow:")).map(String::from);
+            json!({ "at": l.at, "delta": fm(l.delta_minor), "balance_after": fm(after), "kind": l.kind, "agreement_id": agreement_id, "memo": l.reference })
+        })
+        .collect();
+
+    // Grants I signed, grouped by the agent that holds them: standing `pay:`
+    // budgets and per-agreement `contract:` caps.
+    let warrants = app.db.warrants_for(&identity).unwrap_or_default();
+    let mut agents: Vec<serde_json::Value> = Vec::new();
+    for w in &warrants {
+        let since = db::window_start(w.iat, w.window_secs, now);
+        let spent = app.db.with(|c| Db::spent_since(c, &w.key, since)).unwrap_or(0);
+        let counterparties: Option<serde_json::Value> = w.counterparties.as_deref().and_then(|j| serde_json::from_str(j).ok());
+        let grant = json!({
+            "scope": w.scope, "cap": fm(w.cap_minor), "currency": w.currency, "window_secs": w.window_secs,
+            "spent": fm(spent), "remaining": fm((w.cap_minor - spent).max(0)),
+            "window_resets_at": w.window_secs.map(|s| since + s), "exp": w.exp,
+            "agreement_id": w.agreement_id, "counterparties": counterparties, "key": w.key,
+        });
+        match agents.iter_mut().find(|a| a["identity"] == w.grantee) {
+            Some(a) => a["grants"].as_array_mut().expect("array").push(grant),
+            None => agents.push(json!({ "identity": w.grantee, "grants": [grant] })),
+        }
+    }
+
+    // Agreements I am a party to (as an account), with the money that moved.
+    let escrows = app.db.with(|c| escrow::for_party(c, &identity)).unwrap_or_default();
+    let agreements: Vec<_> = escrows
+        .iter()
+        .map(|e| {
+            let (role, my_agent, their_agent, counterparty) = match (e.payer_account == identity, e.payee_account == identity) {
+                (true, true) => ("both", &e.payer, &e.payee, identity.clone()),
+                (true, false) => ("payer", &e.payer, &e.payee, e.payee_account.clone()),
+                (false, true) => ("payee", &e.payee, &e.payer, e.payer_account.clone()),
+                // Matched on the acting identity only (legacy rows): treat as payer's side.
+                _ => ("payer", &e.payer, &e.payee, e.payee_account.clone()),
+            };
+            let moved = app.db.with(|c| Db::ledger_by_reference(c, &format!("escrow:{}", e.id))).unwrap_or_default();
+            let sum = |kind: &str| -> i64 { moved.iter().filter(|r| r.kind == kind).map(|r| r.delta_minor).sum() };
+            let money = json!({
+                "locked": fm(-sum("escrow_lock")),
+                "released_to_payee": fm(sum("escrow_release")),
+                "refunded_to_payer": fm(sum("escrow_refund")),
+                "fees_paid": fm(sum("custodian_fee") + sum("adjudicator_fee")),
+                "contribution_paid": fm(sum("contribution")),
+            });
+            let mut links = json!({ "index": format!("{}/v1/agreements/{}", app.cfg.index_origin.trim_end_matches('/'), e.id) });
+            if e.state == "disputed" || e.outcome.as_deref().map(|o| o.starts_with("ruled")).unwrap_or(false) {
+                links["judge_case"] = json!(format!("{}/api/cases/{}", app.cfg.judge_origin.trim_end_matches('/'), e.id));
+            }
             json!({
-                "key": w.key, "grantee": w.grantee, "scope": w.scope,
-                "cap": pay::fmt_minor(w.cap_minor), "currency": w.currency,
-                "window_secs": w.window_secs,
-                "spent": pay::fmt_minor(spent),
-                "remaining": pay::fmt_minor((w.cap_minor - spent).max(0)),
-                "window_resets_at": w.window_secs.map(|s| since + s),
-                "exp": w.exp,
+                "id": e.id, "state": e.state, "role": role, "counterparty": counterparty,
+                "my_agent": my_agent, "their_agent": their_agent, "adjudicator": e.adjudicator,
+                "price": fm(e.price_minor),
+                "fees": { "custodian": fm(e.custodian_fee_minor), "adjudicator": fm(e.adjudicator_fee_minor) },
+                "contribution": { "amount": fm(e.contribution_minor), "recipient": e.contribution_recipient },
+                "currency": e.currency, "locked_at": e.locked_at, "settled_at": e.settled_at, "outcome": e.outcome,
+                "money": money, "links": links,
             })
         })
         .collect();
+
     let receipts: Vec<_> = app
         .db
         .receipts_for(&identity, 100)
         .unwrap_or_default()
         .into_iter()
         .map(|r| {
+            let agreement_id = if r.kind.starts_with("escrow:") { r.memo.clone() } else { None };
             json!({
                 "id": r.id, "kind": r.kind, "grantor": r.grantor, "grantee": r.grantee,
-                "amount": pay::fmt_minor(r.amount_minor), "currency": r.currency,
-                "payee": r.payee, "memo": r.memo, "at": r.at,
+                "amount": fm(r.amount_minor), "currency": r.currency,
+                "payee": r.payee, "memo": r.memo, "at": r.at, "agreement_id": agreement_id,
             })
         })
         .collect();
-    let ledger: Vec<_> = app
-        .db
-        .ledger_for(&identity, 100)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|l| json!({ "delta": pay::fmt_minor(l.delta_minor), "kind": l.kind, "reference": l.reference, "at": l.at }))
-        .collect();
-    let escrows: Vec<_> = app
-        .db
-        .with(|c| escrow::for_party(c, &identity))
-        .unwrap_or_default()
-        .iter()
-        .map(escrow::view)
-        .collect();
+
     Json(json!({
         "email": identity,
-        "escrows": escrows,
         "currency": app.cfg.currency,
-        "balance": pay::fmt_minor(account.map(|a| a.balance_minor).unwrap_or(0)),
-        "warrants": warrants,
-        "receipts": receipts,
+        "balance": fm(account.map(|a| a.balance_minor).unwrap_or(0)),
         "ledger": ledger,
+        "agents": agents,
+        "agreements": agreements,
+        "receipts": receipts,
+        // Previous shape, kept one release for old pages/scripts.
+        "escrows": escrows.iter().map(escrow::view).collect::<Vec<_>>(),
     }))
     .into_response()
 }
