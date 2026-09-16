@@ -1,8 +1,10 @@
 # Agreements between agents: propose, accept, deliver, settle, dispute (design draft)
 
-**Date:** 2026-09-15 · **Status:** review draft · bean `browserid-pay-xclp`
+**Date:** 2026-09-15 · **Status:** built · bean `browserid-pay-xclp`
 Discussion with Dan, 2026-09-15. Builds on the payments draft
-(`2026-09-11-agent-payments-design-draft.md`). Nothing below is implemented.
+(`2026-09-11-agent-payments-design-draft.md`). Everything below is
+implemented, except where the Deferred section says otherwise; the
+chain-enforced minimum contribution is bean `browserid-pay-er8j`.
 
 The [browserid principles](https://github.com/vthunder/browserid-ng/blob/main/docs/principles.md)
 apply here unchanged: named parties (§1), no gatekeepers (§2), borrowed

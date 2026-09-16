@@ -1,7 +1,13 @@
 # Agent payments: custodian-enforced budgets (design draft)
 
-**Date:** 2026-09-11 · **Status:** review draft 
-Discussion with Dan, 2026-09-11. Nothing below is implemented.
+**Date:** 2026-09-11 · **Status:** built, except the rail · bean `browserid-pay-gtrp`
+Discussion with Dan, 2026-09-11. The custodian, the `pay:` scope and the
+cap enforcement below are implemented. The **rail is not x402 yet**: the
+agreements build settles in test money, so v1 ships `pay:transfer` — an
+internal move between accounts at the same custodian — behind exactly the
+checks described here. x402 remains the plan for paying systems that do not
+speak browserid-pay, with further rails after it; see bean
+`browserid-pay-f38b`.
 
 ## The one idea
 
