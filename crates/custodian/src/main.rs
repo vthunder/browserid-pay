@@ -131,7 +131,9 @@ async fn index(State(app): State<App>) -> Html<String> {
         include_str!("../static/index.html")
             .replace("{{BROKER}}", &app.cfg.broker)
             .replace("{{ORIGIN}}", &app.cfg.origin)
-            .replace("{{CURRENCY}}", &app.cfg.currency),
+            .replace("{{CURRENCY}}", &app.cfg.currency)
+            .replace("{{INDEX}}", app.cfg.index_origin.trim_end_matches('/'))
+            .replace("{{JUDGE}}", app.cfg.judge_origin.trim_end_matches('/')),
     )
 }
 

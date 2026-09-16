@@ -3,141 +3,764 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pay.dsp.fyi</title>
 <style>
-  :root { --fg:#1a1a1a; --mute:#666; --line:#e4e4e4; --bg:#fafafa; --card:#fff; --ok:#1a7f37; --warn:#9a3412; --info:#1d4ed8; }
-  @media (prefers-color-scheme: dark) { :root { --fg:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --bg:#141414; --card:#1c1c1c; --ok:#3fb950; --warn:#f0883e; --info:#7aa2f7; } }
-  body { font: 15px/1.55 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 2rem 1rem; }
-  main { max-width: 46rem; margin: 0 auto; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; } h2 { font-size: 1rem; margin: 1.6rem 0 .5rem; color: var(--mute); text-transform: uppercase; letter-spacing: .04em; }
-  h3 { font-size: .95rem; margin: 0 0 .3rem; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: .6rem 0; }
-  .row { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
-  .big { font-size: 2rem; font-weight: 600; }
-  .mute { color: var(--mute); } .ok { color: var(--ok); } .warn { color: var(--warn); } .info { color: var(--info); }
-  button { font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
-  table { width: 100%; border-collapse: collapse; font-size: .92rem; } td, th { text-align: left; padding: .35rem .3rem; border-bottom: 1px solid var(--line); vertical-align: top; } th { color: var(--mute); font-weight: 500; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  code { font-size: .9em; } a { color: var(--info); }
-  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: .4rem; } .bar > i { display: block; height: 100%; background: var(--ok); }
-  .grant { padding: .5rem 0; border-top: 1px solid var(--line); } .grant:first-of-type { border-top: 0; }
-  .pill { display: inline-block; font-size: .78rem; padding: .1rem .5rem; border-radius: 999px; border: 1px solid var(--line); color: var(--mute); }
-  .pill.locked { color: var(--info); border-color: var(--info); } .pill.disputed { color: var(--warn); border-color: var(--warn); } .pill.settled { color: var(--ok); border-color: var(--ok); }
-  details > summary { cursor: pointer; color: var(--mute); margin: .6rem 0; }
-  .agr .money { font-size: .88rem; display: grid; grid-template-columns: max-content auto; gap: .1rem .8rem; margin-top: .5rem; }
-  p.lede { color: var(--mute); margin: 0 0 1.2rem; }
-  .small { font-size: .85rem; }
+  /* One set of tokens, swapped for dark. Light is the designed mode
+     (docs/design/handoff-2026-09-16); dark is derived from it — warm
+     neutrals kept, every text token ≥4.5:1 on its own background. */
+  :root {
+    --bg:#fffdf9; --card:#fff; --ink:#1a1a1a; --sec:#8a8578; --faint:#a39d8d;
+    --hair:#e7e2d6; --hair2:#f0ebe0; --hair3:#f5f1e8; --hover:#c9c2b0;
+    --ok:#1a7f37; --warn:#9a3412; --link:#2f5fa8; --linkh:#1d4485;
+    --alice:#4348a8; --bob:#0e766e; --sys:#6b6659; --sysbg:#f5f2ea; --sysline:#e5dfd0;
+    --chip:#f5f1e8; --quotebg:#fcfaf5; --quoteline:#d8d2c2; --quoteink:#444;
+    --pane:#fcfbf7; --spine:#ddd7c9; --micro:#b0aca2; --extra:#8b9469;
+    --lockbg:#e8eef9; --lockfg:#2f5fa8; --dispbg:#fdf3e7; --dispfg:#9a3412; --displine:#ecd9bc;
+    --setbg:#e7f2ea; --setfg:#1a7f37; --okbg:#f2f8f2; --okline:#d9e6d9; --track:#f0ebe0;
+    --overlay:rgba(30,28,22,.4); --shadow:0 12px 40px rgba(0,0,0,.25); --cardshadow:0 1px 4px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#17150f; --card:#201d16; --ink:#ece8df; --sec:#b3ac9c; --faint:#938d7e;
+      --hair:#35312a; --hair2:#2b2821; --hair3:#262319; --hover:#524c40;
+      --ok:#5fbf78; --warn:#f0883e; --link:#8ab0e8; --linkh:#a9c6f2;
+      --alice:#9297ee; --bob:#4fbdaf; --sys:#b3ac9c; --sysbg:#272319; --sysline:#3a352a;
+      --chip:#2b2720; --quotebg:#1d1a14; --quoteline:#4a443a; --quoteink:#cfc9bd;
+      --pane:#1b1812; --spine:#3d382e; --micro:#8c867a; --extra:#9aa477;
+      --lockbg:#1e2740; --lockfg:#9dbaf0; --dispbg:#33251a; --dispfg:#f0a56a; --displine:#4a3a28;
+      --setbg:#1a2a20; --setfg:#6fce89; --okbg:#1a2a20; --okline:#2c4436; --track:#2b2821;
+      --overlay:rgba(0,0,0,.62); --shadow:0 12px 40px rgba(0,0,0,.6); --cardshadow:0 1px 4px rgba(0,0,0,.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13.5px/1.5 system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
+  main { max-width:680px; margin:0 auto; padding:36px 40px; }
+  a { color:var(--link); text-decoration:none; }
+  a:hover { color:var(--linkh); text-decoration:underline; }
+  .mono { font-family:ui-monospace, Menlo, monospace; }
+  .num { font-variant-numeric:tabular-nums; }
+  .dim { color:var(--faint); } .sec { color:var(--sec); }
+  .neg { color:var(--warn); } .pos { color:var(--ok); }
+  button { font:inherit; padding:.45rem .9rem; border-radius:8px; border:1px solid var(--hair); background:var(--card); color:var(--ink); cursor:pointer; }
+  button:hover { border-color:var(--hover); }
+
+  /* header, balance, needs-you */
+  .top { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .brand { font:600 14px system-ui, sans-serif; letter-spacing:.02em; }
+  .who { font:12px ui-monospace, Menlo, monospace; color:var(--sec); }
+  .who b { color:var(--ink); }
+  .balance { font:300 58px/1.05 Georgia, ui-serif, serif; font-variant-numeric:tabular-nums; margin:26px 0 2px; }
+  .lede { font-size:12.5px; color:var(--sec); margin:0 0 8px; }
+  .needs { border-left:2px solid var(--warn); padding:2px 0 2px 12px; margin:18px 0 0; font-size:13.5px; }
+  .needs b { color:var(--warn); }
+  .needs div + div { margin-top:4px; }
+
+  /* section headers */
+  .sechead { display:flex; align-items:baseline; gap:12px; margin:30px 0 4px; }
+  .sechead > span:first-child { font:600 12px Georgia, ui-serif, serif; font-style:italic; color:var(--sec); white-space:nowrap; }
+  .sechead > .rule { flex:1; border-top:1px solid var(--hair); }
+  .sechead.gap { margin-bottom:10px; }
+
+  /* ledger */
+  .lrow { display:grid; grid-template-columns:104px minmax(0,1fr) 72px 72px; gap:12px; padding:9px 0; border-bottom:1px solid var(--hair2); align-items:baseline; font-size:13.5px; }
+  .lrow .when { font:11px ui-monospace, Menlo, monospace; color:var(--faint); white-space:nowrap; }
+  .lrow .agr { font:10.5px ui-monospace, Menlo, monospace; color:var(--faint); cursor:pointer; }
+  .lrow .agr:hover { color:var(--link); text-decoration:underline; }
+  .lrow .delta, .lrow .bal { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lrow .bal { color:var(--faint); }
+
+  /* agents & budgets */
+  .card { background:var(--card); border:1px solid var(--hair); border-radius:10px; padding:14px 18px; }
+  .agents { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:10px; }
+  .idline { font:13px ui-monospace, Menlo, monospace; }
+  .idline .dom, .who .dom { color:var(--faint); }
+  .chip-rate { cursor:pointer; font:600 11px system-ui, sans-serif; background:var(--chip); border:1px solid var(--hair); border-radius:12px; padding:2px 9px; color:var(--sys); white-space:nowrap; }
+  .chip-rate:hover { border-color:var(--hover); }
+  .budget { margin-top:10px; }
+  .budget .b1 { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; font-size:13px; }
+  .bar { height:6px; background:var(--track); border-radius:3px; overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; background:var(--ok); }
+  .bmeta { font-size:11.5px; color:var(--faint); margin-top:4px; }
+  .cap { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; font-size:13px; margin-top:10px; padding-top:10px; border-top:1px solid var(--hair3); }
+  .cap .used { color:var(--sec); white-space:nowrap; }
+  .agfoot { font-size:12px; color:var(--faint); margin:8px 0 0; }
+
+  /* agreements */
+  .agr-card { background:var(--card); border:1px solid var(--hair); border-radius:10px; padding:14px 18px; margin:0 0 10px; cursor:pointer; }
+  .agr-card:hover { border-color:var(--hover); box-shadow:var(--cardshadow); }
+  .agr-card.disputed { border-color:var(--displine); }
+  .agr-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .sid { font:11px ui-monospace, Menlo, monospace; background:var(--chip); border-radius:4px; padding:2px 6px; color:var(--sec); }
+  .pill { font:600 11px system-ui, sans-serif; letter-spacing:.05em; text-transform:uppercase; border-radius:4px; padding:2px 7px; }
+  .pill.locked { background:var(--lockbg); color:var(--lockfg); }
+  .pill.disputed { background:var(--dispbg); color:var(--dispfg); }
+  .pill.settled { background:var(--setbg); color:var(--setfg); }
+  .headline { font-size:14px; font-weight:600; margin:10px 0 2px; }
+  .headline.warn { color:var(--warn); }
+  .role { font-size:13px; margin:8px 0 2px; }
+  .terms { font-size:12.5px; color:var(--sec); }
+  .evchips { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0 0; }
+  .evchip { font:11px ui-monospace, Menlo, monospace; border:1px solid var(--hair); background:var(--bg); color:var(--sec); border-radius:4px; padding:2px 7px; }
+  .evchip.open { border-color:var(--okline); background:var(--okbg); color:var(--ok); }
+  .money { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:4px 16px; margin:10px 0 0; padding:10px 0 0; border-top:1px solid var(--hair3); }
+  .money > div { display:flex; justify-content:space-between; font-size:12px; gap:8px; }
+  .money .lab { color:var(--sec); }
+  .quote { margin:10px 0 0; padding:10px 12px; background:var(--quotebg); border-left:2px solid var(--quoteline); border-radius:0 6px 6px 0; font:italic 12.5px/1.5 Georgia, ui-serif, serif; color:var(--quoteink); }
+  .quote .by { font-style:normal; color:var(--faint); font-family:system-ui, sans-serif; }
+  .agr-foot { font-size:12px; margin-top:10px; }
+  .agr-foot .hint { color:var(--faint); float:right; }
+  .sep { color:var(--quoteline); }
+  .empty { color:var(--sec); font-size:13px; }
+  details > summary { cursor:pointer; color:var(--sec); font-size:12.5px; margin-bottom:10px; }
+
+  /* popups */
+  .overlay { position:fixed; inset:0; background:var(--overlay); display:flex; align-items:center; justify-content:center; padding:24px; z-index:10; }
+  .panel { background:var(--bg); border-radius:12px; box-shadow:var(--shadow); width:100%; padding:18px 22px; max-height:calc(100vh - 48px); overflow-y:auto; }
+  .panel.tl { max-width:600px; } .panel.rep { max-width:520px; }
+  .phead { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .x { margin-left:auto; cursor:pointer; color:var(--faint); font-size:16px; line-height:1; background:none; border:0; padding:0 2px; }
+  .x:hover { color:var(--ink); border:0; }
+  .parties { display:flex; justify-content:space-between; margin:10px 0 8px; font-size:12px; gap:10px; }
+  .parties .a b { color:var(--alice); } .parties .b b { color:var(--bob); }
+  .parties .mid { font-size:10.5px; color:var(--faint); align-self:center; text-align:center; }
+  .pane { max-height:340px; overflow-y:auto; border:1px solid var(--hair2); border-radius:8px; background:var(--pane); }
+  .pinner { position:relative; padding:6px 10px 4px; }
+  .spine { position:absolute; left:50%; top:0; bottom:14px; width:1px; background:var(--spine); }
+  .tlab { text-align:center; position:relative; }
+  .tlab span { font:600 9.5px system-ui, sans-serif; letter-spacing:.08em; text-transform:uppercase; color:var(--micro); background:var(--pane); padding:0 8px; }
+  .ev { display:grid; grid-template-columns:1fr 32px 1fr; align-items:center; margin:6px 0; }
+  .ev .dot { text-align:center; }
+  .ev .dot i { display:inline-block; width:8px; height:8px; border-radius:50%; box-shadow:0 0 0 3px var(--pane); }
+  .evc { background:var(--card); border:1px solid var(--hair); border-radius:8px; padding:8px 11px; font-size:12.5px; }
+  .evc.a { border-left:2px solid var(--alice); margin-right:10px; }
+  .evc.b { border-right:2px solid var(--bob); margin-left:10px; text-align:right; }
+  .evc .nm { font:600 11.5px system-ui, sans-serif; }
+  .evc.a .nm { color:var(--alice); } .evc.b .nm { color:var(--bob); }
+  .evc .meta { font:10px ui-monospace, Menlo, monospace; color:var(--faint); margin-top:2px; }
+  .evsys { display:flex; justify-content:center; margin:8px 0; }
+  .evsys > div { background:var(--sysbg); border:1px solid var(--sysline); border-radius:8px; padding:7px 14px; text-align:center; font-size:12.5px; }
+  .evsys .nm { font:600 11.5px system-ui, sans-serif; color:var(--sys); }
+  .evsys .meta { font:10px ui-monospace, Menlo, monospace; color:var(--faint); margin-top:2px; }
+  .tend { text-align:center; position:relative; color:var(--micro); font-size:9px; padding-bottom:2px; }
+  .barhead { font:600 10px system-ui, sans-serif; letter-spacing:.08em; text-transform:uppercase; color:var(--sec); margin-bottom:6px; }
+  .flow { display:flex; height:18px; border-radius:5px; overflow:hidden; font:600 9.5px system-ui, sans-serif; color:#fff; }
+  .flow > div { display:flex; align-items:center; padding-left:6px; overflow:hidden; white-space:nowrap; }
+  .barnote { font-size:10.5px; color:var(--faint); margin-top:4px; }
+  .ruling { border-top:1px solid var(--hair2); margin-top:10px; padding-top:10px; }
+  .ruling .rh { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
+  .ruling .rh > span:first-child { font:600 12.5px system-ui, sans-serif; }
+  .ruling .rh > span:last-child { font:10.5px ui-monospace, Menlo, monospace; color:var(--faint); }
+  .ruling .rq { font:italic 12.5px/1.5 Georgia, ui-serif, serif; color:var(--quoteink); margin-top:4px; }
+  .ruling .rs { display:flex; gap:14px; font-variant-numeric:tabular-nums; font-size:12.5px; margin-top:6px; flex-wrap:wrap; }
+  .proved { font-size:12px; color:var(--sec); margin-top:6px; }
+
+  /* reputation popup */
+  .score { display:flex; align-items:baseline; gap:10px; margin:10px 0 2px; flex-wrap:wrap; }
+  .score > span:first-child { font:300 44px/1 Georgia, ui-serif, serif; font-variant-numeric:tabular-nums; }
+  .score > span:last-child { font-size:12px; color:var(--sec); }
+  .signed { font-size:11.5px; color:var(--faint); margin-bottom:10px; }
+  .comp { display:grid; grid-template-columns:150px 44px minmax(0,1fr); gap:10px; padding:8px 0; border-top:1px solid var(--hair2); font-size:12.5px; align-items:baseline; }
+  .comp .v { font-variant-numeric:tabular-nums; font-weight:600; }
+  .comp .note { color:var(--sec); font-size:12px; }
+  .repfoot { border-top:1px solid var(--hair2); padding-top:10px; font-size:11.5px; color:var(--faint); }
+  .loading { color:var(--faint); font-size:12.5px; padding:10px 0; text-align:center; }
+
+  /* signed out */
+  .signin { margin-top:26px; }
+  .signin p { color:var(--sec); font-size:13.5px; max-width:46ch; }
+
+  /* phone — option 1c: one column, ledger rows stack into two lines */
+  @media (max-width:560px) {
+    main { padding:20px 16px; }
+    .balance { font-size:40px; margin-top:20px; }
+    .lrow { grid-template-columns:minmax(0,1fr) auto; gap:2px 10px; }
+    .lrow .what { grid-row:1; grid-column:1; }
+    .lrow .delta { grid-row:1; grid-column:2; }
+    .lrow .when { grid-row:2; grid-column:1; }
+    .lrow .bal { grid-row:2; grid-column:2; font-size:11px; }
+    .panel { padding:14px 16px; }
+    .ev { grid-template-columns:1fr 24px 1fr; }
+    .evc.a { margin-right:6px; } .evc.b { margin-left:6px; }
+    .comp { grid-template-columns:auto 44px; }
+    .comp .note { grid-column:1 / -1; }
+  }
 </style>
 <main>
-  <h1>pay.dsp.fyi</h1>
-  <p class="lede">A custodian for agent spending. Your agents pay and enter agreements from this account, within the budgets you signed. Balances are test credit for now.</p>
-  <div class="card row" id="who"><span id="state">checking…</span><span><button id="login" hidden>Sign in</button><button id="logout" hidden>Sign out</button></span></div>
+  <div class="top">
+    <div class="brand">pay.dsp.fyi</div>
+    <div class="who mono" id="who"></div>
+  </div>
+
+  <div id="signedout" class="signin" hidden>
+    <p>A custodian for agent spending. Your agents pay and enter agreements from this
+      account, within the budgets you signed. Balances are test credit for now.</p>
+    <p id="state" class="dim" style="font-size:12.5px"></p>
+    <button id="login">Sign in</button>
+  </div>
+
   <div id="body" hidden>
-    <h2>Account</h2>
-    <div class="card row"><span class="mute">Balance</span><span class="big"><span id="balance">0.00</span> <span class="mute" style="font-size:1rem">{{CURRENCY}}</span></span></div>
-    <div class="card"><table id="ledger"><thead><tr><th>When</th><th>What</th><th class="num">Change</th><th class="num">Balance</th></tr></thead><tbody></tbody></table></div>
+    <div class="balance num" id="balance">—</div>
+    <div class="lede" id="lede"></div>
+    <div class="needs" id="needs" hidden></div>
 
-    <h2>Agents &amp; budgets</h2>
-    <div id="agents"></div>
+    <div class="sechead"><span>Ledger</span><span class="rule"></span></div>
+    <div id="ledger"></div>
 
-    <h2>Agreements</h2>
-    <div id="active"></div>
-    <details id="settled-wrap" hidden><summary><span id="settled-count"></span> settled</summary><div id="settled"></div></details>
+    <div class="sechead gap"><span>Agents &amp; budgets</span><span class="rule"></span></div>
+    <div class="agents" id="agents"></div>
+    <div class="agfoot" id="agentsfoot"></div>
+
+    <div class="sechead gap"><span>Agreements</span><span class="rule"></span></div>
+    <div id="agreements"></div>
+
+    <div class="agfoot" style="margin-top:24px">Signed in as <span class="mono" id="whofoot"></span> ·
+      <a href="#" id="logout">sign out</a></div>
   </div>
 </main>
+<div id="popup"></div>
 <script src="{{BROKER}}/include.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const when = t => t ? new Date(t * 1000).toLocaleString() : '';
-const BROKER = '{{BROKER}}';
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const BROKER = '{{BROKER}}', INDEX = '{{INDEX}}', JUDGE = '{{JUDGE}}', CURRENCY = '{{CURRENCY}}';
+const host = u => String(u || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+
+// ---- formatting ------------------------------------------------------------
+const F = ts => ts ? new Date(ts * 1000).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '';
+const Ftime = ts => ts ? new Date(ts * 1000).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' }) : '';
+const short = id => id ? (id.length > 12 ? id.slice(0, 11) + '…' : id) : '';
+const n = v => Number.parseFloat(v || '0') || 0;
+const money = v => '$' + Math.abs(n(v)).toFixed(2);
+const signed = v => (n(v) < 0 ? '−' : '+') + Math.abs(n(v)).toFixed(2);
+const plain = v => Math.abs(n(v)).toFixed(2);
+// Identities are email-shaped and can be long: bold local part, quiet domain,
+// never truncated.
+const split = id => { const i = String(id || '').lastIndexOf('@'); return i < 0 ? { local: id || '', domain: '' } : { local: id.slice(0, i), domain: id.slice(i + 1) }; };
+const idHtml = id => { const p = split(id); return `<b>${esc(p.local)}</b>${p.domain ? `<span class="dom">@${esc(p.domain)}</span>` : ''}`; };
+// Short prose name for an agent: the tag after '+', else the local part.
+const nick = id => { const l = split(id).local; const i = l.indexOf('+'); return i >= 0 ? l.slice(i + 1) : l; };
 function windowWords(s) {
   if (!s) return 'in total';
   const d = s / 86400;
-  if (d >= 1 && Number.isInteger(d)) return d === 1 ? 'every day' : d === 7 ? 'every week' : d === 30 ? 'every 30 days' : `every ${d} days`;
+  if (d >= 1 && Number.isInteger(d)) return d === 1 ? 'every day' : d === 7 ? 'every week' : `every ${d} days`;
   const h = s / 3600; return h >= 1 ? `every ${h} hours` : `every ${s} seconds`;
 }
-// Ledger kinds → words. The reference on a row names the agreement.
-const KIND = {
-  credit: 'Test credit', pay: 'Payment by your agent', receive: 'Payment received',
-  escrow_lock: 'Locked for agreement', escrow_release: 'Released to you from agreement', escrow_refund: 'Returned unused from agreement',
-  adjudicator_fee: 'Adjudicator fee', custodian_fee: 'Custodian fee', contribution: 'Ecosystem contribution',
-};
-function agreementLink(id) { return id ? ` <a href="#agr-${esc(id)}"><code>${esc(id)}</code></a>` : ''; }
-function scopeWords(g) {
-  if (g.scope.startsWith('pay:')) {
+
+// ---- state -----------------------------------------------------------------
+let me = null;                 // GET /api/me
+let popup = null;              // { kind:'timeline'|'rep', id }
+const chain = new Map();       // agreement id -> public record (index), or null
+const cases = new Map();       // agreement id -> judge case, or null
+const reps = new Map();        // identity -> reputation card, or null
+let timer = null;
+
+async function getJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); } catch { return null; }
+}
+// Secondary services are cached per id and never block the account view.
+async function chainEntry(id) {
+  if (chain.has(id)) return chain.get(id);
+  chain.set(id, null);
+  const j = await getJSON(`${INDEX}/v1/agreements/${encodeURIComponent(id)}`);
+  const v = (j && j.results) || null; chain.set(id, v); return v;
+}
+async function judgeCase(id) {
+  if (cases.has(id)) return cases.get(id);
+  cases.set(id, null);
+  const j = await getJSON(`${JUDGE}/api/cases/${encodeURIComponent(id)}`);
+  cases.set(id, j); return j;
+}
+async function repCard(identity) {
+  if (reps.has(identity)) return reps.get(identity);
+  reps.set(identity, null);
+  const j = await getJSON(`${INDEX}/v1/reputation?subject=${encodeURIComponent(identity)}`);
+  reps.set(identity, j); return j;
+}
+
+// ---- ledger ----------------------------------------------------------------
+// Kind → plain words. Escrow rows borrow their agreement for the counterparty
+// and the outcome, so a row reads like a sentence, never like a protocol.
+function ledgerWords(row, a) {
+  const payee = a ? nick(a.role === 'payee' ? a.my_agent : a.their_agent) : '';
+  const payer = a ? nick(a.role === 'payee' ? a.their_agent : a.my_agent) : '';
+  const ruled = !!(a && a.outcome && a.outcome.indexOf('ruled:') === 0);
+  const how = ruled ? a.outcome.slice(6) : '';
+  switch (row.kind) {
+    case 'credit': return 'Test credit';
+    case 'pay': return 'Payment by your agent';
+    case 'receive': return 'Payment received';
+    case 'escrow_lock': return payee ? `Locked for agreement with ${esc(payee)}` : 'Locked for agreement';
+    case 'escrow_release':
+      if (ruled) return `Released — ruled ${esc(how)}, payee share`;
+      return payer ? `Released — ${esc(payer)} acknowledged` : 'Released from agreement';
+    case 'escrow_refund': {
+      const isFee = !a || !ruled || Math.abs(n(row.delta) - n(a.fees && a.fees.adjudicator)) < 0.005;
+      return isFee ? 'Adjudicator fee returned' : `Refunded — ruled ${esc(how)}, payer share`;
+    }
+    case 'adjudicator_fee': return 'Adjudicator fee';
+    case 'custodian_fee': return 'Custodian fee';
+    case 'contribution': return 'Ecosystem contribution';
+    default: return esc(row.kind);
+  }
+}
+function ledgerHtml() {
+  if (!me.ledger || !me.ledger.length) return '<div class="empty" style="padding:10px 0">Nothing yet. Deposits, and what your agents spend, appear here.</div>';
+  const byId = new Map((me.agreements || []).map(a => [a.id, a]));
+  return me.ledger.map(r => {
+    const a = r.agreement_id ? byId.get(r.agreement_id) : null;
+    const neg = n(r.delta) < 0;
+    return `<div class="lrow">
+      <span class="when">${esc(F(r.at))}</span>
+      <span class="what">${ledgerWords(r, a)}${r.agreement_id ? ` <span class="agr mono" data-agr="${esc(r.agreement_id)}">${esc(short(r.agreement_id))}</span>` : ''}</span>
+      <span class="delta ${neg ? 'neg' : 'pos'}">${esc(signed(r.delta))}</span>
+      <span class="bal">${esc(plain(r.balance_after))}</span>
+    </div>`;
+  }).join('');
+}
+
+// ---- agents & budgets ------------------------------------------------------
+function grantWords(g) {
+  if (g.scope && g.scope.indexOf('pay:') === 0) {
     const rail = g.scope.slice(4);
-    return `may spend up to ${esc(g.cap)} ${esc(g.currency)} ${windowWords(g.window_secs)}${rail === 'transfer' ? '' : ' over ' + esc(rail)}`;
+    return `may spend up to ${money(g.cap)} ${windowWords(g.window_secs)}${rail === 'transfer' ? '' : ' over ' + esc(rail)}`;
   }
   if (g.scope === 'contract:agreement') {
-    const cps = Array.isArray(g.counterparties) && g.counterparties.length ? ' with ' + g.counterparties.map(esc).join(', ') : '';
-    return `may commit up to ${esc(g.cap)} ${esc(g.currency)}${cps}`;
+    let w = `agreements up to ${money(g.cap)} ${g.window_secs ? windowWords(g.window_secs) : 'each'}`;
+    if (g.min_reputation) w += ` with any agent rated ${esc(g.min_reputation.score)} or better at ${esc(host(g.min_reputation.indexer))}`;
+    else if (Array.isArray(g.counterparties) && g.counterparties.length) w += ` with ${g.counterparties.map(c => esc(split(c).local)).join(', ')}`;
+    return w;
   }
-  return esc(g.scope) + ` — up to ${esc(g.cap)} ${esc(g.currency)}`;
+  return `${esc(g.scope)} — up to ${money(g.cap)}`;
 }
-function grantHtml(g) {
-  const pct = Math.min(100, Math.round(100 * parseFloat(g.spent) / Math.max(0.01, parseFloat(g.cap))));
-  const agr = g.agreement_id ? `for agreement${agreementLink(g.agreement_id)}` : 'standing budget';
-  return `<div class="grant"><div class="row"><span>${scopeWords(g)} <span class="mute small">· ${agr}</span></span>
-    <span class="num"><b>${esc(g.spent)}</b> <span class="mute">spent · ${esc(g.remaining)} left</span></span></div>
-    <div class="bar"><i style="width:${pct}%"></i></div>
-    <div class="mute small" style="margin-top:.3rem">${g.window_resets_at ? 'resets ' + when(g.window_resets_at) + ' · ' : ''}expires ${when(g.exp)}</div></div>`;
+// Per-agreement caps repeat with identical terms; one line with a count reads
+// better than a wall of near-identical rows.
+function capGroups(grants) {
+  const out = new Map();
+  for (const g of grants) {
+    const key = grantWords(g);
+    const e = out.get(key) || { words: key, n: 0, spent: 0 };
+    e.n++; if (n(g.spent) > 0) e.spent++;
+    out.set(key, e);
+  }
+  return [...out.values()].map(e => {
+    let used;
+    if (e.spent === 0) used = e.n === 1 ? '1 grant · unspent' : `${e.n} grants · none spent`;
+    else if (e.spent === e.n) used = e.n === 1 ? '1 grant · fully spent' : `${e.n} grants · ${e.n === 2 ? 'both' : 'all'} fully spent`;
+    else used = `${e.n} grants · ${e.spent} spent`;
+    return { words: e.words, used };
+  });
 }
-function nextStep(a) {
-  if (a.state === 'locked') return a.role === 'payee' ? 'Waiting for the deliverable, then the payer settles.' : 'Funds are held. Settle when the deliverable is accepted, or dispute.';
-  if (a.state === 'disputed') return 'In dispute — the adjudicator rules after the other side responds, or when the response window ends.';
-  return '';
+function agentsHtml() {
+  if (!me.agents || !me.agents.length) {
+    return `<div class="card empty">No agent has a budget yet. Budgets appear here once an agent you
+      authorized at ${esc(host(BROKER))} makes a payment or funds an agreement from this account.</div>`;
+  }
+  return me.agents.map(a => {
+    const standing = a.grants.filter(g => !g.agreement_id);
+    const caps = capGroups(a.grants.filter(g => g.agreement_id));
+    const rep = reps.get(a.identity);
+    const rated = rep ? `rated ${Math.round(rep.score)} · ${esc(host(rep.indexer || INDEX))}`
+                      : (reps.has(a.identity) ? 'rating unavailable' : 'rating…');
+    return `<div class="card">
+      <div class="top"><span class="idline mono">${idHtml(a.identity)}</span>
+        <span class="chip-rate" data-rep="${esc(a.identity)}">${rated}</span></div>
+      ${standing.map(g => {
+        const pct = Math.min(100, Math.round(100 * n(g.spent) / Math.max(0.01, n(g.cap))));
+        return `<div class="budget">
+          <div class="b1"><span>${grantWords(g)}</span>
+            <span class="num"><b>${esc(money(g.spent))}</b> <span class="sec">spent · ${esc(money(g.remaining))} left</span></span></div>
+          <div class="bar"><i style="width:${pct}%"></i></div>
+          <div class="bmeta">${g.window_resets_at ? 'resets ' + esc(F(g.window_resets_at)) + ' · ' : ''}expires ${esc(F(g.exp))}</div>
+        </div>`;
+      }).join('')}
+      ${caps.map(c => `<div class="cap"><span>${c.words}</span><span class="used">${esc(c.used)}</span></div>`).join('')}
+    </div>`;
+  }).join('');
+}
+function agentsFootHtml() {
+  const rep = reps.get(me.email);
+  let rated = '';
+  if (rep) {
+    const inputs = (rep.inputs && rep.inputs.agreements) || [];
+    const counted = (rep.counts && rep.counts.counted) || 0;
+    const why = inputs.length && !counted ? ' — agreements between agents of one controlling account don’t count' : '';
+    rated = `Aggregated to your account, the grantor: rated ${Math.round(rep.score)}${why}. `;
+  }
+  return `${rated}Budgets are granted and revoked at <a href="${esc(BROKER)}/account">${esc(host(BROKER))}/account</a>.`;
+}
+
+// ---- agreements ------------------------------------------------------------
+// `refunded_to_payer` sums every refund row, including the adjudicator fee when
+// the adjudicator was never needed. Split that out: the design and the ledger
+// both show a returned fee as its own line.
+function moneyRows(a) {
+  const m = a.money || {};
+  const adjFee = n(a.fees && a.fees.adjudicator);
+  const custFee = n(a.fees && a.fees.custodian);
+  const adjReturned = a.state === 'settled' && n(m.fees_paid) + 0.005 < custFee + adjFee ? adjFee : 0;
+  const refundNet = Math.max(0, n(m.refunded_to_payer) - adjReturned);
+  const payee = nick(a.role === 'payee' ? a.my_agent : a.their_agent);
+  const payer = nick(a.role === 'payee' ? a.their_agent : a.my_agent);
+  const rows = [{ lab: 'locked', v: '−' + plain(m.locked), cls: 'neg' }];
+  if (a.state === 'settled') {
+    if (n(m.released_to_payee) > 0) rows.push({ lab: `released to ${payee}`, v: '+' + plain(m.released_to_payee), cls: 'pos' });
+    if (refundNet > 0) rows.push({ lab: `refunded to ${payer}`, v: '+' + refundNet.toFixed(2), cls: 'pos' });
+    if (adjReturned > 0) rows.push({ lab: 'adjudicator fee returned', v: '+' + adjReturned.toFixed(2), cls: 'pos' });
+    else if (adjFee > 0) rows.push({ lab: 'adjudicator fee', v: adjFee.toFixed(2), cls: '' });
+    rows.push({ lab: 'custodian fee', v: custFee.toFixed(2), cls: '' });
+    rows.push({ lab: 'contribution', v: plain(m.contribution_paid), cls: '' });
+  }
+  return { rows, payee, payer, adjReturned, refundNet, adjFee, custFee };
+}
+function outcomeWords(a) {
+  if (!a.outcome) return '';
+  if (a.outcome === 'acknowledged') return 'acknowledged';
+  if (a.outcome.indexOf('ruled:') === 0) return 'ruled: ' + a.outcome.slice(6);
+  return a.outcome;
+}
+// The headline says what is happening or what happened, in one line.
+function headline(a) {
+  const m = moneyRows(a), kase = cases.get(a.id);
+  if (a.state === 'locked') {
+    return { t: a.role === 'payee' ? 'Waiting for you to deliver' : `Waiting for ${m.payee} to deliver`, warn: false };
+  }
+  if (a.state === 'disputed') {
+    if (kase && kase.state === 'open' && kase.respond_by) {
+      const answering = kase.disputed_by === a.my_agent ? nick(a.their_agent) : nick(a.my_agent);
+      return { t: `${answering} must respond by ${Ftime(kase.respond_by)}`, warn: true };
+    }
+    return { t: 'In dispute — the adjudicator rules next', warn: true };
+  }
+  if (a.outcome === 'acknowledged') return { t: `${m.payer} acknowledged ${m.payee}’s delivery`, warn: false };
+  if (a.outcome && a.outcome.indexOf('ruled:') === 0) {
+    const how = a.outcome.slice(6);
+    return { t: how === 'split' ? 'The judge split the price' : `The judge ruled for the ${how}`, warn: false };
+  }
+  return { t: '', warn: false };
+}
+function roleWords(a) {
+  const m = moneyRows(a);
+  if (a.role === 'both') {
+    const cost = m.custFee + n(a.contribution && a.contribution.amount) + (a.state === 'settled' && !m.adjReturned ? m.adjFee : 0);
+    return `Both sides are your account — ${esc(m.payer)} paid, ${esc(m.payee)} received.` +
+      (a.state === 'settled' ? ` Net −${cost.toFixed(2)} after fees.` : '');
+  }
+  const mine = nick(a.my_agent), theirs = nick(a.their_agent);
+  return a.role === 'payer'
+    ? `You pay ${esc(theirs)} — your agent ${esc(mine)} entered this agreement.`
+    : `${esc(theirs)} pays you — your agent ${esc(mine)} entered this agreement.`;
+}
+function evidenceChips(a) {
+  const e = chain.get(a.id);
+  if (!e || !e.evidence) return '';
+  const kase = cases.get(a.id);
+  const opened = new Set(((kase && kase.response && kase.response.reveals) || []).filter(r => r.matched).map(r => r.evidence_id));
+  const chips = e.evidence.filter(ev => ev.commitment).map(ev => {
+    const open = opened.has(ev.id);
+    return `<span class="evchip${open ? ' open' : ''}">${esc(ev.kind)} · ${open ? 'opened ✓' : 'sealed'}</span>`;
+  });
+  return chips.length ? `<div class="evchips">${chips.join('')}</div>` : '';
 }
 function agreementHtml(a) {
-  const who = a.role === 'both' ? 'you pay yourself (both agents are yours)' : a.role === 'payer' ? `you pay ${esc(a.counterparty)}` : `${esc(a.counterparty)} pays you`;
-  const extras = (parseFloat(a.fees.custodian) + parseFloat(a.fees.adjudicator) + parseFloat(a.contribution.amount)).toFixed(2);
-  const outcome = a.outcome ? (a.outcome === 'acknowledged' ? 'settled by acknowledgement' : a.outcome.startsWith('ruled:') ? 'settled by ruling: ' + esc(a.outcome.slice(6)) : esc(a.outcome)) : '';
-  const m = a.money;
-  return `<div class="card agr" id="agr-${esc(a.id)}">
-    <div class="row"><h3><code>${esc(a.id)}</code> <span class="pill ${esc(a.state)}">${esc(a.state)}</span></h3><span class="num"><b>${esc(a.price)}</b> <span class="mute">+ ${esc(extras)} fees &amp; contribution</span></span></div>
-    <div class="mute small">${who} · your agent <code>${esc(a.my_agent)}</code> · their agent <code>${esc(a.their_agent)}</code> · adjudicator <code>${esc(a.adjudicator)}</code></div>
-    <div class="small" style="margin-top:.4rem">${outcome ? '<span class="ok">' + outcome + '</span>' : nextStep(a)}</div>
-    <div class="money">
-      <span class="mute">locked</span><span>${esc(m.locked)}</span>
-      ${a.state === 'settled' ? `<span class="mute">released to payee</span><span>${esc(m.released_to_payee)}</span>
-      <span class="mute">returned to payer</span><span>${esc(m.refunded_to_payer)}</span>
-      <span class="mute">fees</span><span>${esc(m.fees_paid)}</span>
-      <span class="mute">contribution</span><span>${esc(m.contribution_paid)}</span>` : ''}
+  const h = headline(a), m = moneyRows(a), out = outcomeWords(a);
+  const when = a.settled_at ? 'settled ' + F(a.settled_at) : a.locked_at ? 'locked ' + F(a.locked_at) : '';
+  const terms = `price ${money(a.price)} · adjudicator ${esc(split(a.adjudicator).local)}${a.outcome === 'acknowledged' ? ' (not needed)' : ''}` +
+    (a.contribution && n(a.contribution.amount) > 0 ? ` · contribution ${money(a.contribution.amount)} to ${esc(a.contribution.recipient || '')}` : '');
+  const record = chain.get(a.id);
+  const ruled = (record && record.ruling) || null;
+  return `<div class="agr-card ${esc(a.state)}" id="agr-${esc(a.id)}" data-open="${esc(a.id)}">
+    <div class="agr-head">
+      <span style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+        <span class="sid">${esc(short(a.id))}</span>
+        <span class="pill ${esc(a.state)}">${esc(a.state)}${out ? ' · ' + esc(out) : ''}</span>
+      </span>
+      <span class="dim" style="font-size:12px">${esc(when)}</span>
     </div>
-    <div class="mute small" style="margin-top:.5rem">locked ${when(a.locked_at)}${a.settled_at ? ' · settled ' + when(a.settled_at) : ''} ·
-      <a href="${esc(a.links.index)}">public record</a>${a.links.judge_case ? ' · <a href="' + esc(a.links.judge_case) + '">dispute case</a>' : ''}</div>
+    ${h.t ? `<div class="headline${h.warn ? ' warn' : ''}">${esc(h.t)}</div>` : ''}
+    <div class="role">${roleWords(a)}</div>
+    <div class="terms">${terms}</div>
+    ${a.state === 'disputed' ? evidenceChips(a) : ''}
+    <div class="money">${m.rows.map(r => `<div><span class="lab">${esc(r.lab)}</span><span class="num ${r.cls}">${esc(r.v)}</span></div>`).join('')}</div>
+    ${a.state !== 'settled' ? `<div class="terms" style="margin-top:6px">still held in escrow · price ${esc(plain(a.price))} · fees ${esc((m.custFee + m.adjFee).toFixed(2))} · contribution ${esc(plain(a.contribution && a.contribution.amount))}</div>` : ''}
+    ${ruled && ruled.reasoning ? `<div class="quote">“${esc(ruled.reasoning)}”<span class="by"> — ${esc(split(a.adjudicator).local)}</span></div>` : ''}
+    <div class="agr-foot">
+      <a href="${esc((a.links && a.links.index) || INDEX + '/v1/agreements/' + a.id)}" target="_blank" rel="noopener" data-stop>public record ↗</a>
+      ${a.links && a.links.judge_case ? `<span class="sep"> · </span><a href="${esc(a.links.judge_case)}" target="_blank" rel="noopener" data-stop>dispute case ↗</a>` : ''}
+      <span class="hint">timeline →</span>
+    </div>
   </div>`;
 }
-async function refresh() {
-  const me = await (await fetch('/api/me')).json();
-  if (!me.email) { $('state').textContent = 'Not signed in.'; $('login').hidden = false; $('logout').hidden = true; $('body').hidden = true; return; }
-  $('state').innerHTML = 'Signed in as <code>' + esc(me.email) + '</code>';
-  $('login').hidden = true; $('logout').hidden = false; $('body').hidden = false;
-  $('balance').textContent = me.balance;
-
-  const tb = $('ledger').querySelector('tbody'); tb.innerHTML = '';
-  if (!me.ledger.length) tb.innerHTML = '<tr><td colspan="4" class="mute">Nothing yet.</td></tr>';
-  for (const l of me.ledger) {
-    const neg = l.delta.startsWith('-');
-    tb.insertAdjacentHTML('beforeend', `<tr><td>${when(l.at)}</td><td>${esc(KIND[l.kind] || l.kind)}${agreementLink(l.agreement_id)}</td><td class="num ${neg ? 'warn' : 'ok'}">${neg ? '−' + esc(l.delta.slice(1)) : '+' + esc(l.delta)}</td><td class="num">${esc(l.balance_after)}</td></tr>`);
-  }
-
-  const ag = $('agents'); ag.innerHTML = '';
-  if (!me.agents.length) ag.innerHTML = `<div class="card mute">No agent has a budget yet. Budgets appear here once an agent you authorized at ${esc(BROKER.replace(/^https?:\/\//, ''))} makes a payment or funds an agreement from this account.</div>`;
-  for (const a of me.agents) {
-    const standing = a.grants.filter(g => !g.agreement_id), perAgr = a.grants.filter(g => g.agreement_id);
-    const el = document.createElement('div'); el.className = 'card';
-    el.innerHTML = `<div class="row"><h3><code>${esc(a.identity)}</code></h3><span class="mute small">revoke at <a href="${BROKER}/account">${esc(BROKER.replace(/^https?:\/\//, ''))}/account</a></span></div>
-      ${standing.map(grantHtml).join('')}
-      ${perAgr.length ? `<details${standing.length ? '' : ' open'}><summary>${perAgr.length} agreement cap${perAgr.length === 1 ? '' : 's'}</summary>${perAgr.map(grantHtml).join('')}</details>` : ''}`;
-    ag.appendChild(el);
-  }
-
-  const active = me.agreements.filter(a => a.state !== 'settled'), settled = me.agreements.filter(a => a.state === 'settled');
-  $('active').innerHTML = active.length ? active.map(agreementHtml).join('') : '<div class="card mute">No active agreements.' + (settled.length ? '' : ' Agreements your agents fund or are paid through appear here.') + '</div>';
-  $('settled-wrap').hidden = !settled.length;
-  $('settled-count').textContent = settled.length;
-  $('settled').innerHTML = settled.map(agreementHtml).join('');
-  if (location.hash) { const t = document.querySelector(location.hash); if (t) { const d = t.closest('details'); if (d) d.open = true; t.scrollIntoView(); } }
+function agreementsHtml() {
+  const all = me.agreements || [];
+  if (!all.length) return '<div class="card empty">No agreements yet. Agreements your agents fund, or are paid through, appear here.</div>';
+  const rank = a => a.state === 'disputed' ? 0 : a.state === 'locked' ? 1 : 2;
+  const sorted = [...all].sort((x, y) => rank(x) - rank(y) || (y.locked_at || 0) - (x.locked_at || 0));
+  const active = sorted.filter(a => a.state !== 'settled'), settled = sorted.filter(a => a.state === 'settled');
+  return active.map(agreementHtml).join('') +
+    (settled.length ? `<details${active.length ? '' : ' open'} style="margin-top:${active.length ? '14px' : '0'}">
+      <summary>${settled.length} settled</summary>${settled.map(agreementHtml).join('')}</details>` : '');
 }
+
+// ---- needs you -------------------------------------------------------------
+function needsHtml() {
+  const items = [];
+  for (const a of me.agreements || []) {
+    if (a.state !== 'disputed') continue;
+    const kase = cases.get(a.id);
+    if (!kase || kase.state !== 'open' || !kase.disputed_by) continue;
+    const responder = kase.disputed_by === a.my_agent ? a.their_agent : a.my_agent;
+    if (a.role !== 'both' && responder !== a.my_agent) continue;   // not our side to answer
+    items.push(`${esc(nick(responder))} must respond to ${esc(nick(kase.disputed_by))}’s dispute${kase.respond_by ? ' by ' + esc(Ftime(kase.respond_by)) : ''} · <a href="#" data-open="${esc(a.id)}">${esc(short(a.id))} →</a>`);
+  }
+  for (const ag of me.agents || []) {
+    for (const g of ag.grants || []) {
+      if (g.agreement_id || !n(g.cap)) continue;
+      if (n(g.remaining) / n(g.cap) <= 0.15) {
+        items.push(`${esc(nick(ag.identity))}’s budget is nearly spent — ${esc(money(g.remaining))} left of ${esc(money(g.cap))} · <a href="${esc(BROKER)}/account">grant more →</a>`);
+      }
+    }
+  }
+  return items.map(i => `<div><b>Needs you</b> — ${i}</div>`).join('');
+}
+
+// ---- timeline popup --------------------------------------------------------
+const EV_WORDS = {
+  handoff: 'handed off the inputs',
+  receipt: 'confirmed receipt',
+  delivery: 'committed the delivery',
+  acknowledgement: 'acknowledged the delivery',
+  dispute: 'disputed',
+  response: 'responded — opened the delivery commitment',
+};
+function timelineEvents(a, e, kase) {
+  if (!e) return [];
+  const payer = a.role === 'payee' ? a.their_agent : a.my_agent;
+  const payee = a.role === 'payee' ? a.my_agent : a.their_agent;
+  const sideOf = by => by === payer ? 'a' : by === payee ? 'b' : 'c';
+  const evs = [];
+  if (e.proposal_block) evs.push({ side: sideOf(e.proposer), who: nick(e.proposer), words: `proposed the agreement — ${money(a.price)}`, block: e.proposal_block, sub: '' });
+  if (e.acceptance_block) evs.push({ side: sideOf(e.acceptor), who: nick(e.acceptor), words: 'accepted', block: e.acceptance_block, sub: '' });
+  if (e.lock_block) evs.push({ side: 'c', who: 'escrow', words: `locked ${money(a.money && a.money.locked)} — price + fees + contribution`, block: e.lock_block, sub: '' });
+  const opened = new Set(((kase && kase.response && kase.response.reveals) || []).filter(r => r.matched).map(r => r.evidence_id));
+  for (const ev of e.evidence || []) {
+    let words = EV_WORDS[ev.kind] || esc(ev.kind);
+    if (ev.kind === 'dispute' && kase && kase.dispute_note) words += ` — “${kase.dispute_note.slice(0, 90)}”`;
+    if (ev.kind === 'response') words += ', matched ✓';
+    const sub = ev.commitment ? `· ${ev.commitment.slice(0, 14)}… ${opened.has(ev.id) ? 'opened ✓' : 'sealed'}` : '';
+    evs.push({ side: sideOf(ev.by), who: nick(ev.by), words, block: ev.block, sub });
+  }
+  if (e.ruling_block && e.ruling) {
+    const r = e.ruling, s = r.split || {};
+    const detail = r.outcome === 'split' && s.payee != null
+      ? ` — ${money(s.payee)} to ${nick(payee)}, ${money(s.payer)} back to ${nick(payer)}`
+      : r.outcome === 'payee' ? ` — the price to ${nick(payee)}`
+      : r.outcome === 'payer' ? ` — the price back to ${nick(payer)}` : '';
+    evs.push({ side: 'c', who: nick(e.adjudicator || a.adjudicator), words: `ruled: ${r.outcome}${detail}`, block: e.ruling_block, sub: '' });
+  } else if (a.settled_at && a.outcome === 'acknowledged') {
+    const m = moneyRows(a);
+    evs.push({ side: 'c', who: 'escrow', words: `settled — ${money(a.money && a.money.released_to_payee)} to ${m.payee}${m.adjReturned ? `, ${money(m.adjReturned)} fee returned` : ''}`, block: null, sub: '' });
+  }
+  return evs;
+}
+function flowBar(a) {
+  const m = moneyRows(a), mm = a.money || {};
+  const total = Math.max(0.01, n(mm.locked));
+  const segs = [];
+  if (n(mm.released_to_payee) > 0) segs.push({ v: n(mm.released_to_payee), bg: 'var(--bob)', label: `${plain(mm.released_to_payee)} to ${m.payee}` });
+  if (m.refundNet > 0) segs.push({ v: m.refundNet, bg: 'var(--alice)', label: `${m.refundNet.toFixed(2)} back to ${m.payer}` });
+  if (m.adjReturned > 0) segs.push({ v: m.adjReturned, bg: 'var(--extra)', label: plain(m.adjReturned) });
+  const rest = Math.max(0, total - segs.reduce((s, x) => s + x.v, 0));
+  if (rest > 0.001) segs.push({ v: rest, bg: 'var(--micro)', label: a.state === 'settled' ? '' : 'still held' });
+  return segs.map(s => `<div style="width:${(100 * s.v / total).toFixed(1)}%;background:${s.bg}">${esc(s.label)}</div>`).join('');
+}
+function timelinePanel(a) {
+  const e = chain.get(a.id), kase = cases.get(a.id), m = moneyRows(a);
+  const payerId = a.role === 'payee' ? a.their_agent : a.my_agent;
+  const payeeId = a.role === 'payee' ? a.my_agent : a.their_agent;
+  const evs = timelineEvents(a, e, kase);
+  const ruled = (e && e.ruling) || null;
+  const body = !e ? '<div class="loading">Reading the public record…</div>'
+    : !evs.length ? '<div class="loading">No public record for this agreement yet.</div>'
+    : evs.map(ev => {
+        const accent = ev.side === 'a' ? 'var(--alice)' : ev.side === 'b' ? 'var(--bob)' : 'var(--micro)';
+        const meta = `${ev.block ? 'block ' + esc(ev.block) : ''}${ev.sub ? ' ' + esc(ev.sub) : ''}`.trim();
+        if (ev.side === 'c') {
+          return `<div class="evsys"><div><span class="nm">${esc(ev.who)}</span> ${esc(ev.words)}
+            ${meta ? `<div class="meta">${meta}</div>` : ''}</div></div>`;
+        }
+        const metaB = `${ev.sub ? esc(ev.sub) + ' ' : ''}${ev.block ? 'block ' + esc(ev.block) : ''}`.trim();
+        const card = `<div class="evc ${ev.side}">${ev.side === 'a'
+          ? `<span class="nm">${esc(ev.who)}</span> <span>${esc(ev.words)}</span>`
+          : `<span>${esc(ev.words)}</span> <span class="nm">${esc(ev.who)}</span>`}
+          ${meta ? `<div class="meta">${ev.side === 'a' ? meta : metaB}</div>` : ''}</div>`;
+        return `<div class="ev"><div>${ev.side === 'a' ? card : ''}</div>
+          <div class="dot"><i style="background:${accent}"></i></div>
+          <div>${ev.side === 'b' ? card : ''}</div></div>`;
+      }).join('');
+  return `<div class="overlay" data-close>
+    <div class="panel tl" role="dialog" aria-modal="true" aria-label="Agreement timeline">
+      <div class="phead">
+        <span class="sid">${esc(short(a.id))}</span>
+        <span class="pill ${esc(a.state)}">${esc(a.state)}${outcomeWords(a) ? ' · ' + esc(outcomeWords(a)) : ''}</span>
+        <button class="x" data-close aria-label="Close">×</button>
+      </div>
+      <div class="parties">
+        <span class="a mono">${idHtml(payerId)}</span>
+        <span class="mid">${a.role === 'both' ? 'both agents are your account' : 'payer → payee'}</span>
+        <span class="b mono">${idHtml(payeeId)}</span>
+      </div>
+      <div class="pane"><div class="pinner">
+        <div class="spine"></div>
+        <div class="tlab"><span>time ↓</span></div>
+        ${body}
+        <div class="tend">▼</div>
+      </div></div>
+      <div style="margin-top:10px">
+        <div class="barhead">Where the ${esc(money(a.money && a.money.locked))} went</div>
+        <div class="flow">${flowBar(a)}</div>
+        <div class="barnote">${m.adjReturned ? esc(plain(m.adjReturned)) + ' unused adjudicator fee returned · ' : ''}${esc(m.custFee.toFixed(2))} custodian fee · ${esc(plain(a.contribution && a.contribution.amount))} contribution${a.contribution && a.contribution.recipient ? ' to ' + esc(a.contribution.recipient) : ''}</div>
+      </div>
+      ${ruled ? `<div class="ruling">
+        <div class="rh"><span>Ruling — ${esc(ruled.outcome)}</span>
+          <span class="mono">${esc(split(a.adjudicator).local)}${a.links && a.links.judge_case ? ` · <a href="${esc(a.links.judge_case)}" target="_blank" rel="noopener" data-stop>case ↗</a>` : ''}</span></div>
+        ${ruled.reasoning ? `<div class="rq">“${esc(ruled.reasoning)}”</div>` : ''}
+        ${ruled.split ? `<div class="rs"><span><b>${esc(money(ruled.split.payee))}</b> <span class="sec">to ${esc(m.payee)}</span></span>
+          <span><b>${esc(money(ruled.split.payer))}</b> <span class="sec">back to ${esc(m.payer)}</span></span></div>` : ''}
+        ${kase && kase.response && (kase.response.reveals || []).some(r => r.matched) ? `<div class="proved">what ${esc(m.payee)} proved: delivery commitment opened, matched ✓</div>` : ''}
+      </div>` : ''}
+    </div>
+  </div>`;
+}
+
+// ---- reputation popup ------------------------------------------------------
+const COMP_LABEL = { completion:'completion', dispute_record:'dispute record', responsiveness:'responsiveness', promptness:'promptness', tenure:'tenure' };
+function compNote(key, card) {
+  const c = card.counts || {};
+  const counted = c.counted || 0;
+  const excluded = ((card.inputs && card.inputs.agreements) || []).filter(a => !a.counted).length;
+  switch (key) {
+    case 'completion':
+      if (counted) return `${counted} counted agreement${counted === 1 ? '' : 's'}${excluded ? `, ${excluded} excluded` : ''}`;
+      return excluded ? `0 counted agreements — ${excluded} between agents of one controlling account, so they score zero`
+                      : 'no agreements yet — a fresh identity starts at 0.50';
+    case 'dispute_record': return c.rulings_against ? `${c.rulings_against} ruling${c.rulings_against === 1 ? '' : 's'} against` : 'no rulings against';
+    case 'responsiveness': return c.response_misses ? `${c.response_misses} dispute${c.response_misses === 1 ? '' : 's'} not answered in the window` : 'no disputes to answer yet';
+    case 'promptness': return c.late ? `${c.late} late or partial finding${c.late === 1 ? '' : 's'}` : 'no late or partial findings';
+    case 'tenure': return 'share of a 90-day history on chain';
+    default: return '';
+  }
+}
+function repPanel(identity) {
+  const card = reps.get(identity);
+  const body = !card ? (reps.has(identity) && reps.get(identity) === null && !repPending.has(identity)
+      ? '<div class="loading">The indexer did not answer. The account above is unaffected.</div>'
+      : '<div class="loading">Reading the indexer’s card…</div>')
+    : `<div class="score"><span>${Math.round(card.score)}</span><span>of 100 · one indexer’s view, yours to trust or not</span></div>
+    <div class="signed">signed by ${esc(host(card.indexer || INDEX))} · formula ${esc(String(card.formula || '').replace('browserid-pay-reputation-', ''))} · every number carries the count behind it</div>
+    ${Object.keys(COMP_LABEL).filter(k => card.components && card.components[k] != null).map(k =>
+      `<div class="comp"><span>${esc(COMP_LABEL[k])}</span><span class="v">${card.components[k].toFixed(2)}</span><span class="note">${esc(compNote(k, card))}</span></div>`).join('')}
+    <div class="comp"><span>distinct counterparties</span><span class="v">${esc(String(card.n_counterparty_accounts ?? 0))}</span><span class="note">controlling accounts, not people</span></div>
+    <div class="repfoot">Counts controlling accounts, not people — a fresh identity starts at 25, not 0 or 100.
+      <a href="${esc(INDEX)}/v1/reputation?subject=${encodeURIComponent(identity)}" target="_blank" rel="noopener" data-stop>full card at ${esc(host(INDEX))} ↗</a></div>`;
+  return `<div class="overlay" data-close>
+    <div class="panel rep" role="dialog" aria-modal="true" aria-label="Reputation scorecard">
+      <div class="phead"><span class="idline mono">${idHtml(identity)}</span>
+        <button class="x" data-close aria-label="Close">×</button></div>
+      ${body}
+    </div>
+  </div>`;
+}
+const repPending = new Set();
+
+// ---- render ----------------------------------------------------------------
+function renderPopup() {
+  const el = $('popup');
+  if (!popup) { el.innerHTML = ''; return; }
+  if (popup.kind === 'rep') { el.innerHTML = repPanel(popup.id); return; }
+  const a = (me.agreements || []).find(x => x.id === popup.id);
+  if (!a) { popup = null; el.innerHTML = ''; return; }
+  el.innerHTML = timelinePanel(a);
+  const pane = el.querySelector('.pane'); if (pane) pane.scrollTop = pane.scrollHeight;
+}
+function render() {
+  if (!me || !me.email) return;
+  $('who').innerHTML = idHtml(me.email);
+  $('whofoot').innerHTML = idHtml(me.email);
+  $('balance').textContent = '$' + plain(me.balance);
+  $('lede').textContent = `${me.currency || CURRENCY} test credit · what your agents may spend, and what they did`;
+  const needs = needsHtml();
+  $('needs').innerHTML = needs; $('needs').hidden = !needs;
+  $('ledger').innerHTML = ledgerHtml();
+  $('agents').innerHTML = agentsHtml();
+  $('agentsfoot').innerHTML = agentsFootHtml();
+  $('agreements').innerHTML = agreementsHtml();
+  renderPopup();
+}
+// The public record, the dispute case and the scorecards are fetched after the
+// account is already on screen; a service that is down costs a line, not a page.
+function hydrate() {
+  const jobs = [];
+  for (const a of me.agents || []) if (!reps.has(a.identity)) jobs.push(repCard(a.identity).then(render));
+  if (!reps.has(me.email)) jobs.push(repCard(me.email).then(render));
+  for (const a of me.agreements || []) {
+    const ruled = a.outcome && a.outcome.indexOf('ruled:') === 0;
+    if ((a.state === 'disputed' || ruled) && !chain.has(a.id)) jobs.push(chainEntry(a.id).then(render));
+    if ((a.state === 'disputed' || ruled) && !cases.has(a.id)) jobs.push(judgeCase(a.id).then(render));
+  }
+  return Promise.all(jobs);
+}
+async function refresh() {
+  const j = await getJSON('/api/me');
+  me = j || { email: null };
+  if (!me.email) {
+    $('state').textContent = 'Not signed in.';
+    $('signedout').hidden = false; $('body').hidden = true; $('who').textContent = '';
+    return;
+  }
+  $('signedout').hidden = true; $('body').hidden = false;
+  render();
+  hydrate();
+}
+async function openTimeline(id) {
+  popup = { kind: 'timeline', id };
+  renderPopup();
+  const a = (me.agreements || []).find(x => x.id === id);
+  await chainEntry(id);
+  if (a && (a.state === 'disputed' || (a.outcome || '').indexOf('ruled:') === 0)) await judgeCase(id);
+  if (popup && popup.id === id) renderPopup();
+}
+async function openRep(identity) {
+  popup = { kind: 'rep', id: identity };
+  repPending.add(identity);
+  renderPopup();
+  await repCard(identity);
+  repPending.delete(identity);
+  if (popup && popup.id === identity) renderPopup();
+}
+
+// ---- events ----------------------------------------------------------------
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-stop]')) return;                 // inner links keep working
+  if (e.target.closest('[data-close]')) { popup = null; renderPopup(); return; }
+  const rep = e.target.closest('[data-rep]');
+  if (rep) { e.preventDefault(); openRep(rep.getAttribute('data-rep')); return; }
+  const agr = e.target.closest('[data-agr]');
+  if (agr) { e.preventDefault(); openTimeline(agr.getAttribute('data-agr')); return; }
+  if (e.target.closest('.panel')) return;                      // clicks inside a panel stay
+  const open = e.target.closest('[data-open]');
+  if (open) { e.preventDefault(); openTimeline(open.getAttribute('data-open')); }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && popup) { popup = null; renderPopup(); } });
+
+// Poll while the page is visible; an open timeline follows the chain with it.
+function startPolling() {
+  if (timer) clearInterval(timer);
+  timer = setInterval(async () => {
+    if (document.visibilityState !== 'visible' || !me || !me.email) return;
+    if (popup && popup.kind === 'timeline') { chain.delete(popup.id); cases.delete(popup.id); await chainEntry(popup.id); await judgeCase(popup.id); }
+    refresh();
+  }, 5000);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
+
 navigator.id.watch({
   loggedInUser: null,
   onlogin: async presentation => {
@@ -149,6 +772,13 @@ navigator.id.watch({
   onlogout: () => {}
 });
 $('login').onclick = () => navigator.id.request({ siteName: 'pay.dsp.fyi' });
-$('logout').onclick = async () => { await fetch('/api/logout', { method: 'POST' }); navigator.id.logout && navigator.id.logout(); refresh(); };
+$('logout').onclick = async e => {
+  e.preventDefault();
+  await fetch('/api/logout', { method: 'POST' });
+  navigator.id.logout && navigator.id.logout();
+  chain.clear(); cases.clear(); reps.clear(); popup = null;
+  refresh();
+};
 refresh();
+startPolling();
 </script>
