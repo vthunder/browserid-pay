@@ -12,6 +12,7 @@
 //! the messages themselves; there is no directory and no history beyond TTL.
 
 mod config;
+mod iplimit;
 mod verify;
 
 use axum::{
@@ -30,6 +31,9 @@ use std::sync::{Arc, Mutex};
 const MAX_BODY: usize = 16 * 1024;
 const TTL_SECS: i64 = 3 * 24 * 3600;
 const MAX_PER_RECIPIENT: i64 = 500;
+/// Abuse bounds: one sender may not flood the relay or crowd out a mailbox.
+const MAX_PER_SENDER_PER_HOUR: i64 = 60;
+const MAX_PER_PAIR: i64 = 50;
 
 #[derive(Clone)]
 struct App {
@@ -48,6 +52,8 @@ pub fn schema(c: &Connection) -> anyhow::Result<()> {
            body TEXT NOT NULL,
            at INTEGER NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS sends (sender TEXT NOT NULL, at INTEGER NOT NULL);
+         CREATE INDEX IF NOT EXISTS sends_sender ON sends(sender, at);
          CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient, id);",
     )?;
     Ok(())
@@ -66,16 +72,44 @@ pub fn norm(id: &str) -> String {
     }
 }
 
-pub fn send(c: &Connection, sender: &str, to: &str, body: &str) -> anyhow::Result<i64> {
+#[derive(Debug)]
+pub enum SendError {
+    RateLimited { retry_after_secs: i64 },
+    Db(anyhow::Error),
+}
+impl From<rusqlite::Error> for SendError {
+    fn from(e: rusqlite::Error) -> Self { SendError::Db(e.into()) }
+}
+
+pub fn send(c: &Connection, sender: &str, to: &str, body: &str) -> Result<i64, SendError> {
     let t = now();
     c.execute("DELETE FROM messages WHERE at < ?1", params![t - TTL_SECS])?;
+    let sender = norm(sender);
     let recipient = norm(to);
+    // Per-sender rate limit (sliding hour), so a single agent cannot flood.
+    // Accounted separately from retention: evicted messages still count.
+    c.execute("DELETE FROM sends WHERE at < ?1", params![t - 3600])?;
+    let (sent_last_hour, oldest): (i64, Option<i64>) = c.query_row(
+        "SELECT COUNT(*), MIN(at) FROM sends WHERE sender=?1",
+        params![sender],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if sent_last_hour >= MAX_PER_SENDER_PER_HOUR {
+        return Err(SendError::RateLimited { retry_after_secs: (oldest.unwrap_or(t) + 3600 - t).max(1) });
+    }
+    c.execute("INSERT INTO sends(sender, at) VALUES(?1, ?2)", params![sender, t])?;
     c.execute(
         "INSERT INTO messages(sender, recipient, body, at) VALUES(?1,?2,?3,?4)",
-        params![norm(sender), recipient, body, t],
+        params![sender, recipient, body, t],
     )?;
     let id = c.last_insert_rowid();
-    // Keep a mailbox bounded: drop the oldest beyond the cap.
+    // Per-pair cap FIRST: a sender evicts only its own older messages to this
+    // mailbox, never someone else's.
+    c.execute(
+        "DELETE FROM messages WHERE sender=?1 AND recipient=?2 AND id NOT IN (SELECT id FROM messages WHERE sender=?1 AND recipient=?2 ORDER BY id DESC LIMIT ?3)",
+        params![sender, recipient, MAX_PER_PAIR],
+    )?;
+    // Then the mailbox-wide bound.
     c.execute(
         "DELETE FROM messages WHERE recipient=?1 AND id NOT IN (SELECT id FROM messages WHERE recipient=?1 ORDER BY id DESC LIMIT ?2)",
         params![recipient, MAX_PER_RECIPIENT],
@@ -114,6 +148,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/send", post(api_send))
         .route("/api/receive", post(api_receive))
         .with_state(app)
+        // Ahead of verification: per-IP request cap (iplimit.rs).
+        .layer(axum::middleware::from_fn_with_state(iplimit::IpLimiter::default(), iplimit::middleware))
         .layer(tower_http::trace::TraceLayer::new_for_http());
     let addr = format!("0.0.0.0:{}", cfg.port);
     tracing::info!(origin = %cfg.origin, %addr, "relay listening");
@@ -168,7 +204,12 @@ async fn api_send(State(app): State<App>, Json(b): Json<SendBody>) -> Response {
     let res = { let c = app.db.lock().expect("db"); send(&c, &v.grantee, &b.to, &b.body) };
     match res {
         Ok(id) => Json(json!({ "id": id, "from": v.grantee, "to": norm(&b.to), "at": now() })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+        Err(SendError::RateLimited { retry_after_secs }) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, retry_after_secs.to_string())],
+            Json(json!({ "error": "rate_limited", "detail": format!("at most {MAX_PER_SENDER_PER_HOUR} messages per hour"), "retry_after_secs": retry_after_secs })),
+        ).into_response(),
+        Err(SendError::Db(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
 }
 
@@ -212,11 +253,33 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         schema(&c).unwrap();
         for i in 0..(MAX_PER_RECIPIENT + 20) {
-            send(&c, "a@x", "b@y", &format!("m{i}")).unwrap();
+            send(&c, &format!("s{i}@x"), "b@y", &format!("m{i}")).unwrap();
         }
         let n: i64 = c.query_row("SELECT COUNT(*) FROM messages WHERE recipient='b@y'", [], |r| r.get(0)).unwrap();
         assert_eq!(n, MAX_PER_RECIPIENT);
         let oldest = receive(&c, "b@y", 0).unwrap();
         assert_eq!(oldest[0]["body"], "m20", "the oldest were dropped");
+    }
+
+    #[test]
+    fn a_sender_cannot_crowd_out_others_and_is_rate_limited() {
+        let c = Connection::open_in_memory().unwrap();
+        schema(&c).unwrap();
+        send(&c, "friend@x", "victim@y", "hello").unwrap();
+        // The flooder hits the hourly limit long before it could evict anyone.
+        let mut sent = 0;
+        for i in 0..(MAX_PER_SENDER_PER_HOUR + 5) {
+            match send(&c, "flood@z", "victim@y", &format!("spam {i}")) {
+                Ok(_) => sent += 1,
+                Err(SendError::RateLimited { retry_after_secs }) => { assert!(retry_after_secs >= 1); break; }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        assert_eq!(sent, MAX_PER_SENDER_PER_HOUR);
+        let got = receive(&c, "victim@y", 0).unwrap();
+        assert!(got.iter().any(|m| m["from"] == "friend@x"), "the friend's message survived");
+        // Per-pair cap: even within the rate limit, one pair keeps at most MAX_PER_PAIR.
+        let pair: i64 = c.query_row("SELECT COUNT(*) FROM messages WHERE sender='flood@z' AND recipient='victim@y'", [], |r| r.get(0)).unwrap();
+        assert!(pair <= MAX_PER_PAIR);
     }
 }
