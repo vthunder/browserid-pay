@@ -356,58 +356,17 @@ export class Agreements {
    * `acknowledgeReceipt`. `obligation` = index of the input obligation this
    * fulfils (optional when the terms have one input obligation).
    */
-  async handoff(id, { content, commitment: com, manifest, obligation, note } = {}) {
-    const extra = { note };
-    if (content !== undefined) {
-      extra.commitment = contentCommitment(content);
-      const st = this.terms.get(id) || {};
-      this.terms.set(id, { ...st, handoffs: { ...(st.handoffs || {}), [extra.commitment]: content } });
-      if (!manifest) manifest = defaultManifest(content);
-    } else if (com) extra.commitment = com;
-    else throw new AgreementError("bad_request", "handoff needs content or a commitment");
-    if (manifest) extra.manifest = manifest;
-    if (obligation !== undefined) extra.obligation = obligation;
-    return this.#evidence(id, "handoff", extra);
-  }
-
   /**
    * Receipt for a handoff: `content` (what was received) is hashed and checked
    * against the handoff's commitment — a mismatch is posted as contested with
    * the reason; `contested` posts a contest without content.
    */
-  async acknowledgeReceipt(id, { handoff_id, content, contested } = {}) {
-    if (!handoff_id) throw new AgreementError("bad_request", "handoff_id required");
-    const h = await this.chain.get(`${agreementPath(id)}evidence/`, handoff_id);
-    if (!h || h.payload?.kind !== "handoff") throw new AgreementError("no_handoff", handoff_id);
-    let ok, reason;
-    if (contested) { ok = false; reason = String(contested); }
-    else if (content !== undefined) {
-      const got = contentCommitment(content);
-      ok = got === h.payload.commitment;
-      if (!ok) reason = `received content hashes to ${got}, handoff committed to ${h.payload.commitment}`;
-    } else throw new AgreementError("bad_request", "receipt needs the received content, or contested");
-    return this.#evidence(id, "receipt", { handoff: handoff_id, ok, ...(reason ? { reason } : {}), obligation: h.payload.obligation });
-  }
-
   /**
    * Each obligation with its state, from the terms (local or public), the
    * evidence on chain and the clock: met | pending | late | blocked (its
    * dependency is unmet). Deadlines slide by a dependency's lateness. The
    * counterparty of a late obligation holds the dispute right.
    */
-  async obligations(id) {
-    const st = this.terms.get(id);
-    let terms = st?.terms;
-    const p = await this.#proposal(id);
-    if (!terms && p?.terms) terms = p.terms;
-    if (!terms) throw new AgreementError("no_terms", "the private terms are not held locally and the proposal is not public");
-    const path = agreementPath(id);
-    const [lock, evidence] = await Promise.all([this.chain.get(path, "lock"), this.chain.list(`${path}evidence/`)]);
-    // The payload's own `id` is the AGREEMENT id; the evidence id is the object id.
-    const evs = evidence.map((e) => ({ ...e.payload, agreement: e.payload?.id, id: e.id, block: e.block ?? null }));
-    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles });
-  }
-
   // ---- evidence patterns (docs/specs/evidence-patterns.md) -----------------------
 
   /**
@@ -416,107 +375,19 @@ export class Agreements {
    * `acknowledgeReceipt`. `obligation` = index of the input obligation this
    * fulfils (optional when the terms have one input obligation).
    */
-  async handoff(id, { content, commitment: com, manifest, obligation, note } = {}) {
-    const extra = { note };
-    if (content !== undefined) {
-      extra.commitment = contentCommitment(content);
-      const st = this.terms.get(id) || {};
-      this.terms.set(id, { ...st, handoffs: { ...(st.handoffs || {}), [extra.commitment]: content } });
-      if (!manifest) manifest = defaultManifest(content);
-    } else if (com) extra.commitment = com;
-    else throw new AgreementError("bad_request", "handoff needs content or a commitment");
-    if (manifest) extra.manifest = manifest;
-    if (obligation !== undefined) extra.obligation = obligation;
-    return this.#evidence(id, "handoff", extra);
-  }
-
   /**
    * Receipt for a handoff: `content` (what was received) is hashed and checked
    * against the handoff's commitment — a mismatch is posted as contested with
    * the reason; `contested` posts a contest without content.
    */
-  async acknowledgeReceipt(id, { handoff_id, content, contested } = {}) {
-    if (!handoff_id) throw new AgreementError("bad_request", "handoff_id required");
-    const h = await this.chain.get(`${agreementPath(id)}evidence/`, handoff_id);
-    if (!h || h.payload?.kind !== "handoff") throw new AgreementError("no_handoff", handoff_id);
-    let ok, reason;
-    if (contested) { ok = false; reason = String(contested); }
-    else if (content !== undefined) {
-      const got = contentCommitment(content);
-      ok = got === h.payload.commitment;
-      if (!ok) reason = `received content hashes to ${got}, handoff committed to ${h.payload.commitment}`;
-    } else throw new AgreementError("bad_request", "receipt needs the received content, or contested");
-    return this.#evidence(id, "receipt", { handoff: handoff_id, ok, ...(reason ? { reason } : {}), obligation: h.payload.obligation });
-  }
-
   /**
    * Each obligation with its state, from the terms (local or public), the
    * evidence on chain and the clock: met | pending | late | blocked (its
    * dependency is unmet). Deadlines slide by a dependency's lateness. The
    * counterparty of a late obligation holds the dispute right.
    */
-  async obligations(id) {
-    const st = this.terms.get(id);
-    let terms = st?.terms;
-    const p = await this.#proposal(id);
-    if (!terms && p?.terms) terms = p.terms;
-    if (!terms) throw new AgreementError("no_terms", "the private terms are not held locally and the proposal is not public");
-    const path = agreementPath(id);
-    const [lock, evidence] = await Promise.all([this.chain.get(path, "lock"), this.chain.list(`${path}evidence/`)]);
-    // The payload's own `id` is the AGREEMENT id; the evidence id is the object id.
-    const evs = evidence.map((e) => ({ ...e.payload, agreement: e.payload?.id, id: e.id, block: e.block ?? null }));
-    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles });
-  }
-
   /** Payer acknowledges delivery: evidence on chain, then the custodian releases. */
-  async settle(id, { note } = {}) {
-    const p = await this.#proposal(id);
-    if (p.roles.payer !== this.email) throw new AgreementError("not_payer");
-    const ev = await this.#evidence(id, "acknowledgement", { note });
-    const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
-    const release = await this.#custodian(p.custodian, `/api/escrow/${id}/acknowledge`, { presentation });
-    return { ...ev, release };
-  }
-
   /** Either party disputes: evidence on chain, freeze at the custodian, file with the adjudicator. */
-  async dispute(id, { note } = {}) {
-    // Safe to retry: the human-facing step (the judge's sign-in card) comes
-    // BEFORE any side effect; a dispute note already on chain by me is reused;
-    // an escrow the custodian already froze counts as frozen.
-    const p = await this.#proposal(id);
-    const adjudicator = await this.#adjudicatorFor(p);
-    if (adjudicator?.origin && !this.agent.warrantedAudiences().includes(adjudicator.origin)) {
-      await this.obtainWarrant(adjudicator.origin, ["dispute"]);
-    }
-    const existing = (await this.chain.list(`${agreementPath(id)}evidence/`))
-      .find((o) => o.payload?.kind === "dispute" && o.payload?.by === this.email);
-    const ev = existing
-      ? { evidence: existing.payload, evidence_id: existing.id, submission: null, reused: true }
-      : await this.#evidence(id, "dispute", { note });
-    const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
-    let frozen;
-    try {
-      frozen = await this.#custodian(p.custodian, `/api/escrow/${id}/dispute`, { presentation });
-    } catch (e) {
-      if (e.code !== "bad_state") throw e;
-      frozen = await this.#custodian(p.custodian, `/api/escrow/${id}`, null); // already disputed: read the state
-      if (frozen?.state !== "disputed") throw e;
-    }
-    let filed = null;
-    if (adjudicator?.origin) {
-      const st = this.terms.get(id);
-      const sealed_terms = frozen?.sealed_terms || (st && adjudicator.sealing_key ? seal(canonicalize(st.terms), adjudicator.sealing_key) : null);
-      const jp = await this.agent.assertionFor(adjudicator.origin);
-      try {
-        filed = await this.#json(`${adjudicator.origin.replace(/\/+$/, "")}/api/dispute`, { presentation: jp, contract_id: id, sealed_terms, note });
-      } catch (e) {
-        if (e.code !== "http_409") throw e; // already filed
-        filed = { already_filed: true };
-      }
-    }
-    return { ...ev, frozen, filed };
-  }
-
 
   // ---- evidence patterns (docs/specs/evidence-patterns.md) -----------------------
 
