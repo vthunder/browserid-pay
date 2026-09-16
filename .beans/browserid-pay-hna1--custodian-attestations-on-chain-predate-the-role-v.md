@@ -5,7 +5,8 @@ status: todo
 type: task
 priority: normal
 created_at: 2026-09-16T16:25:30Z
-updated_at: 2026-09-16T16:26:18Z
+updated_at: 2026-09-16T16:27:51Z
+parent: browserid-pay-h1f5
 ---
 
 The reputation work (82b9e44) added `role`, `value_band` and `currency` to the custodian's settlement attestations (`crates/custodian/src/publish.rs:67-78`), and the indexer's scorecard consumes `value_band`. No attestation carrying those fields exists on the live chain yet: every one indexed at index.dsp.fyi is the older two-field shape.
