@@ -749,6 +749,12 @@ let fundState = { amount: '25.00', busy: false, err: '', ok: '' };
 const QUICK = ['10.00', '25.00', '100.00'];
 function fundPanel() {
   const sources = (me.funding && me.funding.sources) || [];
+  // `available` is what this source can still add right now (the ceiling less
+  // the balance). Absent → say nothing rather than "$0.00"; zero → say why,
+  // and turn the controls off instead of letting the custodian refuse.
+  const depositable = sources.filter(x => x.mode === 'deposit');
+  const headroom = depositable.reduce((m, x) => Math.max(m, x.available == null ? Infinity : n(x.available)), 0);
+  const atCeiling = depositable.length > 0 && headroom === 0;
   return `<div class="overlay" data-close>
     <div class="panel rep" role="dialog" aria-modal="true" aria-label="Add funds">
       <div class="phead"><span style="font:600 14px system-ui,sans-serif">Add funds</span>
@@ -756,14 +762,18 @@ function fundPanel() {
       <div class="lede" style="margin:6px 0 0">Where the money in this account comes from. ${sources.length > 1 ? 'Pick a source.' : ''}</div>
       ${sources.map(src => `<div class="src">
         <span><span class="lab">${esc(src.label)}</span><div class="note">${esc(src.note || '')}</div></span>
-        <span class="avail">${src.mode === 'charge' ? 'charged when needed' : 'up to ' + esc(money(src.available)) + ' now'}</span>
+        <span class="avail">${src.mode === 'charge' ? 'charged when needed'
+          : src.available == null ? ''
+          : n(src.available) > 0 ? 'up to ' + esc(money(src.available)) + ' now'
+          : 'at the test-credit ceiling'}</span>
       </div>`).join('')}
-      ${sources.some(x => x.mode === 'deposit') ? `
-        <div class="amounts">${QUICK.map(q => `<button type="button" data-amt="${q}" data-stop aria-pressed="${fundState.amount === q}">${esc(money(q))}</button>`).join('')}</div>
+      ${depositable.length === 0 ? '' : atCeiling ? `
+        <div class="lede" style="margin:10px 0 0">This account is at the test-credit ceiling. Spend some before adding more.</div>` : `
+        <div class="amounts">${QUICK.filter(q => headroom === Infinity || n(q) <= headroom).map(q => `<button type="button" data-amt="${q}" data-stop aria-pressed="${fundState.amount === q}">${esc(money(q))}</button>`).join('')}</div>
         <div class="amtrow">
           <input id="fundamt" inputmode="decimal" aria-label="Amount" value="${esc(fundState.amount)}" data-stop>
           <button id="fundgo" type="button" data-stop ${fundState.busy ? 'disabled' : ''}>${fundState.busy ? 'Adding…' : 'Add ' + esc(money(fundState.amount))}</button>
-        </div>` : ''}
+        </div>`}
       ${fundState.err ? `<div class="srcerr">${esc(fundState.err)}</div>` : ''}
       ${fundState.ok ? `<div class="srcok">${esc(fundState.ok)}</div>` : ''}
     </div>
