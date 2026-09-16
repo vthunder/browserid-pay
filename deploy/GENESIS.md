@@ -78,8 +78,48 @@ grants:
 restrictions:
   /providers/**    schema provider.v1, max_size 16 KiB
   /agreements/**   max_size 64 KiB
+  /agreements/*/   id `proposal`: contribution floor (see below)
   /sys/dnssec/**   schema dnssec.v1 + dnssec_proof (the shared fragment)
 ```
+
+#### The contribution floor
+
+Every proposal must contribute at least `max(1 cent, 1bp)` to the ecosystem
+recipient. Deliberately tiny: it exists so that contributing *nothing* is not
+expressible, not to price the ecosystem. The **suggested** contribution, in
+`/sys/contribution`, is 0.5%.
+
+```json
+{"on": "/agreements/*/", "id": "proposal", "require": {"fields": [
+  {"pointer": "/contribution/fn", "eq": "max"},
+  {"pointer": "/contribution/amount", "min": 0.01},
+  {"pointer": "/contribution/percentage", "min": 0.01}
+]}}
+```
+
+Three things make this work, each load-bearing:
+
+- **`id: proposal`.** An agreement's objects share one container
+  (`/agreements/<id>/` with ids `proposal`, `acceptance`, `lock`, `ruling`,
+  evidence). Without the id the requirement would apply to all of them, and
+  every acceptance would be rejected for carrying no contribution.
+- **Pinning `fn`.** Contribution is a *formula* on chain —
+  `{recipient, fn, amount, percentage}`. Without `fn == "max"` a proposer picks
+  `min` and pays the smaller operand.
+- **Flooring both operands.** Conservative for a floor on `max()` — stricter
+  than strictly necessary, and sound. The chain cannot do better: the exact
+  arithmetic needs the *price*, which is sealed in commitment mode. **The
+  custodian does that arithmetic at lock**, so enforcement is two-layered.
+
+**Requires daemon support.** Object-id matching and payload-field conditions
+arrived in sbo `1eb6d21` (bean `sbo-pu34`). A daemon older than that **ignores
+both fields** and silently does not enforce this. Upgrade every validator
+*before* publishing the policy — mixed versions would disagree about which
+writes are valid. The daemon's rev is `SBO_REV` in mingo
+`deploy/sbo-daemon/Dockerfile`.
+
+Publish a policy change with `make policy-update` (`--dry-run` first); the sys
+key holds `govern` on `/**`, so this never needs a regenesis.
 
 **The gap, stated plainly.** The design says "evidence by the two parties,
 `ruling` by the named adjudicator, `lock` by the named custodian". The policy
@@ -179,3 +219,6 @@ simply below the new anchor. A regenesis with a *new* sys key: move
 
 - **v1 2026-09-15 @3885219** (`6e36ddae…`) — first genesis. Mode A, broker
   browserid.me, contribution suggestion 1% to fund@dsp.fyi.
+- **policy update 2026-09-16** — contribution floor `max(1 cent, 1bp)` on
+  `/agreements/*/` id `proposal`; suggestion 1% → 0.5%. Governed update, no
+  regenesis. Needed the daemon on sbo ≥ `1eb6d21`.
