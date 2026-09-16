@@ -1,11 +1,11 @@
 ---
 # browserid-pay-er8j
 title: Chain-enforced contribution floor + fee caps (policy restriction on payload fields)
-status: in-progress
+status: completed
 type: task
 priority: normal
 created_at: 2026-09-15T14:32:06Z
-updated_at: 2026-09-16T20:31:45Z
+updated_at: 2026-09-16T21:35:15Z
 ---
 
 Policy spec + daemon: restriction condition on a payload field (contribution.percentage ≥ N) on /agreements/**. Needed only to enforce the chain minimum.
@@ -83,3 +83,35 @@ malformed — a silent zero contribution. Both need fixing alongside.
 - [ ] root policy: floor the contribution at 0.01%, pin `fn`; optional fee caps
 - [ ] `/sys/contribution` suggested percentage → 0.5%
 - [ ] post the updated root policy (no regenesis) and confirm a below-floor proposal is rejected on chain
+
+## Summary of Changes
+
+Done end to end and verified on the live chain (2026-09-16).
+
+**sbo (`sbo-pu34`, commits 1eb6d21 / fb19728, pushed).** The policy language gained what this needed: an optional `id` pattern on grants *and* restrictions (absent ⇒ any id, so existing policies are unchanged), and JSON-pointer `fields` conditions (`eq`/`min`/`max`) that fail closed and read numeric strings as numbers. Also closed a hole the id field would have opened in `grant_covered_by_template`. Spec documented; 194 tests.
+
+**Chain.** Root policy republished as a governed update — no regenesis — finalized at block **3890678**:
+
+    {"on": "/agreements/*/", "id": "proposal", "require": {"fields": [
+      {"pointer": "/contribution/fn", "eq": "max"},
+      {"pointer": "/contribution/amount", "min": 0.01},
+      {"pointer": "/contribution/percentage", "min": 0.01}]}}
+
+`/sys/contribution` republished at block **3890726**: suggestion 0.5%, with the enforced minimum alongside it.
+
+**Verified both directions live** with `dsp-genesis policy-probe`:
+
+- zero contribution → `400: Policy: Payload value at '/contribution/amount' is 0, below the minimum 0.01`
+- compliant proposal → still writes
+
+**Custodian.** `contribution_minor` does the arithmetic the chain deliberately cannot (it needs the price, sealed in commitment mode). Fixed three bugs there: an absolute amount *overrode* a percentage instead of combining; anything malformed fell through to a silent zero; and it rounded where the SDK ceils, so the two disagreed by a cent.
+
+**SDK.** Contribution is a structured formula `{recipient, fn, amount, percentage}` — structure, not an expression string, so the policy needs no parser. Fees moved onto the clear proposal so caps on them are expressible. `normalizeContribution` always emits all three fields at or above the floor.
+
+**Deploy.** sbo pushed → mingo daemon bumped and released (e16c5c4) → browserid-pay released → policy published. Ordering matters: a daemon without the new features silently ignores both fields.
+
+## Follow-ups
+
+- Three junk `_policyprobe_*` proposals are permanently on chain, written while the floor was published but not yet in force. Harmless (no parties, no escrow) but permanent.
+- A daemon replaying after a redeploy validates against stale policy while `/v1/object` serves the new one from the pending overlay — reads and validation disagree with no way for a client to tell. Cost three misdiagnoses here. Worth a bean in sbo.
+- `normalizeContribution` raising a below-floor caller to the floor means a caller asking for zero silently pays a cent. Deliberate (the chain would refuse otherwise) but worth revisiting if it surprises anyone.
