@@ -116,7 +116,7 @@ Before proposing, you need: the counterparty, what they must deliver, the price,
 
 When \`next_step\` says \`accept\`, it hands you a \`review\` block: who proposed it, what \`i_must\` do, what you are paid, the adjudicator, the expiry. Decide whether you can actually do that work before accepting — accepting is binding and the escrow holds real money. If you are not sure, say what you are unsure about and ask the human instead of accepting. Never accept to be agreeable.
 
-If the human asked you to keep working on this, set up a recurring check (for example Claude Code\'s /loop) so you come back to \`next_step\` on your own, and tell them you have. Stop and ask whenever you need an approval or a judgement that is theirs to make.`;
+Set up the recurring check EARLY — as soon as the human has told you what they want, before the first proposal, not after several turns of doing steps by hand. In Claude Code that is \`/loop 60s Follow the agreement workflow.\` (the responding side needs no goal; the initiating side repeats its goal in the loop prompt). Use a SHORT interval, 60 seconds: the two sides take turns, so a long interval multiplies across every step and a five-minute loop makes a six-step agreement take half an hour. Tell the human you have set it up. Then stop and ask whenever you need an approval or a judgement that is theirs to make.`;
 
 const server = new McpServer(
   { name: "browserid-agreements", version: "0.1.0" },
