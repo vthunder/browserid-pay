@@ -537,12 +537,44 @@ pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id
     Ok(e)
 }
 
+/// The abandonment backstop: how long an escrow may sit after its clock ran out
+/// with neither party doing anything, before it is split 50/50.
+///
+/// Scales with the agreement (twice its delivery time) because a long job
+/// deserves a long grace, but bounded at both ends. The FLOOR matters because a
+/// six-minute agreement must not get a six-minute backstop; the CEILING because
+/// the custodian is carrying the funds and the risk the whole time.
+///
+/// 50/50 rather than a refund, deliberately. A refund would mean "take the work,
+/// go quiet, get your money back" — the stalling payoff this protocol keeps
+/// removing. An arbitrary split denies BOTH sides a win for disappearing, which
+/// is the property that matters when it fires with nobody watching.
+const BACKSTOP_FLOOR_SECS: i64 = 86_400;
+const BACKSTOP_CEILING_SECS: i64 = 30 * 86_400;
+
+/// When the backstop falls due for an escrow, or `None` when it cannot yet.
+///
+/// Returns `None` for anything DISPUTED: a dispute pauses this entirely. Without
+/// that, attacking the adjudicator would be a strategy — stall the ruling, let
+/// this expire, collect half of what you were going to lose outright.
+pub fn backstop_due(e: &Escrow, clock_expired_at: i64) -> Option<i64> {
+    if e.state != "locked" {
+        return None;
+    }
+    let agreement_secs = e.latest_deadline.map(|d| (d - e.locked_at).max(0)).unwrap_or(0);
+    let window = (2 * agreement_secs).clamp(BACKSTOP_FLOOR_SECS, BACKSTOP_CEILING_SECS);
+    Some(clock_expired_at + window)
+}
+
 /// How long the named adjudicator has to rule once a dispute is filed, before
 /// either party may declare it unresponsive. Deliberately longer than the
 /// judge's own window for the counterparty to respond, so a judge that is merely
 /// deliberating is not swapped out mid-thought — but not much longer: an
 /// automated adjudicator should rule in minutes, not days (Dan, 2026-09-17).
-const RULING_WINDOW_SECS: i64 = 86_400;
+/// Must exceed the judge's OWN window for the disputed party to respond (1h), or
+/// the parties could declare it unresponsive at the moment it first becomes able
+/// to rule.
+const RULING_WINDOW_SECS: i64 = 6 * 3600;
 
 /// Replace an adjudicator that never ruled.
 ///
@@ -601,6 +633,37 @@ pub async fn replace_adjudicator(
     publisher.adjudicator_replaced(id, &e.adjudicator, &a).await;
     db.with(|c| get(c, id)).map_err(|x| err("internal", x.to_string()))?
         .ok_or_else(|| err("not_found", id))
+}
+
+/// Split an abandoned escrow 50/50.
+///
+/// Nobody is wronged by this — both parties had an exit and neither took it —
+/// but the custodian cannot carry the funds for ever, and held funds are a real
+/// liability. This is the ONLY place money moves without somebody asking, which
+/// is why it is the most conservative clock in the system and why a dispute
+/// suspends it outright.
+///
+/// The non-price parts follow the ordinary settlement shape: the custodian fee
+/// is earned (it did hold the funds), the adjudicator fee is refunded because
+/// nobody adjudicated, the contribution is paid because it is a term of the
+/// agreement. Only the PRICE is split.
+pub async fn sweep_abandoned(db: &Db, publisher: &dyn Publisher, id: &str) -> Result<Escrow, EscrowError> {
+    let e = settle(db, id, |e| {
+        if e.state != "locked" {
+            return Err(err("bad_state", e.state.clone()));
+        }
+        let half = e.price_minor / 2;
+        Ok(Settlement {
+            to_payee: half,
+            // Odd pennies and the unused adjudicator fee go back to the payer,
+            // whose money it was.
+            to_payer: (e.price_minor - half) + e.adjudicator_fee_minor,
+            to_adjudicator: 0,
+            outcome: "abandoned".into(),
+        })
+    })?;
+    publish_settled(publisher, &e).await;
+    Ok(e)
 }
 
 /// Either party opens a dispute: the escrow freezes and the sealed terms are
@@ -1204,6 +1267,57 @@ mod tests {
         let got = seen.lock().unwrap().clone();
         assert_eq!(got, vec![("agr_rec".into(), "judge+agent@dsp.test".into(), "judge2@dsp.test".into())],
             "the swap is published with both the old and the new adjudicator");
+    }
+
+    #[test]
+    fn the_backstop_scales_with_the_agreement_but_is_bounded_and_paused_by_a_dispute() {
+        let base = |state: &str, deadline: Option<i64>| Escrow {
+            id: "x".into(), state: state.into(), payer: "p".into(), payee: "q".into(),
+            payer_account: "pa".into(), payee_account: "qa".into(), reputation_seen: None,
+            adjudicator: "j".into(), price_minor: 5_000, custodian_fee_minor: 50,
+            adjudicator_fee_minor: 500, contribution_minor: 50, contribution_recipient: None,
+            currency: "USD".into(), locked_at: 0, disputed_at: None, latest_deadline: deadline,
+            settled_at: None, outcome: None, sealed_terms: None, proposal: Value::Null,
+        };
+        // A six-hour agreement wants 12h, but the floor holds it at 24h — a
+        // short job must not get a short backstop.
+        assert_eq!(backstop_due(&base("locked", Some(6 * 3600)), 1_000), Some(1_000 + 86_400));
+        // A 60-day agreement wants 120 days; the ceiling caps it at 30.
+        assert_eq!(backstop_due(&base("locked", Some(60 * 86_400)), 0), Some(30 * 86_400));
+        // In between, it really does scale: 10 days -> 20. (The ceiling binds for
+        // anything longer than 15 days, since 2x then exceeds 30.)
+        assert_eq!(backstop_due(&base("locked", Some(10 * 86_400)), 0), Some(20 * 86_400));
+        // No deadline recorded: the floor.
+        assert_eq!(backstop_due(&base("locked", None), 0), Some(86_400));
+
+        // THE SAFETY PROPERTY: a dispute suspends it entirely. Otherwise
+        // attacking the adjudicator would be a way to run the clock out and
+        // collect half of what you were going to lose.
+        assert_eq!(backstop_due(&base("disputed", Some(6 * 3600)), 1_000), None);
+        assert_eq!(backstop_due(&base("settled", Some(6 * 3600)), 1_000), None);
+    }
+
+    #[tokio::test]
+    async fn sweeping_an_abandoned_escrow_splits_the_price_and_refunds_the_unused_fee() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        lock_t(&s, &rep, lock_req(&s, "agr_ab", "600.00", None)).await.unwrap();
+        let (payer_before, payee_before) = (bal(&s, "alice@x.test"), bal(&s, "bob@y.test"));
+
+        let e = sweep_abandoned(&s.db, &Log, "agr_ab").await.unwrap();
+        assert_eq!(e.state, "settled");
+        assert_eq!(e.outcome.as_deref(), Some("abandoned"));
+
+        // Price 50.00 splits; the 5.00 adjudicator fee goes back to the payer
+        // because nobody adjudicated; the custodian keeps its 0.50; the
+        // contribution is paid as a term of the agreement.
+        assert_eq!(bal(&s, "bob@y.test") - payee_before, 2_500, "half the price to the payee");
+        assert_eq!(bal(&s, "alice@x.test") - payer_before, 2_500 + 500, "half back, plus the unused fee");
+        assert_eq!(bal(&s, "custodian"), 50);
+        assert_eq!(bal(&s, "fund@dsp.test"), 50);
+
+        // It is a settlement like any other: it cannot happen twice.
+        assert_eq!(sweep_abandoned(&s.db, &Log, "agr_ab").await.err().unwrap().error, "bad_state");
     }
 
     #[tokio::test]

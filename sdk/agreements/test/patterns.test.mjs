@@ -97,90 +97,79 @@ test("deriveObligations: lateness, sliding deadlines, dispute rights", () => {
   s = deriveObligations(obligations, { evidence: [ev[0], { ...ev[1], id: "r2", ok: false, reason: "wrong files" }], lock: true, now: 1600, parties });
   assert.equal(s[0].state, "contested");
   assert.equal(s[0].dispute_right, "b");
-  // Untyped obligations are still deliverables, and a delivery now starts the
-  // recipient's response window rather than settling the obligation outright.
+  // Untyped obligations are still deliverables, and a delivery no longer
+  // settles one outright. The response window can only pull the clock IN: here
+  // the obligation's own deadline (10) is far sooner than delivery + 1h, so the
+  // deadline governs and `now: 20` is already past it.
   const one = [{ by: "b", what: "x", deadline: 10 }];
   const delivered = [{ id: "d", kind: "delivery", by: "b", at: 5 }];
   s = deriveObligations(one, { evidence: delivered, now: 20, responseWindow: "PT1H" });
   assert.equal(s[0].kind, "deliverable");
+  assert.equal(s[0].response_due, 10, "the agreement deadline wins over a later response window");
+  assert.equal(s[0].state, "unanswered");
+  // Asked before that deadline, it is simply awaiting an answer.
+  s = deriveObligations(one, { evidence: delivered, now: 8, responseWindow: "PT1H" });
   assert.equal(s[0].state, "delivered");
-  assert.equal(s[0].response_due, 5 + 3600);
 });
 
-test("a delivery starts the recipient's clock; silence resolves nothing, a refusal stops it", () => {
-  const obligations = [{ by: "b", what: "the work", kind: "deliverable", deadline: 10_000 }];
+test("silence past the clock resolves nothing and pays nobody", () => {
+  const obligations = [{ by: "b", what: "the work", kind: "deliverable", deadline: 21_600 }];
   const parties = { proposer: "a", acceptor: "b" };
-  const deliver = { id: "d1", kind: "delivery", by: "b", at: 1000 };
   const opts = (now, evidence) => ({ evidence, now, parties, responseWindow: "PT1H" });
+  const deliver = { id: "d1", kind: "delivery", by: "b", at: 1000 };
 
-  // Inside the window: awaiting a response, not met.
   let s = deriveObligations(obligations, opts(1500, [deliver]));
   assert.equal(s[0].state, "delivered");
   assert.equal(s[0].response_due, 4600);
 
   // Past it with no answer: UNANSWERED, not met. Silence is missing
-  // information, not a finished job — treating it as acceptance would let a
-  // withholder wait out an inattentive recipient and be paid without ever
-  // facing an adjudicator.
+  // information, not a finished job, and it pays nobody.
   s = deriveObligations(obligations, opts(9999, [deliver]));
   assert.equal(s[0].state, "unanswered");
   assert.equal(s[0].met_at, null);
-  assert.equal(s[0].dispute_right, null, "silence is nobody's fault yet; either party may raise it");
+  assert.equal(s[0].dispute_right, null, "nobody is at fault yet; either party may raise it");
 
-  // THE SAFETY PROPERTY: an explicit refusal must stop the clock, or the
-  // deemed-acceptance rule would pay a withholder who simply waited.
-  const refused = [deliver, { id: "a1", kind: "acknowledgement", by: "a", at: 1200, ok: false, reason: "not_received" }];
-  s = deriveObligations(obligations, opts(9999, refused));
-  assert.equal(s[0].state, "contested");
-  assert.equal(s[0].contest_reason, "not_received");
-  assert.notEqual(s[0].state, "met");
-  assert.equal(s[0].dispute_right, "a", "the party who refused holds it");
-
-  // A cure is simply a later delivery: it becomes the latest and the clock
-  // restarts, so the refusal no longer stands.
-  const cured = [...refused, { id: "d2", kind: "delivery", by: "b", at: 2000 }];
-  s = deriveObligations(obligations, opts(2100, cured));
-  assert.equal(s[0].state, "delivered");
-  assert.equal(s[0].response_due, 2000 + 3600);
-
-  // And an acknowledgement with no `ok` is an acceptance, as it always was.
-  const legacy = [deliver, { id: "a2", kind: "acknowledgement", by: "a", at: 1200 }];
-  s = deriveObligations(obligations, opts(1300, legacy));
+  // An acknowledgement with no `ok` is an acceptance, as it always was.
+  s = deriveObligations(obligations, opts(1300, [deliver, { id: "a2", kind: "acknowledgement", by: "a", at: 1200 }]));
   assert.equal(s[0].state, "met");
   assert.equal(s[0].met_at, 1200);
 });
 
-test("repeated not_received cannot stall for ever: the absolute clock does not reset", () => {
-  const obligations = [{ by: "b", what: "the work", kind: "deliverable", deadline: 10_000 }];
+test("a re-delivery only re-anchors the clock when it answers not_met", () => {
+  // The anti-stall property in one place. `not_received` is the unfalsifiable
+  // claim, so it must buy no time; `not_met` is about work both parties can
+  // see, and it moves the clock only if the DELIVERER concedes by trying again.
+  const obligations = [{ by: "b", what: "the work", kind: "deliverable", deadline: 21_600 }];
   const parties = { proposer: "a", acceptor: "b" };
-  // Response window 1h, absolute limit 3h from the FIRST delivery.
-  const opts = (now, evidence) => ({ evidence, now, parties, responseWindow: "PT1H", resolutionWindow: "PT3H" });
-  const deliver = (id, at) => ({ id, kind: "delivery", by: "b", at });
-  const refuse = (id, at) => ({ id, kind: "acknowledgement", by: "a", at, ok: false, reason: "not_received" });
+  const opts = (now, evidence) => ({ evidence, now, parties, responseWindow: "PT1H" });
+  const del = (id, at) => ({ id, kind: "delivery", by: "b", at });
+  const refuse = (id, at, reason) => ({ id, kind: "acknowledgement", by: "a", at, ok: false, reason });
 
-  // Cure #1, refused again: still contested, still inside the absolute limit.
-  let ev = [deliver("d1", 1000), refuse("a1", 1100), deliver("d2", 2000), refuse("a2", 2100)];
-  let s = deriveObligations(obligations, opts(2200, ev));
+  // Delivered early: the clock is pulled IN, so finishing early means being
+  // paid early rather than waiting out the deadline. That is what the response
+  // window is FOR.
+  let s = deriveObligations(obligations, opts(1000, [del("d1", 300)]));
+  assert.equal(s[0].response_due, 3900);
+
+  // "I never got it", then a re-delivery: the clock does not move, and
+  // repeating it cannot stall because it never buys a minute.
+  s = deriveObligations(obligations, opts(1000, [del("d1", 300), refuse("a1", 400, "not_received"), del("d2", 500)]));
+  assert.equal(s[0].response_due, 3900, "not_received re-anchors nothing");
+  s = deriveObligations(obligations, opts(1000, [del("d1", 300), refuse("a1", 400, "not_received"), del("d2", 500),
+    refuse("a2", 600, "not_received"), del("d3", 700)]));
+  assert.equal(s[0].response_due, 3900, "nor does repeating it");
+
+  // "I got it and it is wrong", then a re-delivery: the deliverer conceded, so
+  // the clock re-anchors to the new attempt.
+  s = deriveObligations(obligations, opts(1000, [del("d1", 300), refuse("a1", 400, "not_met"), del("d2", 500)]));
+  assert.equal(s[0].response_due, 4100, "not_met + a retry re-anchors");
+
+  // A complaint with no retry leaves it contested with the complainant.
+  s = deriveObligations(obligations, opts(1000, [del("d1", 300), refuse("a1", 400, "not_met")]));
   assert.equal(s[0].state, "contested");
-  assert.equal(s[0].absolute_due, 1000 + 3 * 3600, "measured from the FIRST delivery, not the latest");
-
-  // Cure #3 lands after the absolute limit. Under the old rule each cure reset
-  // the clock and this could run for ever; now the argument is out of time.
-  ev = [...ev, deliver("d3", 12_000), refuse("a3", 12_100)];
-  s = deriveObligations(obligations, opts(12_200, ev));
-  assert.equal(s[0].state, "stalled");
-  assert.equal(s[0].dispute_right, "b", "the deliverer escalates — nothing else will resolve it");
-
-  // A quality complaint is different: it ACKNOWLEDGES receipt, so the arrival
-  // clock is behind us and this stays an ordinary contest however long it runs.
-  const quality = [deliver("d1", 1000), { id: "q", kind: "acknowledgement", by: "a", at: 1100, ok: false, reason: "not_met" }];
-  s = deriveObligations(obligations, opts(99_000, quality));
-  assert.equal(s[0].state, "contested");
-  assert.equal(s[0].contest_reason, "not_met");
   assert.equal(s[0].dispute_right, "a");
 
-  // Silence, however long, still resolves nothing on its own.
-  s = deriveObligations(obligations, opts(99_000, [deliver("d1", 1000)]));
-  assert.equal(s[0].state, "unanswered");
-  assert.equal(s[0].met_at, null);
+  // And re-anchoring can never push PAST the agreement's own deadline.
+  s = deriveObligations(obligations, opts(21_500, [del("d1", 300), refuse("a1", 400, "not_met"), del("d2", 21_000)]));
+  assert.equal(s[0].response_due, 21_600, "the agreement deadline still wins");
 });

@@ -56,7 +56,7 @@ impl Config {
             anthropic_api_key: get("ANTHROPIC_API_KEY", ""),
             anthropic_model: get("JUDGE_MODEL", "claude-fable-5-1"),
             dev,
-            response_window_secs: get("JUDGE_RESPONSE_WINDOW", if dev { "60" } else { "86400" }).parse().expect("JUDGE_RESPONSE_WINDOW"),
+            response_window_secs: get("JUDGE_RESPONSE_WINDOW", if dev { "60" } else { "3600" }).parse().expect("JUDGE_RESPONSE_WINDOW"),
             trust_issuers: get("JUDGE_TRUST_ISSUER", "")
                 .split(',')
                 .filter_map(|s| s.trim().split_once('=').map(|(a, b)| (a.to_string(), b.to_string())))

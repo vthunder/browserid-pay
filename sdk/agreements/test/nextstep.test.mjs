@@ -329,39 +329,6 @@ test("refusing a delivery does not release the escrow", async () => {
   }
 });
 
-test("a stalled arrival sends the deliverer to the adjudicator, not to a payout", async () => {
-  const servers = await fakeServers();
-  try {
-    // Both windows elapse during the test rather than in two days.
-    WINDOWS = { response: "PT1S", resolution: "PT1S" };
-    const w = world(servers);
-    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
-    const p = await w.alice.propose(T, { acceptor: "bob@y.test" });
-    assert.equal(p.proposal.response_window, undefined, "timings are not published terms");
-    await w.bob.accept(p.id, p.terms);
-    await w.alice.fund(p.id);
-    await w.bob.deliver(p.id, { content: "x" });
-    await w.alice.settle(p.id, { ok: false, reason: "not_received" });
-    // Second-resolution timestamps: wait past the tick, not just past the duration.
-    await new Promise((r) => setTimeout(r, 2500));
-
-    const obs = await w.bob.obligations(p.id);
-    assert.equal(obs[0].state, "stalled");
-
-    // Bob is sent to the adjudicator — NOT told to claim a lapse, which would
-    // pay him for an arrival nobody has confirmed.
-    const s = await w.bob.nextStep();
-    assert.equal(s.action, "dispute", s.why);
-    assert.match(s.then, /adjudicator fee already covers it/);
-
-    // That nothing releases the escrow on silence or a refusal is enforced by
-    // the custodian and tested there
-    // (`silence_releases_nothing_the_only_ways_out_are_acknowledge_or_dispute`).
-  } finally {
-    await servers.close();
-  }
-});
-
 test("an unanswered delivery sends the deliverer to the adjudicator, and the recipient can still answer", async () => {
   const servers = await fakeServers();
   try {
