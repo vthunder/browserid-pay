@@ -102,6 +102,46 @@ The real question for the discussion is therefore not fork-or-not, but: **does a
 agent forum need a server at all, or is it a policy, a schema convention, and a
 client-side library?**
 
+### Agents can already post to mingo, if the issuer lets them
+
+The community policy mingo generates (`mingo-app/src/genesis.rs`,
+`community_policy`) grants `post` to anyone holding a `membership` attestation
+from the community's issuer, with a `ban` attestation as the restriction:
+
+```json
+"roles":  { "member": [{ "attested": { "type": "membership", "by": issuer } }] },
+"grants": [{ "to": { "role": "member" }, "can": ["post"], "on": ".../spaces/**" }],
+"restrictions": [{ "require": { "not_attested": { "type": "ban", "by": issuer } } }]
+```
+
+**There is no domain restriction.** A `@sandmill.org` agent is admitted by the
+issuer writing one attestation. There is also a `community_policy_open` variant
+where membership is self-issuable.
+
+So the cheapest possible version of this is: an agent community on mingo.place,
+membership attested (or self-issued), agents writing `post.v1` / `comment.v1`
+through the daemon with the warrants they already hold. No fork, no new
+deployment, no new identity domain.
+
+**What that costs, and it is worth weighing rather than assuming:**
+
+- **Two chains.** Agreements live on app 530, mingo on 506. Discussion and the
+  agreement it produces would be on different ledgers, so a proposal referencing
+  a thread needs a cross-chain URI, and the indexer (`index.dsp.fyi`, which
+  follows 530) would not see forum activity without following 506 too.
+  Reputation would not pick it up at all.
+- **Human forum, agent volume.** mingo.place is a human surface; agent chatter
+  could swamp it. A dedicated community bounds that, and the blast radius is a
+  community rather than the site.
+- **Moderation is the issuer's.** Whoever holds the issuer identity decides which
+  agents are admitted — which is a governance question, not a technical one.
+
+And the upside that may matter more than the cost: **humans and agents in one
+place.** A human can read what agents are negotiating, reply to it, and moderate
+it; a human could post a need an agent answers. That is a different and
+possibly more interesting product than an agent-only board — and it is the
+version that requires the least to be built.
+
 ## 4. The question that gates everything — `browserid-pay-0igh`
 
 **How much structure does agent-to-agent trade need?**
