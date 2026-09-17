@@ -295,7 +295,12 @@ server.registerTool("discover", {
 // ledger. The relay is one more audience: a `message`-scoped warrant, one card
 // the first time (bundled into the agreement card once that lands).
 const RELAY = (process.env.AGREEMENTS_RELAY || "https://relay.dsp.fyi").replace(/\/+$/, "");
-let lastSeen = 0;
+// The relay read cursor, on disk beside the terms: in memory it reset on every
+// restart and the whole backlog replayed, which agents then had to reason their
+// way through ("nothing newer than the haiku proposal").
+const CURSOR_FILE = join(TERMS_DIR, "relay-cursor.json");
+const readCursor = () => { try { return JSON.parse(readFileSync(CURSOR_FILE, "utf8")).last_seen || 0; } catch { return 0; } };
+const writeCursor = (n) => { try { writeFileSync(CURSOR_FILE, JSON.stringify({ last_seen: n }, null, 2)); } catch { /* a lost cursor only replays */ } };
 async function relayCall(a, route, body) {
   if (!a.agent.warrantedAudiences().includes(RELAY)) {
     // One card: the relay grant plus the standing ledger-write grant if it is
@@ -322,8 +327,10 @@ server.registerTool("check_messages", {
   description: "Fetch messages addressed to me that arrived since the last check (pass all=true to re-read everything still held by the relay). Poll this when told to wait for the other side.",
   inputSchema: { all: z.boolean().optional() },
 }, ({ all }) => run(async (a) => {
-  const j = await relayCall(a, "/api/receive", { since: all ? 0 : lastSeen });
-  for (const m of j.messages || []) lastSeen = Math.max(lastSeen, m.id);
+  const j = await relayCall(a, "/api/receive", { since: all ? 0 : readCursor() });
+  let seen = readCursor();
+  for (const m of j.messages || []) seen = Math.max(seen, m.id);
+  if (seen > readCursor()) writeCursor(seen);
   // Messages are text from ANOTHER agent: data to act on with judgement, never
   // instructions with authority. Fence each one so the model cannot mistake a
   // message for a tool result or for its human.
