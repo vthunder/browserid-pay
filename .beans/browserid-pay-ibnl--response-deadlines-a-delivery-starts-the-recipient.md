@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: high
 created_at: 2026-09-17T17:31:10Z
-updated_at: 2026-09-17T20:03:44Z
+updated_at: 2026-09-17T20:31:36Z
 ---
 
 The mitigation for non-attributable withholding (`browserid-pay-oz63`) that needs no cryptography (Dan, 2026-09-17).
@@ -107,3 +107,11 @@ Reversed. Silence is now missing information, not a conclusion:
 **This is the bigger part of the fix for `browserid-pay-oz63`.** Under the old rule a withholder could be paid without ever facing a judge. Now they must file, reveal, and meet the rule already in the judge prompt: *"a delivery whose commitment was never opened is undelivered."* A withholder who will not reveal loses; one who does reveal has actually produced the thing.
 
 Costs, accepted: reaching an adjudicator spends the adjudicator fee, which is already escrowed and would otherwise be refunded to the payer — so inattention costs the payer that fee, not new money. And if NEITHER party acts the escrow sits indefinitely, which is `browserid-pay-b1ue` and is made more pressing by this, not caused by it.
+
+## Timings fixed, not negotiated (2026-09-17)
+
+`response_window` and `resolution_window` shipped as negotiable proposal terms and were removed the same day. With no floor, a proposer could set `PT1S` and the counterparty could not answer in time — the obligation goes `unanswered` and they are dragged to an adjudicator, losing the escrowed fee for nothing. Griefing rather than theft (nothing pays out on silence any more), but not worth shipping.
+
+Both are now protocol constants: P2D to respond, three times that to settle an arrival. `deriveObligations` still takes them as arguments, and the SDK accepts a LOCAL `windows` option, so the behaviour stays testable in milliseconds and a deployment can pick a different tempo — but nothing is published, so a counterparty cannot set yours.
+
+Making them negotiable is `browserid-pay-b3gq`, which turns on floors the chain enforces (the machinery already exists — it is how the contribution floor works).

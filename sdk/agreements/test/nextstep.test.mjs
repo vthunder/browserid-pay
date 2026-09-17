@@ -4,6 +4,9 @@ import { Agreements, MemoryChain, generateSealingKey } from "../index.mjs";
 import { FakeAgent, fakeVerify, fakeServers } from "./fakes.mjs";
 
 const REPO = "sbo+raw://avail:turing:530/";
+// Short windows so the tests exercise the real timing paths in milliseconds.
+// Local config, never a negotiated term.
+let WINDOWS = {};
 
 function world(servers) {
   const chain = new MemoryChain();
@@ -14,7 +17,7 @@ function world(servers) {
   const mk = (email) => {
     const agent = new FakeAgent(email);
     // No indexer in tests: `mine()` falls back to scanning the chain.
-    return new Agreements({ agent, chain, repo: REPO, verify: fakeVerify, obtainWarrants: agent.obtainAll, http: fetch, index: "http://127.0.0.1:1" });
+    return new Agreements({ agent, chain, repo: REPO, verify: fakeVerify, obtainWarrants: agent.obtainAll, http: fetch, index: "http://127.0.0.1:1", windows: WINDOWS });
   };
   return { chain, alice: mk("alice@x.test"), bob: mk("bob@y.test") };
 }
@@ -266,10 +269,10 @@ test("updating a standing policy does not drag it into the errand pipeline", asy
 test("next_step drives the response window from both sides", async () => {
   const servers = await fakeServers();
   try {
+    WINDOWS = { response: "PT1H" };
     const w = world(servers);
     const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
-    const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test", response_window: "PT1H" });
-    assert.equal(p.proposal.response_window, "PT1H", "the window is a clear term the custodian can read");
+    const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test" });
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);
     await w.bob.deliver(p.id, { content: "the work" });
@@ -306,9 +309,10 @@ test("next_step drives the response window from both sides", async () => {
 test("refusing a delivery does not release the escrow", async () => {
   const servers = await fakeServers();
   try {
+    WINDOWS = { response: "PT1H" };
     const w = world(servers);
     const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
-    const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test", response_window: "PT1H" });
+    const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test" });
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);
     await w.bob.deliver(p.id, { content: "x" });
@@ -328,11 +332,12 @@ test("refusing a delivery does not release the escrow", async () => {
 test("a stalled arrival sends the deliverer to the adjudicator, not to a payout", async () => {
   const servers = await fakeServers();
   try {
+    // Both windows elapse during the test rather than in two days.
+    WINDOWS = { response: "PT1S", resolution: "PT1S" };
     const w = world(servers);
     const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
-    // Both windows already elapsed by the time the refusal is examined.
-    const p = await w.alice.propose(T, { acceptor: "bob@y.test", response_window: "PT1S", resolution_window: "PT1S" });
-    assert.equal(p.proposal.resolution_window, "PT1S", "the absolute limit is a clear term too");
+    const p = await w.alice.propose(T, { acceptor: "bob@y.test" });
+    assert.equal(p.proposal.response_window, undefined, "timings are not published terms");
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);
     await w.bob.deliver(p.id, { content: "x" });
@@ -360,9 +365,10 @@ test("a stalled arrival sends the deliverer to the adjudicator, not to a payout"
 test("an unanswered delivery sends the deliverer to the adjudicator, and the recipient can still answer", async () => {
   const servers = await fakeServers();
   try {
+    WINDOWS = { response: "PT1S" };
     const w = world(servers);
     const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
-    const p = await w.alice.propose(T, { acceptor: "bob@y.test", response_window: "PT1S" });
+    const p = await w.alice.propose(T, { acceptor: "bob@y.test" });
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);
     await w.bob.deliver(p.id, { content: "the work" });

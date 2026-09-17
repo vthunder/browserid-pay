@@ -23,6 +23,9 @@ export const contractAudience = (id, repo = DEFAULTS.repo) => `${collectionAudie
  * Short enough that withholding cannot stall, long enough for a human to look.
  */
 export const DEFAULT_RESPONSE_WINDOW = "P2D";
+// Fixed by the protocol for now rather than negotiated per agreement. Making
+// them terms invites a proposer to set a window the counterparty cannot meet;
+// negotiable timings need enforced floors first (browserid-pay-b3gq).
 /**
  * The absolute limit on settling whether a delivery ARRIVED, measured from the
  * FIRST delivery and never restarted by a cure. Without it, "I never got it"
@@ -118,6 +121,12 @@ export class Agreements {
     // persisted by the host (never sent anywhere): intent is the human's, and
     // an agent that forgets it between ticks cannot run a loop.
     this.goals = o.goalStore || new Map(); // goal id -> record
+    // Timing is fixed by the protocol, not negotiated — a window the proposer
+    // picks is a window an attacker tunes. These override the defaults LOCALLY
+    // (tests, and a deployment that wants a different tempo); they are not
+    // published, so a counterparty cannot set yours. Both sides should use the
+    // same values or their views of whose turn it is will drift.
+    this.windows = { response: DEFAULT_RESPONSE_WINDOW, resolution: null, ...(o.windows || {}) };
   }
 
   get email() { return this.agent.email; }
@@ -339,10 +348,6 @@ export class Agreements {
       // before doing any work. The AUTHORITY is still the proposer's grant,
       // which the custodian reads at lock — this is the courtesy copy, and a
       // proposal that understates it simply fails there.
-      // Clear, not in the sealed terms: the custodian has to know when silence
-      // becomes acceptance, and it cannot read the terms in commitment mode.
-      response_window: o.response_window || DEFAULT_RESPONSE_WINDOW,
-      ...(o.resolution_window ? { resolution_window: o.resolution_window } : {}),
       ...(o.min_reputation ? { min_reputation: { indexer: (o.min_reputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(o.min_reputation.score)) } } : {}),
       contribution: contributionOut,
       // Fees are CLEAR on the proposal even in commitment mode: a chain policy
@@ -575,7 +580,12 @@ export class Agreements {
     const [lock, evidence] = await Promise.all([this.chain.get(path, "lock"), this.chain.list(`${path}evidence/`)]);
     // The payload's own `id` is the AGREEMENT id; the evidence id is the object id.
     const evs = evidence.map((e) => ({ ...e.payload, agreement: e.payload?.id, id: e.id, block: e.block ?? null }));
-    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles, responseWindow: p.response_window, resolutionWindow: p.resolution_window });
+    // Timings are fixed by the protocol, not negotiated: a window the proposer
+    // chooses is a window an attacker tunes, and there are no policy-enforced
+    // floors yet (browserid-pay-b3gq). `deriveObligations` still takes them as
+    // arguments so the behaviour is testable without waiting days.
+    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles,
+      responseWindow: this.windows.response, resolutionWindow: this.windows.resolution });
   }
 
   /** Payer acknowledges delivery: evidence on chain, then the custodian releases. */
