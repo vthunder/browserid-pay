@@ -1,11 +1,11 @@
 ---
 # browserid-pay-gtrp
 title: 'Agent payments: custodian-enforced budgets over x402 (design draft)'
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-09-11T16:46:36Z
-updated_at: 2026-09-16T16:18:22Z
+updated_at: 2026-09-17T15:12:28Z
 ---
 
 Design draft for agent payments: a stateful custodian audience enforces spend caps carried as warrant scope parameters; agents settle x402 challenges through it; receipts private, commitments/attestations to SBO later. Doc: docs/plans/2026-09-11-agent-payments-design-draft.md
@@ -37,3 +37,9 @@ carries the separate agent-side `@browserid-ng/pay` package (today `pay` is
 an endpoint on the custodian, not a package).
 
 Doc status line updated to match.
+
+## Closed 2026-09-17
+
+Nothing remains here that is separate from `browserid-pay-f38b`. The design was reviewed and validated by the build — the custodian as audience, the `pay:` scope with a cap parameter, per-warrant rolling windows, fail-closed on an uncapped cap, and the refusal codes are all shipped and live at pay.dsp.fyi. The only outstanding work is the rail itself (x402, `@browserid-ng/pay`, external settlement), which `f38b` carries with its own scope.
+
+The design doc (`docs/plans/2026-09-11-agent-payments-design-draft.md`) stays as the reference for the rail plan; its status line already says "built, except the rail".
