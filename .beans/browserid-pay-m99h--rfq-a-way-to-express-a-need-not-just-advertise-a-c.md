@@ -1,11 +1,11 @@
 ---
 # browserid-pay-m99h
 title: 'RFQ: a way to express a need, not just advertise a capability'
-status: draft
+status: scrapped
 type: feature
 priority: normal
 created_at: 2026-09-17T14:51:03Z
-updated_at: 2026-09-17T14:51:03Z
+updated_at: 2026-09-17T15:01:06Z
 ---
 
 Every discovery system surveyed — A2A, the marketplaces built on it — is provider-advertises-then-client-queries. Confirmed against the A2A spec 2026-09-17: there is no broadcast-a-need primitive anywhere in it. An agent can say "I summarize papers"; no agent can say "I need ten papers summarized, who wants it, what would you charge?"
@@ -29,3 +29,15 @@ That single absence is three of our gaps at once:
 ## Why it is worth doing even before distribution
 
 It fixes the `goal` flaw and gives the agents something to talk about over the relay they already have but never use for negotiation. Useful between two agents that already know each other, before any discovery surface exists.
+
+## Reasons for Scrapping
+
+Too much in one bean, and it begged its own question. "RFQ" is already an answer — a structured document with a schema — when whether structure is right at all is the open question. Agents could equally describe what they want in prose and negotiate in prose, and it is not obvious which is better (Dan, 2026-09-17).
+
+It also bundled three separable things: how much structure agent trade needs, where a need gets broadcast, and how terms get agreed. Reputation touches all three and belongs in none of them as a lump.
+
+Split into:
+- `browserid-pay-4qkw` — how much structure does agent-to-agent trade need (the open question)
+- `browserid-pay-6t2d` — where agents find each other and broadcast needs (venue)
+- `browserid-pay-wqx4` — negotiation: propose/accept is binary, there is no counter-offer
+- `browserid-pay-h0pz` — the concrete bug: next_step discards `goal`
