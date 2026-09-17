@@ -203,3 +203,62 @@ test("a stuck agreement does not block a new goal, and goals run in parallel", a
     await servers.close();
   }
 });
+
+test("a standing inbound policy never sources or proposes, and rides on accept decisions", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+
+    // The responder's standing policy: work comes to it, so there is no
+    // counterparty to find and nothing to propose. Registering this used to
+    // make next_step demand `find_counterparty`, which agents worked around by
+    // faking the goal's state.
+    const pol = w.bob.addGoal({
+      kind: "inbound",
+      summary: "small paid writing jobs",
+      accept_if: "short-form writing I can do myself",
+      escalate_if: ["over the standing cap", "counterparty outside sandmill.org"],
+    });
+    assert.equal(pol.state, "standing");
+    assert.equal((await w.bob.nextStep()).action, "none", "a standing policy asks for nothing on its own");
+
+    // It is not an errand: it never completes and is never told to propose.
+    const p = await w.alice.propose(TERMS, { acceptor: "bob@y.test" });
+    w.bob.terms.set(p.id, { terms: p.terms, proposal: p.proposal });
+
+    const s = await w.bob.nextStep();
+    assert.equal(s.action, "accept");
+    // The criteria travel with the decision that needs them.
+    assert.equal(s.policy?.length, 1);
+    assert.equal(s.policy[0].goal, pol.id);
+    assert.equal(s.policy[0].accept_if, "short-form writing I can do myself");
+    assert.ok(s.review, "and the review block is still there to judge against");
+
+    // Settling the agreement does not finish the standing policy.
+    await w.bob.accept(p.id, p.terms);
+    await w.alice.fund(p.id);
+    await w.bob.deliver(p.id, { content: "x" });
+    await w.alice.settle(p.id);
+    const still = w.bob.listGoals();
+    assert.equal(still.length, 1, "the policy outlives the agreement");
+    assert.equal(still[0].state, "standing");
+  } finally {
+    await servers.close();
+  }
+});
+
+test("updating a standing policy does not drag it into the errand pipeline", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+    const g = w.bob.addGoal({ kind: "inbound", summary: "inbound work" });
+    // Setting a counterparty on an errand moves it to `ready`; a standing
+    // policy must stay standing, or it silently becomes a one-shot errand.
+    const after = w.bob.updateGoal(g.id, { counterparty: "alice@x.test" });
+    assert.equal(after.kind, "inbound");
+    assert.equal(after.state, "standing");
+    assert.equal((await w.bob.nextStep()).action, "none");
+  } finally {
+    await servers.close();
+  }
+});

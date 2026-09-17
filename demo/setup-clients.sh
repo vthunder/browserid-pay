@@ -62,6 +62,14 @@ pipeline: sourcing (nobody to ask yet) → ready (counterparty and terms known)
 → running (an agreement exists) → done. Keep it current with \`update_goal\` as
 soon as something is decided — the workflow reads the goal, not your memory.
 
+If the human asks you to WATCH for work rather than go get something done,
+register an INBOUND goal (\`kind: "inbound"\`) with \`accept_if\` and
+\`escalate_if\` in their words. That is a standing policy, not an errand:
+nothing to source, nothing to propose, never finished. Its criteria come back
+attached to every \`accept\` decision as \`policy\` — judge the offer against
+them, and escalate instead of accepting when it matches \`escalate_if\`. Never
+invent a counterparty to make a standing policy look like an errand.
+
 \`next_step\` is the loop. It reads real state and answers with the ONE thing
 you should do now — \`{ action, agreement, why, then }\` — or \`action: "none"\`,
 which means wait and is a normal answer. Call it, do that one action, stop.

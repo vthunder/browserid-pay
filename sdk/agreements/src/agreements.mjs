@@ -650,10 +650,17 @@ export class Agreements {
    * `counterparty` may be unknown: a goal with nobody to ask is in `sourcing`,
    * which is a real state with a real next action, not an error.
    */
-  addGoal({ summary, counterparty = null, budget = null, deadline = null, terms = null, note = null } = {}) {
+  addGoal({ kind = "errand", summary, counterparty = null, budget = null, deadline = null, terms = null, note = null, accept_if = null, escalate_if = null } = {}) {
     if (!summary) throw new AgreementError("bad_request", "a goal needs a summary");
+    if (!["errand", "inbound"].includes(kind)) throw new AgreementError("bad_request", `unknown goal kind ${kind}`);
     const id = "goal_" + randomBytes(6).toString("base64url");
-    const g = { id, summary, counterparty, budget, deadline, terms, note, agreement: null, state: counterparty ? "ready" : "sourcing", created_at: nowS(), updated_at: nowS() };
+    // An INBOUND goal is a standing policy, not an errand: work comes to you,
+    // so it has no counterparty to find, nothing to propose and no finish. It
+    // never produces a step of its own — what it does is carry the criteria
+    // for judging what arrives, which is otherwise remembered only in the
+    // conversation and lost with it.
+    const state = kind === "inbound" ? "standing" : counterparty ? "ready" : "sourcing";
+    const g = { id, kind, summary, counterparty, budget, deadline, terms, note, accept_if, escalate_if, agreement: null, state, created_at: nowS(), updated_at: nowS() };
     this.goals.set(id, g);
     return g;
   }
@@ -667,8 +674,11 @@ export class Agreements {
   updateGoal(id, patch = {}) {
     const g = this.goals.get(id);
     if (!g) throw new AgreementError("no_goal", id);
-    const next = { ...g, ...patch, id: g.id, created_at: g.created_at, updated_at: nowS() };
-    if (!next.state || next.state === g.state) next.state = next.agreement ? "running" : next.counterparty ? "ready" : "sourcing";
+    const next = { ...g, ...patch, id: g.id, kind: g.kind, created_at: g.created_at, updated_at: nowS() };
+    // A standing policy has no pipeline to advance; only errands do.
+    if (g.kind !== "inbound" && (!next.state || next.state === g.state)) {
+      next.state = next.agreement ? "running" : next.counterparty ? "ready" : "sourcing";
+    }
     this.goals.set(id, next);
     return next;
   }
@@ -699,21 +709,32 @@ export class Agreements {
     }
     // A goal whose agreement has finished is finished.
     for (const g of this.listGoals()) {
+      if (g.kind === "inbound") continue;
       if (g.agreement && ["settled", "ruled"].includes(byAgreement.get(g.agreement)?.stage)) {
         this.updateGoal(g.id, { state: "done" });
       }
     }
 
     const waiting = [];
+    // The standing policies for judging inbound work, attached to any decision
+    // that calls for judgement so the rule is applied consistently instead of
+    // being re-derived from the conversation each tick.
+    const policy = this.listGoals()
+      .filter((g) => g.kind === "inbound")
+      .map((g) => ({ goal: g.id, summary: g.summary, accept_if: g.accept_if, escalate_if: g.escalate_if, note: g.note }));
+    const decorate = (step) => (step.action === "accept" && policy.length ? { ...step, policy } : step);
+
     // 1. Agreements already running: real money is committed to these.
     for (const { id, st } of open) {
       const step = await this.#stepFor(id, st).catch((e) => ({ action: "none", why: `could not read ${id}: ${e.message}` }));
-      if (step.action !== "none") return { agreement: id, ...step, ...(waiting.length ? { also_waiting: waiting } : {}) };
+      if (step.action !== "none") return { agreement: id, ...decorate(step), ...(waiting.length ? { also_waiting: waiting } : {}) };
       waiting.push({ agreement: id, stage: st.stage, why: step.why });
     }
-    // 2. Goals not yet attached to an agreement.
+    // 2. Errands not yet attached to an agreement. A standing policy is never
+    //    asked to source or propose — that was the bug it had to be lied to
+    //    about (state faked to "running") to silence.
     for (const g of this.listGoals()) {
-      if (g.state === "running" || g.agreement) continue;
+      if (g.kind === "inbound" || g.state === "running" || g.agreement) continue;
       const step = this.#stepForGoal(g);
       if (step.action !== "none") return { goal: g.id, ...step, ...(waiting.length ? { also_waiting: waiting } : {}) };
       waiting.push({ goal: g.id, state: g.state, why: step.why });

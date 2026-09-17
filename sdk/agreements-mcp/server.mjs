@@ -116,7 +116,7 @@ const run = async (fn) => {
 const WORKFLOW = `Agreements on the browserid-pay ledger: propose → accept → fund → hand off → acknowledge → deliver → settle, with dispute → respond → ruling if it goes wrong.
 
 How to work:
-- Record what the human wants with \`add_goal\` as soon as they say it, BEFORE proposing anything. A goal is local, persists across restarts, and is what lets you pick the thread back up on the next tick. Several run in parallel, each with its own pipeline: sourcing (nobody to ask yet) → ready (counterparty and terms known) → running (an agreement exists) → done. Keep it current with \`update_goal\` the moment something is decided, rather than holding it in your head — the workflow reads the goal, not your memory.
+- Record what the human wants with \`add_goal\` as soon as they say it, BEFORE proposing anything. A goal is local, persists across restarts, and is what lets you pick the thread back up on the next tick. Several run in parallel. An ERRAND — something you set out to get done — has a pipeline: sourcing (nobody to ask yet) → ready (counterparty and terms known) → running (an agreement exists) → done. When the human instead asks you to WATCH for work and take it on, register an INBOUND goal (\`kind: \"inbound\"\`) with \`accept_if\` and \`escalate_if\` in their words. It is a standing policy, not an errand: nothing to source, nothing to propose, never finished. Its criteria come back attached to every \`accept\` decision as \`policy\`, so judge the offer against them — and escalate rather than accept when it matches \`escalate_if\`. Do not force a standing policy into an errand by inventing a counterparty for it. Keep it current with \`update_goal\` the moment something is decided, rather than holding it in your head — the workflow reads the goal, not your memory.
 - Call \`next_step\` to learn the single next thing to do, then do that ONE thing and stop. Do not chain several steps in one go; the other party has to move in between, and approvals interrupt.
 - \`next_step\` is read-only and never consumes messages. When it answers \`check_messages\`, call that tool — the full terms an acceptor needs arrive off-chain, not on the ledger.
 - \`action: "none"\` is a normal answer. It means wait; say so and stop.
@@ -206,12 +206,15 @@ server.registerTool("respond", {
 
 server.registerTool("add_goal", {
   title: "Register what you are trying to achieve",
-  description: "Record a goal so the workflow can pursue it across turns and restarts. Do this as soon as the human says what they want, BEFORE proposing anything — `next_step` then drives it: find a counterparty, settle terms, propose, and on through the agreement. `counterparty` may be unknown; a goal with nobody to ask is in `sourcing` and has its own next action. Several goals run in parallel, each with its own pipeline. Stored locally only.",
+  description: "Record a goal so the workflow can pursue it across turns and restarts. Two kinds: an ERRAND you initiate, and an INBOUND standing policy for work that arrives. Do this as soon as the human says what they want, BEFORE proposing anything — `next_step` then drives it: find a counterparty, settle terms, propose, and on through the agreement. `counterparty` may be unknown; a goal with nobody to ask is in `sourcing` and has its own next action. Several goals run in parallel, each with its own pipeline. Stored locally only.",
   inputSchema: {
+    kind: z.enum(["errand", "inbound"]).optional().describe('"errand" (default): something YOU want done — it gets a counterparty, terms, a proposal, and finishes. "inbound": a standing policy for work that comes TO you — no counterparty to find, nothing to propose, never finishes. Register an inbound goal when the human says to watch for and take on work.'),
     summary: z.string().describe("what you are trying to get done, in a sentence"),
-    counterparty: z.string().optional().describe("the other agent's identity, if known"),
+    counterparty: z.string().optional().describe("the other agent's identity, if known (errands only)"),
     budget: z.object({ amount: z.string(), currency: z.string() }).optional(),
     deadline: z.number().optional().describe("unix seconds"),
+    accept_if: z.string().optional().describe("inbound: what you may take on without asking, in the human's words"),
+    escalate_if: z.array(z.string()).optional().describe("inbound: what to bring to the human instead of accepting"),
     note: z.string().optional(),
   },
 }, (args) => run(async (a) => a.addGoal(args)));
@@ -229,11 +232,13 @@ server.registerTool("update_goal", {
     id: z.string(),
     counterparty: z.string().optional(),
     terms: z.object({}).passthrough().optional().describe("the agreed terms, ready to propose"),
+    accept_if: z.string().optional(),
+    escalate_if: z.array(z.string()).optional(),
     budget: z.object({ amount: z.string(), currency: z.string() }).optional(),
     deadline: z.number().optional(),
     summary: z.string().optional(),
     note: z.string().optional(),
-    state: z.enum(["sourcing", "ready", "running", "done", "abandoned"]).optional(),
+    state: z.enum(["sourcing", "ready", "running", "done", "abandoned", "standing"]).optional(),
   },
 }, ({ id, ...patch }) => run(async (a) => a.updateGoal(id, patch)));
 
