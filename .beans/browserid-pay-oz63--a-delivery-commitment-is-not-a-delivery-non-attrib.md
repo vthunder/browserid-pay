@@ -1,11 +1,11 @@
 ---
 # browserid-pay-oz63
 title: 'A delivery commitment is not a delivery: non-attributable withholding'
-status: draft
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-17T16:43:19Z
-updated_at: 2026-09-17T16:43:19Z
+updated_at: 2026-09-17T20:38:09Z
 ---
 
 Seen in the haiku run 2026-09-17. Bob posted a delivery commitment on chain but did not send the content. Alice saw the commitment, could not see the haiku, and correctly refused to settle. She messaged him, he sent it, she settled. Everything behaved as built — and that is the problem.
@@ -37,7 +37,23 @@ So the handoff/receipt pattern was built for exactly this and is not applied to 
 
 (4) now as a mitigation, (1) as the real fix for text-sized deliverables, keeping commitment-only delivery for things too large to publish — and being explicit in the terms about which regime an agreement is under, because the two have genuinely different guarantees.
 
-- [ ] decide whether delivery-met requires availability, a receipt, or both
-- [ ] agents publish an encryption key (overlaps the directory bean)
-- [ ] judge: what a commitment-only delivery is worth when the recipient denies receipt
-- [ ] say in the terms which regime applies, so neither party is surprised
+- [x] decide whether delivery-met requires availability, a receipt, or both — a RECEIPT (an accepting acknowledgement), built in browserid-pay-ibnl
+- [x] agents publish an encryption key — split into browserid-pay-ifz9
+- [x] judge: what a commitment-only delivery is worth — split into browserid-pay-lwo3
+- [x] say in the terms which regime applies — split into browserid-pay-ifz9
+
+## Summary of Changes
+
+Closed 2026-09-17: the mechanism chosen here is built, and what is left has moved to beans of its own.
+
+**What shipped** (`browserid-pay-ibnl`), and it is not the option this bean recommended. The suggestion was (4) — nudge the judge — plus (1) as the real fix. What we actually built was closer to (2), the receipt mirror, which this bean had dismissed as "moves the non-attributability rather than removing it". That objection was right about a receipt ALONE and wrong once a clock and a default are attached:
+
+- A delivery commitment starts the recipient's response window. Met now requires an accepting acknowledgement — the handoff/receipt asymmetry this bean identified is closed.
+- Silence settles nothing. It leaves the obligation `unanswered` and the escrow LOCKED. This is the part that most damages the withholding gamble: a withholder can no longer be paid by outlasting an inattentive recipient, and must file, reveal, and face the rule already in the ruling prompt that an unopened commitment is undelivered.
+- Repeated "I never got it" cannot stall: an absolute resolution window runs from the FIRST delivery and never restarts, after which the arrival argument is `stalled` and only an adjudicator can end it.
+
+**What remains, and where it went:**
+
+- Encryption key agreement, and saying which delivery regime an agreement is under → `browserid-pay-ifz9`. That is still the structural fix: a cure is no more verifiable than the original delivery, so the ledger looks identical whether the deliverer is withholding or the recipient is lying. What we built denies both sides a payoff for stalling; it does not decide who is honest.
+- What the judge should make of a commitment-only delivery when receipt is denied → `browserid-pay-lwo3`, which also covers the discovery that the ruling prompt has never been told the response-window model exists at all.
+- Option (3), the relay attestation, was rejected: weaker than sealed delivery, trusts the relay, and bypassable by claiming out-of-band delivery.
