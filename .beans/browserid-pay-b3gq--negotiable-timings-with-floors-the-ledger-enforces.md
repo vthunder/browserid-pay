@@ -21,3 +21,25 @@ Fixed on purpose. `response_window` and `resolution_window` WERE negotiable term
 - [ ] the custodian consumes none of them at present (its only consumer, `lapsed()`, is gone), so this is currently an SDK-only concern. Publishing them again would change that
 
 Worth doing when someone has a real agreement the defaults do not suit — a same-day job needs hours, not two days — rather than before.
+
+## Superseded by the timing rework (2026-09-18)
+
+The windows this bean described no longer exist in that form. `resolution_window` is **gone**: the retry loop is bounded by the agreement's own deadline, and the response window became a `min` against it rather than a clock of its own. What a proposer could negotiate today is a different, smaller set.
+
+The current set, all protocol constants:
+
+| window | value | what it does |
+|---|---|---|
+| response | 1h | pulls the delivery clock IN when the work arrives early, so an early deliverer is paid early. Never pushes it out. |
+| proposal expiry | 6h | how long a proposal stands |
+| obligation deadline | 7d default | the bound on everything else |
+| judge response | 1h | the disputed party's chance to reveal |
+| ruling | 6h | before the adjudicator may be declared unresponsive |
+| backstop | max(2x delivery, 24h), cap 30d | abandonment split |
+
+Two orderings any negotiable version must enforce, which is the real argument for chain-enforced floors rather than client checks:
+
+- `judge response < ruling` — otherwise a judge can be declared unresponsive at the moment it first becomes able to rule
+- the backstop must not be able to fire while a legitimate window is open
+
+The griefing vector that caused this bean is unchanged: with no floor, a proposer sets a window the counterparty cannot meet. Still worth doing when a real agreement needs timings the defaults do not suit — a same-day job wanting a 10-minute response window — rather than before.
