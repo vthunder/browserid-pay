@@ -41,6 +41,17 @@ const termsStore = {
   set: (id, v) => writeFileSync(join(TERMS_DIR, `${id}.json`), JSON.stringify(v, null, 2)),
 };
 
+// Goals are this agent's own intent: local, never sent anywhere, and persisted
+// so a loop can pick the thread back up after a restart. One file, because the
+// whole set is read on every next_step.
+const GOALS_FILE = join(TERMS_DIR, "goals.json");
+const readGoals = () => { try { return new Map(Object.entries(JSON.parse(readFileSync(GOALS_FILE, "utf8")))); } catch { return new Map(); } };
+const goalStore = {
+  get: (id) => readGoals().get(id),
+  set: (id, v) => { const m = readGoals(); m.set(id, v); writeFileSync(GOALS_FILE, JSON.stringify(Object.fromEntries(m), null, 2)); },
+  [Symbol.iterator]: () => readGoals()[Symbol.iterator](),
+};
+
 let approveUrls = [];
 let ctx;
 function sdk() {
@@ -48,7 +59,7 @@ function sdk() {
   const { agent, saved } = loadAgent();
   const chain = new DaemonChain({ daemon: process.env.SBO_DAEMON, repo: process.env.SBO_REPO });
   const a = new Agreements({
-    agent, chain, broker: BROKER, termsStore,
+    agent, chain, broker: BROKER, termsStore, goalStore,
     index: process.env.AGREEMENTS_INDEX || "https://index.dsp.fyi",
     extraGrants: [{ audience: RELAY, scopes: ["message"] }],
     onApproveUrl: (u) => approveUrls.push(u),
@@ -105,6 +116,7 @@ const run = async (fn) => {
 const WORKFLOW = `Agreements on the browserid-pay ledger: propose → accept → fund → hand off → acknowledge → deliver → settle, with dispute → respond → ruling if it goes wrong.
 
 How to work:
+- Record what the human wants with \`add_goal\` as soon as they say it, BEFORE proposing anything. A goal is local, persists across restarts, and is what lets you pick the thread back up on the next tick. Several run in parallel, each with its own pipeline: sourcing (nobody to ask yet) → ready (counterparty and terms known) → running (an agreement exists) → done. Keep it current with \`update_goal\` the moment something is decided, rather than holding it in your head — the workflow reads the goal, not your memory.
 - Call \`next_step\` to learn the single next thing to do, then do that ONE thing and stop. Do not chain several steps in one go; the other party has to move in between, and approvals interrupt.
 - \`next_step\` is read-only and never consumes messages. When it answers \`check_messages\`, call that tool — the full terms an acceptor needs arrive off-chain, not on the ledger.
 - \`action: "none"\` is a normal answer. It means wait; say so and stop.
@@ -139,15 +151,15 @@ const TERMS = {
 server.registerTool("propose", {
   title: "Propose an agreement",
   description: "Draft terms and post a proposal on the browserid-pay ledger. Returns the id and the FULL terms (with salt) that you must send to the counterparty off-chain — they need them to accept. Asks the human to approve a contract warrant (cap = price + fees + contribution) if none is held.",
-  inputSchema: { ...TERMS, acceptor: z.string().describe("counterparty identity (email)"), payer: z.string().optional().describe("who pays; default: me"), expires: z.number().optional(), mode: z.enum(["commitment", "public"]).optional(), min_reputation: z.object({ indexer: z.string().optional(), score: z.number().int().min(0).max(100) }).optional().describe("reputation-gated grant: instead of naming the counterparty, allow any agent rated at least `score` at `indexer` (default: the discovered index). The human sees: 'enter agreements … with any agent rated N or better at …'.") },
+  inputSchema: { ...TERMS, goal: z.string().optional().describe("goal id this fulfils, so the pipeline advances instead of proposing it again"), acceptor: z.string().describe("counterparty identity (email)"), payer: z.string().optional().describe("who pays; default: me"), expires: z.number().optional(), mode: z.enum(["commitment", "public"]).optional(), min_reputation: z.object({ indexer: z.string().optional(), score: z.number().int().min(0).max(100) }).optional().describe("reputation-gated grant: instead of naming the counterparty, allow any agent rated at least `score` at `indexer` (default: the discovered index). The human sees: 'enter agreements … with any agent rated N or better at …'.") },
 }, (args) => run(async (a) => {
   // Same arguments ⇒ same proposal (id + salt), so a retry after the human's
   // approval resumes instead of minting a fresh id that no warrant matches.
-  const { acceptor, payer, expires, mode, min_reputation, ...terms } = args;
+  const { acceptor, payer, expires, mode, min_reputation, goal, ...terms } = args;
   const key = createHash("sha256").update(JSON.stringify(args)).digest("hex");
   const resume = proposals.get(key) || {};
   try {
-    const out = await a.propose(terms, { acceptor, payer, expires, mode, min_reputation, ...resume });
+    const out = await a.propose(terms, { acceptor, payer, expires, mode, min_reputation, goal, ...resume });
     proposals.delete(key);
     return out;
   } catch (e) {
@@ -192,6 +204,45 @@ server.registerTool("respond", {
   inputSchema: { id: z.string(), note: z.string().optional(), reveal: z.boolean().optional() },
 }, ({ id, note, reveal }) => run((a) => a.respond(id, { note, reveal: reveal !== false })));
 
+server.registerTool("add_goal", {
+  title: "Register what you are trying to achieve",
+  description: "Record a goal so the workflow can pursue it across turns and restarts. Do this as soon as the human says what they want, BEFORE proposing anything — `next_step` then drives it: find a counterparty, settle terms, propose, and on through the agreement. `counterparty` may be unknown; a goal with nobody to ask is in `sourcing` and has its own next action. Several goals run in parallel, each with its own pipeline. Stored locally only.",
+  inputSchema: {
+    summary: z.string().describe("what you are trying to get done, in a sentence"),
+    counterparty: z.string().optional().describe("the other agent's identity, if known"),
+    budget: z.object({ amount: z.string(), currency: z.string() }).optional(),
+    deadline: z.number().optional().describe("unix seconds"),
+    note: z.string().optional(),
+  },
+}, (args) => run(async (a) => a.addGoal(args)));
+
+server.registerTool("list_goals", {
+  title: "Goals in flight",
+  description: "Every goal being pursued and its state (sourcing → ready → running → done). Pass all=true to include finished and abandoned ones.",
+  inputSchema: { all: z.boolean().optional() },
+}, ({ all }) => run(async (a) => a.listGoals({ all })));
+
+server.registerTool("update_goal", {
+  title: "Advance or correct a goal",
+  description: "Fill in what you have learned — the counterparty once you know who will do the work, the terms once they are settled, a note. `next_step` reads this to decide the goal's next action, so update it as soon as something is decided rather than holding it in your head.",
+  inputSchema: {
+    id: z.string(),
+    counterparty: z.string().optional(),
+    terms: z.object({}).passthrough().optional().describe("the agreed terms, ready to propose"),
+    budget: z.object({ amount: z.string(), currency: z.string() }).optional(),
+    deadline: z.number().optional(),
+    summary: z.string().optional(),
+    note: z.string().optional(),
+    state: z.enum(["sourcing", "ready", "running", "done", "abandoned"]).optional(),
+  },
+}, ({ id, ...patch }) => run(async (a) => a.updateGoal(id, patch)));
+
+server.registerTool("drop_goal", {
+  title: "Abandon a goal",
+  description: "Stop pursuing a goal. Does nothing to any agreement already made under it — an agreement is binding whatever you decide about the goal behind it.",
+  inputSchema: { id: z.string(), note: z.string().optional() },
+}, ({ id, note }) => run(async (a) => a.dropGoal(id, note)));
+
 server.registerTool("request_standing_consent", {
   title: "Ask once for a standing agreement grant",
   description: "Ask the human ONCE for authority covering every agreement that fits a shape — a spending cap over a rolling window, and optionally which counterparties. Later agreements then need no approval at all. The cap is the ceiling ACROSS agreements in the window, not per agreement. Offer this when the human says they want ongoing or repeated dealings; do not request it silently, because the card is far broader than one agreement's. A per-agreement approval remains available for a one-off that the standing grant will not cover.",
@@ -206,14 +257,9 @@ server.registerTool("request_standing_consent", {
 
 server.registerTool("next_step", {
   title: "What to do next",
-  description: "The single next action for ME across every agreement I am party to, as { action, agreement?, why, then? }. Read-only: it never consumes messages and never writes. `action: \"none\"` means wait. Pass `goal` to say what to start when nothing is open. Call this first, do the one action it names, then stop.",
-  inputSchema: {
-    goal: z.object({
-      acceptor: z.string().describe("counterparty identity (email) to propose to when no agreement is open"),
-      summary: z.string().optional().describe("what you want from them, in a sentence"),
-    }).optional().describe("only the initiator needs this; the responding side passes nothing"),
-  },
-}, ({ goal }) => {
+  description: "The single next action for ME, across every goal I am pursuing and every agreement I am party to: { action, goal?, agreement?, why, then?, also_waiting? }. Read-only: it never consumes messages and never writes. `action: \"none\"` means wait, which is normal. Work in flight comes first because money is committed to it, but a blocked agreement never blocks a goal — anything not actionable is listed in `also_waiting`. Register goals with `add_goal`. Call this first, do the one action it names, then stop.",
+  inputSchema: {},
+}, () => {
   // Cold start: no identity yet. Answer with an action the loop can act on
   // rather than an error, so provisioning is part of the same workflow.
   if (!existsSync(IDENTITY)) {
@@ -223,7 +269,7 @@ server.registerTool("next_step", {
       then: "call the browserid wallet's `provision` tool, show the human the approval link it prints, and stop; once they approve, this workflow continues on the next pass",
     }, null, 2));
   }
-  return run((a) => a.nextStep({ goal }));
+  return run((a) => a.nextStep());
 });
 
 server.registerTool("agreement_status", {

@@ -55,6 +55,13 @@ You act for a human through browserid. Two MCP servers are configured:
 
 ## How to work
 
+Record what the human wants with \`add_goal\` as soon as they say it, before
+proposing anything. A goal is local, survives restarts, and is what lets you
+pick the thread back up next tick. Several run in parallel, each with its own
+pipeline: sourcing (nobody to ask yet) → ready (counterparty and terms known)
+→ running (an agreement exists) → done. Keep it current with \`update_goal\` as
+soon as something is decided — the workflow reads the goal, not your memory.
+
 \`next_step\` is the loop. It reads real state and answers with the ONE thing
 you should do now — \`{ action, agreement, why, then }\` — or \`action: "none"\`,
 which means wait and is a normal answer. Call it, do that one action, stop.

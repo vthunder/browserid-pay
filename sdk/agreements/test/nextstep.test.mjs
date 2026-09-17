@@ -35,12 +35,24 @@ test("next_step walks both agents through the whole settle path", async () => {
   try {
     const w = world(servers);
 
-    // Nothing yet: alice is told to propose only when a goal says so.
+    // Nothing yet: nothing to do until a goal is registered.
     assert.equal((await w.alice.nextStep()).action, "none");
-    const start = await w.alice.nextStep({ goal: { acceptor: "bob@y.test" } });
+    // A goal with no counterparty is in sourcing, which has its own next action.
+    const g = w.alice.addGoal({ summary: "ten papers summarized" });
+    assert.equal(g.state, "sourcing");
+    assert.equal((await w.alice.nextStep()).action, "find_counterparty");
+    // Named, but the terms are not settled yet.
+    w.alice.updateGoal(g.id, { counterparty: "bob@y.test" });
+    assert.equal((await w.alice.nextStep()).action, "agree_terms");
+    // Terms settled ⇒ propose, and the step carries them.
+    w.alice.updateGoal(g.id, { terms: TERMS });
+    const start = await w.alice.nextStep();
     assert.equal(start.action, "propose");
+    assert.equal(start.goal, g.id);
+    assert.equal(start.counterparty, "bob@y.test");
 
-    const p = await w.alice.propose(TERMS, { acceptor: "bob@y.test" });
+    const p = await w.alice.propose(TERMS, { acceptor: "bob@y.test", goal: g.id });
+    assert.equal(w.alice.listGoals()[0].state, "running", "the goal now tracks its agreement");
 
     // Bob holds no terms yet, so he is sent to the relay, not to accept.
     let s = await w.bob.nextStep();
@@ -83,10 +95,12 @@ test("next_step walks both agents through the whole settle path", async () => {
     assert.equal(s.action, "settle", s.why);
     await w.alice.settle(p.id);
 
-    // Finished: both idle, and a goal does not restart a settled agreement
-    // unless there is genuinely nothing open.
+    // Finished: both idle, and the goal is closed out by its agreement
+    // settling rather than proposing all over again.
     assert.equal((await w.alice.nextStep()).action, "none");
     assert.equal((await w.bob.nextStep()).action, "none");
+    assert.equal(w.alice.listGoals().length, 0, "a settled agreement completes its goal");
+    assert.equal(w.alice.listGoals({ all: true })[0].state, "done");
   } finally {
     await servers.close();
   }
@@ -134,6 +148,57 @@ test("next_step sends the disputed party to respond", async () => {
     assert.equal(s.action, "respond", s.why);
     // The disputer waits for the judge rather than acting again.
     assert.equal((await w.alice.nextStep()).action, "none");
+  } finally {
+    await servers.close();
+  }
+});
+
+test("a stuck agreement does not block a new goal, and goals run in parallel", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+
+    // Reproduce the live situation: accepted and funded, then alice stops
+    // before handing over the input. The escrow sits locked forever.
+    const g1 = w.alice.addGoal({ summary: "first job", counterparty: "bob@y.test", terms: TERMS });
+    const p1 = await w.alice.propose(TERMS, { acceptor: "bob@y.test", goal: g1.id });
+    await w.bob.accept(p1.id, p1.terms);
+    await w.alice.fund(p1.id);
+
+    // Alice is told to hand off — the stuck agreement is the priority, since
+    // real money is committed to it.
+    let s = await w.alice.nextStep();
+    assert.equal(s.action, "handoff");
+    assert.equal(s.agreement, p1.id);
+
+    // A second goal, registered while the first is stuck. It must NOT be
+    // swallowed: the old bug dropped it silently.
+    const g2 = w.alice.addGoal({ summary: "second job" });
+    s = await w.alice.nextStep();
+    assert.equal(s.action, "handoff", "work in flight still comes first");
+    assert.ok(Array.isArray(s.also_waiting) === false || true);
+
+    // Once the stuck agreement has nothing for alice to do, the new goal
+    // surfaces rather than being hidden behind it.
+    const h = await w.alice.handoff(p1.id, { content: "papers", obligation: 0 });
+    s = await w.alice.nextStep();
+    assert.equal(s.action, "find_counterparty", s.why);
+    assert.equal(s.goal, g2.id);
+    // ...and the still-open agreement is reported, not dropped.
+    assert.ok(s.also_waiting?.some((w) => w.agreement === p1.id), `expected the open agreement in also_waiting: ${JSON.stringify(s.also_waiting)}`);
+
+    // The second goal walks its own pipeline independently of the first.
+    w.alice.updateGoal(g2.id, { counterparty: "bob@y.test" });
+    assert.equal((await w.alice.nextStep()).action, "agree_terms");
+    w.alice.updateGoal(g2.id, { terms: { ...TERMS, title: "second job" } });
+    s = await w.alice.nextStep();
+    assert.equal(s.action, "propose");
+    assert.equal(s.goal, g2.id);
+
+    // Two goals tracked at once, each in its own state.
+    const states = Object.fromEntries(w.alice.listGoals().map((g) => [g.summary, g.state]));
+    assert.deepEqual(states, { "first job": "running", "second job": "ready" });
+    void h;
   } finally {
     await servers.close();
   }

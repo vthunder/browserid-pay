@@ -90,6 +90,10 @@ export class Agreements {
     this.obtainWarrant = (aud, scopes) => this.obtainWarrants([{ audience: aud, scopes }]);
     this.overrides = { custodian: o.custodian, adjudicator: o.adjudicator, contribution: o.contribution };
     this.terms = o.termsStore || new Map(); // id -> { terms, salt }
+    // What this agent is TRYING to do, independent of any agreement. Local and
+    // persisted by the host (never sent anywhere): intent is the human's, and
+    // an agent that forgets it between ticks cannot run a loop.
+    this.goals = o.goalStore || new Map(); // goal id -> record
   }
 
   get email() { return this.agent.email; }
@@ -235,7 +239,7 @@ export class Agreements {
 
   /**
    * @param {object} terms   { title, description, obligations:[{by,what,deadline}], price:{amount,currency}, fees?:{custodian,adjudicator}, evidence }
-   * @param {object} o       { acceptor, payer? (default: me), adjudicator?, custodian?, contribution?, expires?, mode?, min_reputation?: { indexer?, score, also_counterparty? } }
+   * @param {object} o       { acceptor, payer? (default: me), adjudicator?, custodian?, contribution?, expires?, mode?, min_reputation?: { indexer?, score, also_counterparty? }, goal? (goal id to attach) }
    * @returns {{ id, terms, salt, commitment, proposal, sealed_terms, submission }}
    */
   async propose(terms, o) {
@@ -285,6 +289,9 @@ export class Agreements {
       bundle,
     };
     const { submission } = await this.post(agreementPath(id), "proposal", proposal, "agreement.proposal.v1");
+    // Attach the goal that motivated this, so the pipeline advances instead of
+    // proposing the same thing again on the next tick.
+    if (o.goal && this.goals.get(o.goal)) this.updateGoal(o.goal, { agreement: id, state: "running" });
     const sealed_terms = adjudicator.sealing_key ? seal(canonicalize(full), adjudicator.sealing_key) : null;
     this.terms.set(id, { terms: full, salt: full.salt, proposal, adjudicator, custodian });
     return { id, terms: full, salt: full.salt, commitment: com, proposal, sealed_terms, submission };
@@ -587,28 +594,106 @@ export class Agreements {
    * is genuinely nothing to do, which is the normal answer while waiting on the
    * other side.
    */
-  async nextStep({ goal } = {}) {
+  // ---- goals: what this agent is trying to achieve -------------------------
+
+  /**
+   * Register a goal. Everything else about an agent's work is reactive — this
+   * is the one place it records what it set out to do, so a loop can pick the
+   * thread back up on the next tick.
+   *
+   * `counterparty` may be unknown: a goal with nobody to ask is in `sourcing`,
+   * which is a real state with a real next action, not an error.
+   */
+  addGoal({ summary, counterparty = null, budget = null, deadline = null, terms = null, note = null } = {}) {
+    if (!summary) throw new AgreementError("bad_request", "a goal needs a summary");
+    const id = "goal_" + randomBytes(6).toString("base64url");
+    const g = { id, summary, counterparty, budget, deadline, terms, note, agreement: null, state: counterparty ? "ready" : "sourcing", created_at: nowS(), updated_at: nowS() };
+    this.goals.set(id, g);
+    return g;
+  }
+
+  listGoals({ all = false } = {}) {
+    const out = [];
+    for (const [, g] of this.goals) if (all || !["done", "abandoned"].includes(g.state)) out.push(g);
+    return out.sort((a, b) => a.created_at - b.created_at);
+  }
+
+  updateGoal(id, patch = {}) {
+    const g = this.goals.get(id);
+    if (!g) throw new AgreementError("no_goal", id);
+    const next = { ...g, ...patch, id: g.id, created_at: g.created_at, updated_at: nowS() };
+    if (!next.state || next.state === g.state) next.state = next.agreement ? "running" : next.counterparty ? "ready" : "sourcing";
+    this.goals.set(id, next);
+    return next;
+  }
+
+  dropGoal(id, note = null) { return this.updateGoal(id, { state: "abandoned", note }); }
+
+  /**
+   * The single next thing *I* should do, across every goal I am pursuing and
+   * every agreement I am party to.
+   *
+   * Read-only: it never consumes messages (that is `check_messages`, which
+   * advances the read cursor) and never writes.
+   *
+   * Work in flight comes first — it has money committed — but a blocked
+   * agreement never blocks a goal: each goal runs its own pipeline
+   * (sourcing → ready → running → done), and anything not actionable is
+   * reported in `also_waiting` rather than silently dropped.
+   */
+  async nextStep() {
     const ids = await this.mine().catch(() => []);
     const open = [];
+    const byAgreement = new Map();
     for (const id of ids) {
       const st = await this.status(id).catch(() => null);
-      if (st && !["settled", "ruled"].includes(st.stage)) open.push({ id, st });
+      if (!st) continue;
+      byAgreement.set(id, st);
+      if (!["settled", "ruled"].includes(st.stage)) open.push({ id, st });
     }
-
-    if (!open.length) {
-      if (goal?.acceptor) {
-        return { action: "propose", why: `no open agreement with ${goal.acceptor}; the goal says to start one`, goal,
-                 then: "send the acceptor the id and the FULL terms with send_message — they cannot accept without them" };
+    // A goal whose agreement has finished is finished.
+    for (const g of this.listGoals()) {
+      if (g.agreement && ["settled", "ruled"].includes(byAgreement.get(g.agreement)?.stage)) {
+        this.updateGoal(g.id, { state: "done" });
       }
-      return { action: "none", why: ids.length ? "every agreement I am party to is finished" : "no agreements, and no goal was given" };
     }
 
-    // Oldest open agreement first: finish what is started before anything else.
-    for (const { id, st } of open.reverse()) {
+    const waiting = [];
+    // 1. Agreements already running: real money is committed to these.
+    for (const { id, st } of open) {
       const step = await this.#stepFor(id, st).catch((e) => ({ action: "none", why: `could not read ${id}: ${e.message}` }));
-      if (step.action !== "none") return { agreement: id, ...step };
+      if (step.action !== "none") return { agreement: id, ...step, ...(waiting.length ? { also_waiting: waiting } : {}) };
+      waiting.push({ agreement: id, stage: st.stage, why: step.why });
     }
-    return { action: "none", why: "waiting on the other party", agreements: open.map((o) => ({ id: o.id, stage: o.st.stage })) };
+    // 2. Goals not yet attached to an agreement.
+    for (const g of this.listGoals()) {
+      if (g.state === "running" || g.agreement) continue;
+      const step = this.#stepForGoal(g);
+      if (step.action !== "none") return { goal: g.id, ...step, ...(waiting.length ? { also_waiting: waiting } : {}) };
+      waiting.push({ goal: g.id, state: g.state, why: step.why });
+    }
+    return { action: "none", why: waiting.length ? "everything is waiting on someone else" : "no goals and no open agreements", ...(waiting.length ? { also_waiting: waiting } : {}) };
+  }
+
+  /**
+   * A goal's own pipeline. Each stage degrades to asking the human where the
+   * automated path does not exist yet: there is no directory to search
+   * (browserid-pay-h4mu) and no counter-offer protocol (browserid-pay-7bzw),
+   * so "find a provider" and "agree terms" are conversations for now. The
+   * pipeline shape is the same either way.
+   */
+  #stepForGoal(g) {
+    if (!g.counterparty) {
+      return { action: "find_counterparty", why: `"${g.summary}" has nobody to ask yet`,
+               then: "there is no agent directory yet — ask the human who should do this, or message an agent you already know, then update the goal with the counterparty" };
+    }
+    if (!g.terms) {
+      return { action: "agree_terms", why: `"${g.summary}": ${g.counterparty} is named but the terms are not settled`,
+               then: "settle what, by when and for how much — with the human, or by messaging the counterparty — then update the goal with terms. Nothing binds until a proposal." };
+    }
+    return { action: "propose", why: `"${g.summary}": terms are settled with ${g.counterparty}`,
+             terms: g.terms, counterparty: g.counterparty,
+             then: "propose, passing this goal id so the agreement is linked to it, then send the counterparty the id and the FULL terms — they cannot accept without them" };
   }
 
   async #stepFor(id, st) {
