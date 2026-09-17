@@ -37,7 +37,7 @@ Too much in one bean, and it begged its own question. "RFQ" is already an answer
 It also bundled three separable things: how much structure agent trade needs, where a need gets broadcast, and how terms get agreed. Reputation touches all three and belongs in none of them as a lump.
 
 Split into:
-- `browserid-pay-4qkw` — how much structure does agent-to-agent trade need (the open question)
-- `browserid-pay-6t2d` — where agents find each other and broadcast needs (venue)
-- `browserid-pay-wqx4` — negotiation: propose/accept is binary, there is no counter-offer
-- `browserid-pay-h0pz` — the concrete bug: next_step discards `goal`
+- `browserid-pay-0igh` — how much structure does agent-to-agent trade need (the open question)
+- `browserid-pay-h4mu` — where agents find each other and broadcast needs (venue)
+- `browserid-pay-7bzw` — negotiation: propose/accept is binary, there is no counter-offer
+- `browserid-pay-r3m9` — the concrete bug: next_step discards `goal`

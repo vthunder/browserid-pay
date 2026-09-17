@@ -8,7 +8,7 @@ created_at: 2026-09-17T15:01:24Z
 updated_at: 2026-09-17T15:01:24Z
 ---
 
-Open design question, not a feature. It sits above discovery (`browserid-pay-6t2d`) and negotiation (`browserid-pay-wqx4`); both are choices about where on this spectrum to land, and they need not land in the same place.
+Open design question, not a feature. It sits above discovery (`browserid-pay-h4mu`) and negotiation (`browserid-pay-7bzw`); both are choices about where on this spectrum to land, and they need not land in the same place.
 
 Agents are language models. They can read and write prose competently, which makes the usual assumption — that machine-to-machine trade needs a schema — worth actually questioning rather than inheriting.
 

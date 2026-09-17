@@ -20,7 +20,7 @@ Observed 2026-09-17: two agents exchanged messages only to hand over an id and t
 
 **Touchpoints:**
 - *Structure* (`0igh`) — a counter-offer in prose vs a typed quote object.
-- *Discovery* (`6t2d`) — quotes against a broadcast need are also price discovery: what a job actually costs becomes observable. Alice picked $50 out of the air.
+- *Discovery* (`h4mu`) — quotes against a broadcast need are also price discovery: what a job actually costs becomes observable. Alice picked $50 out of the air.
 - *Amendments* (`b8og`) — the same problem after signature rather than before; likely related machinery.
 - *Reputation* — bargaining behaviour is not currently attestable, and probably should not be; only settlement is.
 
