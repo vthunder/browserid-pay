@@ -364,3 +364,40 @@ test("an unanswered delivery sends the deliverer to the adjudicator, and the rec
     await servers.close();
   }
 });
+
+test("a dispute the adjudicator never ruled on sends both parties to replace it", async () => {
+  const servers = await fakeServers();
+  try {
+    WINDOWS = {};
+    const w = world(servers);
+    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const p = await w.alice.propose(T, { acceptor: "bob@y.test" });
+    await w.bob.accept(p.id, p.terms);
+    await w.alice.fund(p.id);
+    await w.bob.deliver(p.id, { content: "x" });
+    await w.alice.dispute(p.id, { note: "not what I asked for" });
+
+    // While the adjudicator's window is open, nobody is told to replace it —
+    // a judge that is merely deliberating must not be swapped out.
+    servers.escrowPatch = { replace_adjudicator_from: Math.floor(Date.now() / 1000) + 3600 };
+    let s = await w.alice.nextStep();
+    assert.notEqual(s.action, "replace_adjudicator", s.why);
+
+    // Once it has passed, the party who is not required to respond is told to
+    // nominate — this is the only exit from a disputed escrow.
+    servers.escrowPatch = { replace_adjudicator_from: Math.floor(Date.now() / 1000) - 60 };
+    s = await w.alice.nextStep();
+    assert.equal(s.action, "replace_adjudicator", s.why);
+    assert.match(s.then, /not_agreed/);
+
+    // Having nominated, she waits for bob rather than being told again.
+    await w.alice.replaceAdjudicator(p.id, "judge2@dsp.fyi");
+    s = await w.alice.nextStep();
+    assert.equal(s.action, "none");
+    // The specific reason lives on the agreement's entry in `also_waiting`; the
+    // top-level `why` is the summary across everything.
+    assert.match(s.also_waiting.find((x) => x.agreement === p.id).why, /the same replacement/);
+  } finally {
+    await servers.close();
+  }
+});

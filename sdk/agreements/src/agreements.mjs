@@ -866,6 +866,19 @@ export class Agreements {
         return { action: "respond", why: `disputed by ${disputedBy}; I must respond${by}`,
                  then: "reveal the delivered content so the judge can check it against my commitment" };
       }
+      // The adjudicator has had its window and produced nothing. Nominating a
+      // replacement is the ONLY exit from a disputed escrow — no clock releases
+      // it and the abandonment backstop is suspended while it is disputed — so
+      // an agent that is never told to do this waits for ever.
+      const replaceFrom = st.escrow?.replace_adjudicator_from;
+      if (replaceFrom && nowS() > replaceFrom) {
+        const nominated = ev.some((e) => e.kind === "replace_adjudicator" && e.by === me);
+        if (!nominated) {
+          return { action: "replace_adjudicator", why: `${st.proposal?.adjudicator ?? "the adjudicator"} has not ruled and its window has passed`,
+                   then: "nominate a replacement and TELL the other party who — it only takes effect once you both name the same one, so expect `not_agreed` until they agree" };
+        }
+        return { action: "none", why: "waiting for the other party to nominate the same replacement adjudicator" };
+      }
       return { action: "none", why: "disputed; the judge rules once the response window closes" };
     }
     if (st.stage === "proposed") {

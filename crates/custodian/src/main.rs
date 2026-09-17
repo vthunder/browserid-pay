@@ -79,6 +79,24 @@ async fn main() -> anyhow::Result<()> {
     // URL). In dev mode without a credential nothing is provisioned unless
     // PAY_PROVISION=1 — the demo runs without a chain identity.
     let boot_cfg = cfg.clone();
+    // The abandonment sweep: the only place money moves without anyone asking,
+    // so it runs slowly and says loudly what it did. Hourly is plenty for a
+    // clock measured in days.
+    {
+        let db = app.db.clone();
+        let publisher = publisher.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tick.tick().await;
+                let swept = escrow::sweep_due(&db, publisher.as_ref(), db::now()).await;
+                if !swept.is_empty() {
+                    tracing::warn!(count = swept.len(), ?swept, "abandonment sweep split escrows");
+                }
+            }
+        });
+    }
+
     tokio::spawn(async move {
         match identity.load().await {
             Ok(true) => {}

@@ -51,6 +51,7 @@ export async function fakeVerify(presentation, audience) {
 
 /** Minimal custodian + judge in one process; records calls. */
 export async function fakeServers() {
+  const view = {};
   const calls = [];
   const escrows = new Map();
   const srv = createServer(async (req, res) => {
@@ -74,14 +75,26 @@ export async function fakeServers() {
       e.state = m[2] === "acknowledge" ? "released" : "disputed";
       return json(200, { state: e.state, sealed_terms: e.sealed_terms });
     }
+    if ((m = /^\/api\/escrow\/([^/]+)\/adjudicator$/.exec(req.url))) {
+      // The real custodian refuses until both parties have nominated the same
+      // identity; the stub just accepts, since the agreement rule is tested in
+      // the custodian, not here.
+      return json(200, { escrow: escrows.get(m[1]) ?? null });
+    }
     if ((m = /^\/api\/escrow\/([^/]+)$/.exec(req.url))) {
       const e = escrows.get(m[1]);
-      return e ? json(200, e) : json(404, { error: "unknown_escrow" });
+      // `view.escrowPatch` lets a test set fields the real custodian computes
+      // server-side (e.g. when an adjudicator may be replaced).
+      return e ? json(200, { ...e, ...(view.escrowPatch || {}) }) : json(404, { error: "unknown_escrow" });
     }
     if (req.url === "/api/dispute") return json(200, { filed: true, contract_id: body.contract_id });
     json(404, { error: "no_route" });
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${srv.address().port}`;
-  return { origin, calls, escrows, close: () => new Promise((r) => srv.close(r)) };
+  return {
+    origin, calls, escrows,
+    set escrowPatch(v) { view.escrowPatch = v; },
+    close: () => new Promise((r) => srv.close(r)),
+  };
 }

@@ -805,7 +805,49 @@ pub fn view(e: &Escrow) -> Value {
         "fees": { "custodian": crate::pay::fmt_minor(e.custodian_fee_minor), "adjudicator": crate::pay::fmt_minor(e.adjudicator_fee_minor) },
         "contribution": { "amount": crate::pay::fmt_minor(e.contribution_minor), "recipient": e.contribution_recipient },
         "currency": e.currency, "locked_at": e.locked_at, "settled_at": e.settled_at, "outcome": e.outcome,
+        // Computed here rather than duplicated client-side: when the parties
+        // may declare this adjudicator unresponsive and nominate another.
+        "replace_adjudicator_from": e.disputed_at.map(|d| d + RULING_WINDOW_SECS),
     })
+}
+
+/// Escrows that are still locked, for the abandonment sweep.
+fn locked_ids(c: &Connection) -> rusqlite::Result<Vec<String>> {
+    c.prepare("SELECT id FROM escrows WHERE state='locked'")?
+        .query_map([], |r| r.get(0))?
+        .collect()
+}
+
+/// Split every escrow whose backstop has fallen due.
+///
+/// The clock is measured from the agreement's own latest deadline, which is the
+/// LAST moment the delivery clock could have expired — an early delivery pulls
+/// it in, so using the deadline always errs late. That is the right direction
+/// for the one mechanism here that moves money with nobody watching.
+///
+/// Returns the ids swept, for logging.
+pub async fn sweep_due(db: &Db, publisher: &dyn Publisher, now: i64) -> Vec<String> {
+    let ids = match db.with(|c| Ok(locked_ids(c)?)) {
+        Ok(v) => v,
+        Err(e) => { tracing::error!("abandonment sweep: {e:#}"); return vec![] }
+    };
+    let mut swept = Vec::new();
+    for id in ids {
+        let Ok(Some(e)) = db.with(|c| Ok(get(c, &id)?)) else { continue };
+        let expired_at = e.latest_deadline.unwrap_or(e.locked_at);
+        let Some(due) = backstop_due(&e, expired_at) else { continue };
+        if now <= due {
+            continue;
+        }
+        match sweep_abandoned(db, publisher, &id).await {
+            Ok(_) => {
+                tracing::warn!(id, due, "abandoned escrow split 50/50: neither party acted");
+                swept.push(id);
+            }
+            Err(err) => tracing::error!(id, ?err, "abandonment sweep failed"),
+        }
+    }
+    swept
 }
 
 /// The contribution in minor units, for a price in minor units.
@@ -1295,6 +1337,39 @@ mod tests {
         // collect half of what you were going to lose.
         assert_eq!(backstop_due(&base("disputed", Some(6 * 3600)), 1_000), None);
         assert_eq!(backstop_due(&base("settled", Some(6 * 3600)), 1_000), None);
+    }
+
+    #[tokio::test]
+    async fn the_sweep_only_touches_escrows_whose_backstop_has_actually_fallen_due() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+        let payer = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE, vec![standing_scope("600.00", None, None)], 1);
+
+        // Three escrows: one fresh, one long past its backstop, one disputed and
+        // also long past it.
+        for id in ["agr_fresh", "agr_old", "agr_disputed"] {
+            lock_t(&s, &rep, lock_req(&s, id, "600.00", None)).await.unwrap();
+        }
+        dispute(&s.verify, &s.db, "agr_disputed", &payer).await.unwrap();
+        let ancient = db::now() - BACKSTOP_CEILING_SECS - 86_400;
+        for id in ["agr_old", "agr_disputed"] {
+            s.db.with(|c| {
+                c.execute("UPDATE escrows SET locked_at=?2, latest_deadline=?2 WHERE id=?1", params![id, ancient])?;
+                Ok(())
+            }).unwrap_or_else(|e: anyhow::Error| panic!("{e}"));
+        }
+
+        let swept = sweep_due(&s.db, &Log, db::now()).await;
+        assert_eq!(swept, vec!["agr_old".to_string()], "only the abandoned one");
+        assert_eq!(get_state(&s, "agr_fresh"), "locked", "a live escrow is untouched");
+        assert_eq!(get_state(&s, "agr_old"), "settled");
+        // THE SAFETY PROPERTY: a dispute suspends the backstop, so attacking the
+        // adjudicator cannot run the clock out and collect half.
+        assert_eq!(get_state(&s, "agr_disputed"), "disputed", "a dispute is never swept");
+
+        // Running it again is a no-op — sweeping is not repeatable.
+        assert!(sweep_due(&s.db, &Log, db::now()).await.is_empty());
     }
 
     #[tokio::test]
