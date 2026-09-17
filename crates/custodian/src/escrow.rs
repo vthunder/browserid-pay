@@ -68,6 +68,8 @@ pub struct Escrow {
     pub contribution_recipient: Option<String>,
     pub currency: String,
     pub locked_at: i64,
+    /// When the dispute was filed, if one was.
+    pub disputed_at: Option<i64>,
     pub settled_at: Option<i64>,
     pub outcome: Option<String>,
     #[serde(skip)]
@@ -109,6 +111,9 @@ pub fn schema(c: &Connection) -> anyhow::Result<()> {
         let _ = c.execute(&format!("ALTER TABLE escrows ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"), []);
     }
     let _ = c.execute("ALTER TABLE escrows ADD COLUMN reputation_seen TEXT", []);
+    // When the dispute was filed: the adjudicator's ruling window runs from
+    // here (browserid-pay-6ai6).
+    let _ = c.execute("ALTER TABLE escrows ADD COLUMN disputed_at INTEGER", []);
     Ok(())
 }
 
@@ -133,9 +138,10 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Escrow> {
         payer_account: r.get(16)?,
         payee_account: r.get(17)?,
         reputation_seen: r.get(18)?,
+        disputed_at: r.get(19)?,
     })
 }
-const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome, payer_account, payee_account, reputation_seen";
+const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome, payer_account, payee_account, reputation_seen, disputed_at";
 
 pub fn get(c: &Connection, id: &str) -> anyhow::Result<Option<Escrow>> {
     Ok(c.query_row(&format!("SELECT {COLS} FROM escrows WHERE id=?1"), params![id], row).optional()?)
@@ -517,6 +523,69 @@ pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id
     Ok(e)
 }
 
+/// How long the named adjudicator has to rule once a dispute is filed, before
+/// either party may declare it unresponsive. Deliberately longer than the
+/// judge's own window for the counterparty to respond (a day in production), so
+/// a judge that is merely deliberating is not swapped out mid-thought.
+const RULING_WINDOW_SECS: i64 = 3 * 86400;
+
+/// Replace an adjudicator that never ruled.
+///
+/// Both parties must have posted a `replace_adjudicator` object naming the SAME
+/// identity. Requiring both is what makes this safe: neither side can shop for
+/// a friendlier judge on its own. The ruling window must have lapsed first, so a
+/// slow-but-alive adjudicator cannot be swapped out by an impatient party.
+///
+/// The escrowed fee follows whoever rules: the row's `adjudicator` is what
+/// `pay_out` pays, so swapping it moves the fee with the work.
+pub async fn replace_adjudicator(
+    verify: &Verify,
+    db: &Db,
+    reader: &dyn chain::ChainReader,
+    id: &str,
+    presentation: &str,
+) -> Result<Escrow, EscrowError> {
+    let (_, actor, _, _) = caller_either(verify, id, presentation).await?;
+    let e = db.with(|c| get(c, id)).map_err(|e| err("internal", e.to_string()))?
+        .ok_or_else(|| err("not_found", id))?;
+    if actor != e.payer && actor != e.payee {
+        return Err(err("not_party", actor));
+    }
+    if e.state != "disputed" {
+        return Err(err("bad_state", format!("{} — only a disputed escrow has an adjudicator to replace", e.state)));
+    }
+    let since = e.disputed_at.unwrap_or(e.locked_at);
+    if db::now() <= since + RULING_WINDOW_SECS {
+        return Err(err("ruling_window_open", format!("{} has until {}", e.adjudicator, since + RULING_WINDOW_SECS)));
+    }
+
+    // Both parties' nominations, read off the ledger and attributed by it.
+    let objs = reader.list_prefix(&format!("/agreements/{id}/evidence/")).await
+        .map_err(|x| err("chain_unavailable", x.to_string()))?;
+    let nomination = |who: &str| -> Option<String> {
+        objs.iter()
+            .filter(|o| o.creator == who && o.value.get("kind").and_then(|v| v.as_str()) == Some("replace_adjudicator"))
+            .filter_map(|o| o.value.get("adjudicator").and_then(|v| v.as_str()).map(String::from))
+            .next_back()
+    };
+    let (Some(a), Some(b)) = (nomination(&e.payer), nomination(&e.payee)) else {
+        return Err(err("not_agreed", "both parties must nominate a replacement"));
+    };
+    if a != b {
+        return Err(err("not_agreed", format!("the parties named different replacements: {a} and {b}")));
+    }
+    if a == e.adjudicator {
+        return Err(err("bad_request", "that is already the adjudicator"));
+    }
+    db.with(|c| {
+        c.execute("UPDATE escrows SET adjudicator=?2 WHERE id=?1", params![id, a])?;
+        Ok(())
+    })
+    .map_err(|x: anyhow::Error| err("internal", x.to_string()))?;
+    db.with(|c| get(c, id)).map_err(|x| err("internal", x.to_string()))?
+        .ok_or_else(|| err("not_found", id))
+}
+
 /// Either party opens a dispute: the escrow freezes and the sealed terms are
 /// handed back for delivery to the adjudicator.
 pub async fn dispute(verify: &Verify, db: &Db, id: &str, presentation: &str) -> Result<(Escrow, Option<String>), EscrowError> {
@@ -529,7 +598,7 @@ pub async fn dispute(verify: &Verify, db: &Db, id: &str, presentation: &str) -> 
         if e.state != "locked" {
             return Ok(Err(err("bad_state", e.state)));
         }
-        c.execute("UPDATE escrows SET state='disputed' WHERE id=?1", params![id])?;
+        c.execute("UPDATE escrows SET state='disputed', disputed_at=?2 WHERE id=?1", params![id, db::now()])?;
         let e = get(c, id)?.expect("exists");
         let sealed = e.sealed_terms.clone();
         Ok(Ok((e, sealed)))
@@ -1015,6 +1084,68 @@ mod tests {
             c.put(&path, eid, creator, Value::Object(v));
         }
         c
+    }
+
+    #[tokio::test]
+    async fn an_unresponsive_adjudicator_can_be_replaced_but_only_by_both_parties() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+        let payer = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE, vec![standing_scope("600.00", None, None)], 1);
+        let payee = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", COLLECTION_AUDIENCE, vec![standing_scope("600.00", None, None)], 9);
+        let nominate = |id: &str, who: &str, pick: &str| (id.to_string(), who.to_string(), pick.to_string());
+        let chain_for = |id: &str, noms: Vec<(String, String, String)>| {
+            let c = FakeChain::agreement(id);
+            let path = format!("/agreements/{id}/evidence/");
+            for (i, (_, who, pick)) in noms.iter().enumerate() {
+                c.put(&path, &format!("ev_{i}"), who, json!({ "kind": "replace_adjudicator", "adjudicator": pick, "at": 1 }));
+            }
+            c
+        };
+
+        // Not disputed at all: there is no adjudicator to replace.
+        lock_t(&s, &rep, lock_req(&s, "agr_j1", "600.00", None)).await.unwrap();
+        let c1 = chain_for("agr_j1", vec![]);
+        assert_eq!(replace_adjudicator(&s.verify, &s.db, &c1, "agr_j1", &payer).await.err().unwrap().error, "bad_state");
+
+        // Disputed, but the ruling window is still open: a judge that is merely
+        // deliberating must not be swapped out.
+        lock_t(&s, &rep, lock_req(&s, "agr_j2", "600.00", None)).await.unwrap();
+        dispute(&s.verify, &s.db, "agr_j2", &payer).await.unwrap();
+        let c2 = chain_for("agr_j2", vec![nominate("agr_j2", "alice+agent@x.test", "judge2@dsp.test"), nominate("agr_j2", "bob+agent@y.test", "judge2@dsp.test")]);
+        assert_eq!(replace_adjudicator(&s.verify, &s.db, &c2, "agr_j2", &payer).await.err().unwrap().error, "ruling_window_open");
+
+        // Backdate the dispute past the window and try the interesting cases.
+        let age = |id: &str| {
+            s.db.with(|c| {
+                c.execute("UPDATE escrows SET disputed_at=?2 WHERE id=?1", params![id, db::now() - RULING_WINDOW_SECS - 60])?;
+                Ok(())
+            })
+            .unwrap_or_else(|e: anyhow::Error| panic!("{e}"))
+        };
+        age("agr_j2");
+
+        // ONE party nominating is not enough — otherwise either side could shop
+        // for a friendlier judge on its own.
+        let only_one = chain_for("agr_j2", vec![nominate("agr_j2", "alice+agent@x.test", "judge2@dsp.test")]);
+        assert_eq!(replace_adjudicator(&s.verify, &s.db, &only_one, "agr_j2", &payer).await.err().unwrap().error, "not_agreed");
+
+        // Both, but naming DIFFERENT replacements, is also no agreement.
+        let disagree = chain_for("agr_j2", vec![nominate("agr_j2", "alice+agent@x.test", "judge2@dsp.test"), nominate("agr_j2", "bob+agent@y.test", "judge3@dsp.test")]);
+        assert_eq!(replace_adjudicator(&s.verify, &s.db, &disagree, "agr_j2", &payer).await.err().unwrap().error, "not_agreed");
+
+        // Both agreeing, after the window: the swap takes effect.
+        let e = replace_adjudicator(&s.verify, &s.db, &c2, "agr_j2", &payer).await.unwrap();
+        assert_eq!(e.adjudicator, "judge2@dsp.test");
+
+        // And the fee follows the work: the replacement is who gets paid.
+        let ruling_by_new = presentation(&s.issuer, "judge2@dsp.test", "judge2@dsp.test", ORIGIN, vec![ScopeEntry::Bare("ruling".into())], 5);
+        let r = ruling(&s.verify, &s.db, &Log, ORIGIN, "agr_j2", RulingRequest {
+            presentation: ruling_by_new, ruling: json!({ "outcome": "payee", "fee": "escrow" }),
+        }).await.unwrap();
+        assert_eq!(r.state, "settled");
+        assert_eq!(bal(&s, "judge2@dsp.test"), 500, "the replacement is paid the escrowed fee");
+        assert_eq!(bal(&s, "judge+agent@dsp.test"), 0, "the one that never ruled gets nothing");
     }
 
     #[tokio::test]

@@ -203,6 +203,12 @@ server.registerTool("dispute", {
   inputSchema: { id: z.string(), note: z.string().optional() },
 }, ({ id, note }) => run((a) => a.dispute(id, { note })));
 
+server.registerTool("replace_adjudicator", {
+  title: "Nominate a replacement adjudicator",
+  description: "When the adjudicator named in the agreement has not ruled, nominate a replacement. It only takes effect once BOTH parties have nominated the SAME identity and the original's ruling window has lapsed — so expect `not_agreed` until the other side agrees, which is normal, not an error. Tell them who you nominated. Requiring both is what stops either side picking a friendlier judge.",
+  inputSchema: { id: z.string(), adjudicator: z.string().describe("identity of the replacement") },
+}, ({ id, adjudicator }) => run((a) => a.replaceAdjudicator(id, adjudicator)));
+
 server.registerTool("respond", {
   title: "Respond to a dispute",
   description: "Answer a dispute filed against you within the judge's response window: a note and, with reveal=true (default), open every delivery commitment you made for this agreement so the judge sees the actual content. The judge rules right after.",

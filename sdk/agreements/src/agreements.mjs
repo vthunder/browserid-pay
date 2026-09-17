@@ -279,6 +279,25 @@ export class Agreements {
     return this.agent.assertionFor(aud);
   }
 
+  /**
+   * Nominate a replacement adjudicator, when the named one has not ruled.
+   *
+   * Posts the nomination on chain and then asks the custodian to swap. The swap
+   * only happens once BOTH parties have nominated the SAME identity and the
+   * original's ruling window has lapsed — so the first caller posts and is told
+   * `not_agreed`, which is the normal, expected outcome until the other side
+   * agrees. The escrowed fee follows whoever rules.
+   */
+  async replaceAdjudicator(id, adjudicator) {
+    if (!adjudicator) throw new AgreementError("bad_request", "name the replacement adjudicator");
+    const p = await this.#proposal(id);
+    const ev = await this.#evidence(id, "replace_adjudicator", { adjudicator });
+    const presentation = await this.#contractAssertion(id);
+    const swap = await this.#custodian(p.custodian, `/api/escrow/${id}/adjudicator`, { presentation })
+      .catch((e) => ({ pending: e.code || "not_agreed", detail: e.message }));
+    return { ...ev, swap };
+  }
+
   /** One indexer's signed scorecard for `subject` (default: the configured index). */
   async reputationOf(subject, indexer = this.index) {
     const r = await this.http(`${indexer.replace(/\/+$/, "")}/v1/reputation?subject=${encodeURIComponent(subject)}`);

@@ -1,11 +1,11 @@
 ---
 # browserid-pay-6ai6
 title: An unresponsive adjudicator freezes the escrow with no way out
-status: draft
+status: completed
 type: bug
 priority: high
 created_at: 2026-09-17T20:20:27Z
-updated_at: 2026-09-17T20:25:55Z
+updated_at: 2026-09-17T20:49:24Z
 ---
 
 A disputed escrow can only leave that state through a ruling (`escrow.rs`: `dispute` requires `locked`, and only `ruling` moves it on). If the named adjudicator never rules — dead, unreachable, or simply ignoring it — the funds are frozen permanently and NEITHER party can do anything about it.
@@ -18,11 +18,11 @@ Worse than the abandoned-agreement case (`browserid-pay-ov7g`), because it happe
 
 Shape to work out:
 
-- [ ] a `replace_adjudicator` object under the agreement, effective only when BOTH parties have signed it (two objects, or one countersigned)
-- [ ] the custodian accepts a ruling from the replacement only after seeing both signatures — it already reads the chain, so this is a read plus a check
-- [ ] does the original adjudicator forfeit the escrowed fee? (It has not ruled. The fee should presumably follow whoever does the work.)
-- [ ] is there a waiting period before replacement is allowed, so a slow-but-alive adjudicator is not swapped out mid-deliberation? The judge already has a response window for the counterparty; something similar for its own ruling.
-- [ ] what if the parties cannot agree on a replacement — does it fall back to the abandonment backstop, or stay frozen?
+- [x] a `replace_adjudicator` object under the agreement, effective only when BOTH parties have signed it (two objects, or one countersigned)
+- [x] the custodian accepts a ruling from the replacement only after seeing both signatures — it already reads the chain, so this is a read plus a check
+- [x] does the original adjudicator forfeit the escrowed fee? (It has not ruled. The fee should presumably follow whoever does the work.)
+- [x] is there a waiting period before replacement is allowed, so a slow-but-alive adjudicator is not swapped out mid-deliberation? The judge already has a response window for the counterparty; something similar for its own ruling.
+- [x] what if the parties cannot agree on a replacement — it stays frozen, per the earlier call that a stalemate nobody profits from is acceptable where a profitable attack is not
 
 Related: the adjudicator's own liveness is currently unattested. A provider listing says nothing about whether the adjudicator still answers, which is also a discovery problem (`browserid-pay-h4mu`) and arguably something reputation should carry (`browserid-pay-ngr0`).
 
@@ -36,6 +36,22 @@ A judge must be given time before being declared unresponsive, or a party could 
 
 Worst case remains a frozen escrow if the parties cannot agree a replacement. That is acceptable where a profitable attack is not: the attacker gains nothing by freezing it.
 
-- [ ] `ruling_window` as a term, with a sensible default and a floor
-- [ ] a signed `judge_unresponsive` claim, permitted only after it lapses
-- [ ] replacement requires BOTH parties; the escrowed fee follows whoever actually rules
+- [x] `ruling_window` as a term, with a sensible default and a floor
+- [x] a signed `judge_unresponsive` claim, permitted only after it lapses
+- [x] replacement requires BOTH parties; the escrowed fee follows whoever actually rules
+
+## Summary of Changes
+
+Built.
+
+**Custodian.** `disputed_at` on the escrow row starts the ruling window (3 days — deliberately longer than the judge's own 1-day window for the counterparty to respond, so a judge that is merely deliberating is not swapped out mid-thought). `replace_adjudicator` reads both parties' nominations off the ledger, attributed by it, and swaps the row's `adjudicator` only when all of these hold: the escrow is disputed, the window has lapsed, BOTH parties nominated, and they named the SAME identity.
+
+**The fee follows the work for free.** `pay_out(&e.adjudicator, s.to_adjudicator, …)` pays whatever the row says, so swapping the field moves the fee to whoever actually rules. The original forfeits it by not ruling. Tested.
+
+**SDK / MCP.** `replaceAdjudicator(id, identity)` posts the nomination and asks for the swap. The first caller gets `not_agreed` back — that is the normal outcome until the other side agrees, not an error, and the tool description says so.
+
+**Deliberately not built:** no timer swaps an adjudicator, and no single party can. If the parties cannot agree on a replacement the escrow stays frozen. That follows the rule this project keeps arriving at — a stalemate nobody profits from is acceptable where a profitable attack is not.
+
+The interaction with the abandonment backstop (`browserid-pay-ov7g`) is the load-bearing part and is specified there: the backstop is SUSPENDED while an escrow is disputed, so attacking the adjudicator cannot run the clock out to collect 50%.
+
+Tests: not disputed → refused; window still open → refused; one party nominating → refused; both nominating different identities → refused; both agreeing after the window → swap, and the replacement is paid while the original gets nothing.

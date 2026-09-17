@@ -122,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/escrow/:id", get(escrow_get))
         .route("/api/escrow/:id/acknowledge", post(escrow_acknowledge))
         .route("/api/escrow/:id/dispute", post(escrow_dispute))
+        .route("/api/escrow/:id/adjudicator", post(escrow_replace_adjudicator))
         .route("/api/escrow/:id/ruling", post(escrow_ruling))
         .with_state(app)
         .layer(tower_http::trace::TraceLayer::new_for_http());
@@ -505,6 +506,17 @@ struct PresentationBody {
 async fn escrow_acknowledge(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(b): Json<PresentationBody>) -> Response {
     match escrow::acknowledge(&app.verify, &app.db, app.publisher.as_ref(), &id, &b.presentation).await {
         Ok(e) => Json(escrow::view(&e)).into_response(),
+        Err(e) => (escrow_status(&e), Json(e)).into_response(),
+    }
+}
+
+/// Swap in an adjudicator both parties nominated, once the original's ruling
+/// window has lapsed. The agreement of BOTH is what stops either side shopping
+/// for a friendlier judge.
+async fn escrow_replace_adjudicator(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(req): Json<serde_json::Value>) -> Response {
+    let presentation = req.get("presentation").and_then(|v| v.as_str()).unwrap_or_default();
+    match escrow::replace_adjudicator(&app.verify, &app.db, app.reader.as_ref(), &id, presentation).await {
+        Ok(e) => Json(json!({ "escrow": escrow::view(&e) })).into_response(),
         Err(e) => (escrow_status(&e), Json(e)).into_response(),
     }
 }

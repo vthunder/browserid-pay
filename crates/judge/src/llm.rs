@@ -148,7 +148,17 @@ Respond with ONLY a JSON object: {\"outcome\": \"payee\"|\"payer\"|\"split\", \"
 const READING: &str = "Read the evidence in chain order and by kind, never by what a note claims. \
 An obligation of kind `input` is met by a `receipt` with `ok: true` for a `handoff` of that obligation; a \
 handoff with no receipt within the window counts as received unless the receiver contested it; no handoff at \
-all is the provider's breach and blocks every obligation that depends on it (a blocked party is not late). A \
+all is the provider's breach and blocks every obligation that depends on it (a blocked party is not late). An \
+`acknowledgement` is the recipient's answer to a DELIVERY: absent `ok`, or `ok: true`, accepts it; `ok: false` \
+refuses it and carries a `reason`. The two reasons are different complaints and carry different weight. \
+`not_received` disputes that the work ARRIVED and is the deliverer's to cure by delivering again; `not_met` \
+ADMITS it arrived and disputes the work itself, so a party who answered `not_met` cannot later claim they \
+never received it. Silence past the response window settles nothing either way and is itself a fact about \
+the recipient. Weigh WHEN each claim was made, which the chain records: a `not_received` posted promptly \
+after a delivery, with no later delivery curing it, is the mark of work that was committed to but never \
+handed over; a recipient who said nothing for the whole window and only denies receipt at the hearing was \
+silent when speaking was cheap, and their denial is correspondingly weak. Opening a commitment at the \
+hearing proves the content EXISTS; it does not by itself prove it ever reached the other party. A \
 `deliverable` is proven only by an opened commitment (revealed content hashing to the delivery's commitment) or \
 by public content — a `delivery` whose commitment was never opened is undelivered, and a performer who was not \
 given the chance to open it (no response phase) must not be ruled against for that alone. `payment` is met by \
@@ -214,6 +224,29 @@ pub fn parse_json_object(text: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ruling prompt is the only place these rules exist. A case reaches the
+    /// adjudicator precisely BECAUSE a delivery went unanswered or an arrival
+    /// stalled, so a prompt that does not mention acknowledgements cannot weigh
+    /// the thing that sent the case here (browserid-pay-lwo3).
+    #[test]
+    fn the_reading_covers_the_response_window_model() {
+        for needle in [
+            "acknowledgement",
+            "not_received",
+            "not_met",
+            "Silence past the response window settles nothing",
+            "Weigh WHEN each claim was made",
+            "does not by itself prove it ever reached",
+        ] {
+            assert!(READING.contains(needle), "the ruling prompt must cover {needle:?}");
+        }
+        // The two refusals must be distinguished, not lumped together: one is
+        // the deliverer's to cure, the other concedes arrival.
+        let not_received = READING.find("not_received").unwrap();
+        let not_met = READING.find("not_met").unwrap();
+        assert!(not_received < not_met, "arrival is explained before quality");
+    }
 
     fn terms() -> Value {
         json!({ "price": { "amount": "50.00", "currency": "USD" } })
