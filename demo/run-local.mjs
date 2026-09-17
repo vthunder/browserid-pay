@@ -76,9 +76,29 @@ async function main() {
   const trust = `${idp.domain}=${idp.public_key}`;
   log(`demo-idp ${idp.origin} (issuer ${idp.domain})`);
 
+  // The custodian's chain identity: what a human approval at the broker would
+  // have produced. Without it the publisher silently no-ops and the lock object
+  // — which now carries both parties' controlling accounts — is never written.
+  const ec = await postJson(`${idp.origin}/demo/credential`, { identity: ESCROW });
+  const escrowChainGrant = await postJson(`${idp.origin}/demo/grant`, {
+    grantor: ESCROW, grantee: ESCROW, audience: REPO, holder: ec.holder,
+    scopes: ["action:post", "path:/agreements/**", "path:/providers/custodians/**", `path:/${ESCROW}/**`],
+  });
+  const payDir = join(tmp, "pay");
+  mkdirSync(payDir, { recursive: true });
+  writeFileSync(join(payDir, "custodian-credential.json"), JSON.stringify({
+    credential: { device_key: ec.device_key, agent_device_cert: ec.agent_device_cert, idp: ec.idp, identity: ESCROW },
+    grants: [{ audience: REPO, warrant: escrowChainGrant.warrant, config_cert: escrowChainGrant.config_cert }],
+  }));
+
   run("pay", BIN("custodian"), {
+    PAY_DATA_DIR: payDir,
     PAY_DEV: "1", PAY_PORT: String(PORTS.pay), PAY_ORIGIN: payOrigin, PAY_TRUST_ISSUER: trust, PAY_ACCEPTED_FALLBACKS: idp.domain,
     ADMIN_TOKEN: "demo", DATABASE_PATH: join(tmp, "custodian.db"), BROKER: idp.origin, PAY_SESSION_SECRET: "demo",
+    // The custodian READS the ledger now — it verifies a lock against the
+    // proposal and acceptance objects, not against credentials it was handed.
+    // Without this it would read production while the demo writes to the stub.
+    DAEMON: daemonOrigin, PAY_REPO: REPO,
   });
   await waitFor("custodian", () => fetch(`${payOrigin}/healthz`).then((r) => r.ok));
   log(`custodian ${payOrigin}`);

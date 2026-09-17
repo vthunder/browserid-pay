@@ -327,6 +327,22 @@ pub fn with_running_balance(rows: &[LedgerRow]) -> Vec<(LedgerRow, i64)> {
 /// has not been refunded outright. A settled escrow still counts — the money
 /// was spent — which is what makes a rolling cap a spending limit rather than
 /// a concurrency limit.
+/// The account an agent identity acts for: the grantor of any warrant this
+/// custodian has recorded for it. This is how the payee's account is resolved
+/// when only the chain's attribution is available — the acceptance object names
+/// the accepting IDENTITY, and the money belongs to the human behind it.
+///
+/// Requires that the payee has presented a warrant here at least once, which is
+/// the same as saying they must have an account to be paid into.
+pub fn account_for_identity(c: &Connection, grantee: &str) -> rusqlite::Result<Option<String>> {
+    c.query_row(
+        "SELECT grantor FROM warrants WHERE grantee = ?1 ORDER BY first_seen DESC LIMIT 1",
+        rusqlite::params![grantee],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
 pub fn locked_since(c: &Connection, warrant_key: &str, since: i64) -> rusqlite::Result<i64> {
     c.query_row(
         "SELECT COALESCE(SUM(price_minor + custodian_fee_minor + adjudicator_fee_minor + contribution_minor), 0)

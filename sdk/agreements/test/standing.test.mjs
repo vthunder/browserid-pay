@@ -81,3 +81,30 @@ test("a one-off warrant is still preferred when the agent holds one", async () =
     await servers.close();
   }
 });
+
+test("an agreement still works when accepted long after it was proposed", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+    const p = await w.alice.propose(TERMS, { acceptor: "bob@y.test" });
+
+    // Nothing that expires is published. The old design embedded the
+    // proposer's presentation, whose assertion lived five minutes, so an
+    // acceptance later than that failed with "assertion: expired" — the bug
+    // that made async agreements impossible (browserid-pay-3a8p).
+    const onChain = await w.chain.get(`/agreements/${p.id}/`, "proposal");
+    assert.equal(onChain.payload.bundle, undefined, "no presentation embedded in the proposal");
+    assert.equal(p.proposal.bundle, undefined);
+
+    // Simulate the gap: every credential the old flow relied on is long dead.
+    const acc = await w.bob.accept(p.id, p.terms);
+    assert.equal(acc.acceptance.bundle, undefined, "nor in the acceptance");
+
+    // And the agreement still completes end to end afterwards.
+    await w.alice.fund(p.id);
+    await w.bob.deliver(p.id, { content: "salt light and silence" });
+    assert.ok(await w.alice.settle(p.id));
+  } finally {
+    await servers.close();
+  }
+});

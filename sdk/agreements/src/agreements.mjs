@@ -218,14 +218,19 @@ export class Agreements {
     return { audience: aud, granted: entry, bundled: grants.map((g) => g.audience) };
   }
 
-  /** One indexer's signed scorecard for `subject` (default: the configured index). */
-  async reputationOf(subject, indexer = this.index) {
-    const r = await this.http(`${indexer.replace(/\/+$/, "")}/v1/reputation?subject=${encodeURIComponent(subject)}`);
-    if (!r.ok) throw new AgreementError("reputation_unavailable", `${indexer} → ${r.status}`);
-    return r.json();
+  /**
+   * Tell the custodian which account this identity's money belongs to, by
+   * presenting a contract grant once. The custodian keeps the mapping, so at
+   * lock time it can pay a payee who is offline and presents nothing.
+   */
+  async #registerWithCustodian(origin, id) {
+    if (!origin) return;
+    const presentation = await this.#contractAssertion(id);
+    const held = this.agent.warrantedAudiences();
+    const agreement = held.includes(contractAudience(id, this.repo)) ? id : undefined;
+    return this.#custodian(origin, "/api/escrow/register", { presentation, agreement });
   }
 
-  /** Verify a counterparty's bundle for the contract and check its cap covers the total. */
   /**
    * My presentation for an agreement, under whichever authority I actually
    * hold: a warrant for THIS agreement if there is one, else the standing
@@ -241,32 +246,20 @@ export class Agreements {
     return this.agent.assertionFor(aud);
   }
 
-  async #checkBundle(id, bundle, expectIdentity, totalMinor, currency) {
-    // The counterparty may be acting under a warrant for this agreement or
-    // under a standing one on the collection; either is valid authority, and
-    // which they hold is not our business. Try the narrow one first.
-    let r = await this.verify(bundle, contractAudience(id, this.repo));
-    if (!r.ok) {
-      const broad = await this.verify(bundle, collectionAudience(this.repo));
-      if (broad.ok) r = broad;
-      else throw new AgreementError("bad_bundle", r.reason);
-    }
-    if (r.grantee !== expectIdentity && r.email !== expectIdentity) throw new AgreementError("wrong_party", `${r.grantee} is not ${expectIdentity}`);
-    const entry = (r.scopes || []).find((s) => (typeof s === "string" ? s : s?.scope) === AGREEMENT_SCOPE);
-    if (!entry) throw new AgreementError("no_contract_scope");
-    if (typeof entry === "object" && entry.cap) {
-      if (entry.cap.currency !== currency || money(entry.cap.amount) < totalMinor) throw new AgreementError("cap_too_small", `cap ${entry.cap.amount} ${entry.cap.currency} < ${fmt(totalMinor)} ${currency}`);
-      if (entry.counterparties && !entry.counterparties.some((c) => c === this.email || (c.startsWith("*@") && this.email.endsWith(c.slice(1))))) throw new AgreementError("counterparty_excluded");
-      // Reputation-gated grant: learn early (the custodian enforces it at lock).
-      if (entry.min_reputation) {
-        const { indexer, score: min } = entry.min_reputation;
-        const card = await this.reputationOf(this.email, indexer);
-        const score = Math.round(Number(card.score ?? 0));
-        if (score < min) throw new AgreementError("reputation_below_minimum", `${this.email} is rated ${score} at ${indexer}; the grant requires ${min}`);
-      }
-    }
-    return r;
+  /** One indexer's signed scorecard for `subject` (default: the configured index). */
+  async reputationOf(subject, indexer = this.index) {
+    const r = await this.http(`${indexer.replace(/\/+$/, "")}/v1/reputation?subject=${encodeURIComponent(subject)}`);
+    if (!r.ok) throw new AgreementError("reputation_unavailable", `${indexer} → ${r.status}`);
+    return r.json();
   }
+
+  /** Verify a counterparty's bundle for the contract and check its cap covers the total. */
+  /**
+   * My presentation for an agreement, under whichever authority I actually
+   * hold: a warrant for THIS agreement if there is one, else the standing
+   * warrant on the collection. Minting for the wrong audience is an
+   * "assertion: audience mismatch" the counterparty cannot diagnose.
+   */
 
   // ---- propose ---------------------------------------------------------------
 
@@ -305,7 +298,12 @@ export class Agreements {
     const com = commitment(full);
     const totalMinor = totalOf(full);
     const currency = full.price.currency;
-    const bundle = await this.#contractWarrant(id, totalMinor, currency, o.acceptor, adjudicator.origin, o.min_reputation);
+    // Obtain the warrants (this is the human's consent card) but do NOT embed
+    // the presentation: a permanent object cannot carry a five-minute
+    // assertion, and it does not need to — the chain attributes this write to
+    // us, which is the same proof (browserid-pay-3a8p).
+    await this.#contractWarrant(id, totalMinor, currency, o.acceptor, adjudicator.origin, o.min_reputation);
+    await this.#registerWithCustodian(custodian.origin, id).catch(() => {});
     const mode = o.mode || "commitment";
     const proposal = {
       v: 1, id, mode,
@@ -313,13 +311,17 @@ export class Agreements {
       parties: { proposer: this.email, acceptor: o.acceptor },
       roles: { payer, payee },
       adjudicator: adjudicator.identity, custodian: custodian.origin,
+      // Declared in the clear so the acceptor can check itself against it
+      // before doing any work. The AUTHORITY is still the proposer's grant,
+      // which the custodian reads at lock — this is the courtesy copy, and a
+      // proposal that understates it simply fails there.
+      ...(o.min_reputation ? { min_reputation: { indexer: (o.min_reputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(o.min_reputation.score)) } } : {}),
       contribution: contributionOut,
       // Fees are CLEAR on the proposal even in commitment mode: a chain policy
       // can only cap what it can read, and capping adjudication / escrow fees is
       // an ecosystem-health lever. This publishes fee pricing, never deal value.
       fees,
       expires: o.expires || nowS() + 7 * 86400,
-      bundle,
     };
     const { submission } = await this.post(agreementPath(id), "proposal", proposal, "agreement.proposal.v1");
     // Attach the goal that motivated this, so the pipeline advances instead of
@@ -333,7 +335,7 @@ export class Agreements {
   // ---- accept ----------------------------------------------------------------
 
   /** `terms` = the full terms the proposer sent off-chain (with salt). */
-  async accept(id, terms) {
+  async accept(id, terms, { min_reputation } = {}) {
     const obj = await this.chain.get(agreementPath(id), "proposal");
     if (!obj) throw new AgreementError("no_proposal");
     const p = obj.payload;
@@ -345,11 +347,26 @@ export class Agreements {
     if (full.id !== id) throw new AgreementError("terms_id_mismatch");
     const totalMinor = totalOf(full);
     const currency = full.price.currency;
-    await this.#checkBundle(id, p.bundle, p.parties.proposer, totalMinor, currency);
+    // Learn early whether I even qualify, so I do not take on work the
+    // custodian will refuse to fund. The custodian enforces this from the
+    // proposer's actual grant at lock; this is the acceptor checking itself.
+    if (p.min_reputation) {
+      const { indexer, score: min } = p.min_reputation;
+      const card = await this.reputationOf(this.email, indexer);
+      const score = Math.round(Number(card.score ?? 0));
+      if (score < min) throw new AgreementError("reputation_below_minimum", `${this.email} is rated ${score} at ${indexer}; the proposal requires ${min}`);
+    }
     const adjudicator = await this.#adjudicatorFor(p);
-    const bundle = await this.#contractWarrant(id, totalMinor, currency, p.parties.proposer, adjudicator?.origin);
+    await this.#contractWarrant(id, totalMinor, currency, p.parties.proposer, adjudicator?.origin);
+    // Register the account these earnings belong to. The grant's grantor is the
+    // human, so this cannot be redirected by the agent — which it could be if
+    // the acceptance simply declared an account.
+    await this.#registerWithCustodian(p.custodian, id);
     const proposal_hash = "sha256:" + sha256hex(Buffer.from(canonicalize(p)));
-    const acceptance = { v: 1, id, proposal_hash, bundle };
+    // No bundle: the chain attributes this acceptance to us. `min_reputation`
+    // travels here because it is OUR requirement of the other side, and this
+    // object is our signed statement of it.
+    const acceptance = { v: 1, id, proposal_hash, ...(min_reputation ? { min_reputation: { indexer: (min_reputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(min_reputation.score)) } } : {}) };
     const { submission } = await this.post(agreementPath(id), "acceptance", acceptance, "agreement.acceptance.v1");
     this.terms.set(id, { terms: full, salt: full.salt, proposal: p, adjudicator, custodian: { origin: p.custodian } });
     return { id, acceptance, submission };
@@ -372,12 +389,8 @@ export class Agreements {
     const sealed_terms = adjudicator?.sealing_key ? seal(canonicalize(st.terms), adjudicator.sealing_key) : null;
     const presentation = await this.#contractAssertion(id);
     // The payee's bundle: its grantor is the account the price is released to.
-    const payeeIsProposer = p.roles.payee === p.parties.proposer;
-    const acc = payeeIsProposer ? null : await this.chain.get(agreementPath(id), "acceptance");
-    const acceptance_bundle = payeeIsProposer ? p.bundle : acc?.payload?.bundle;
-    if (!acceptance_bundle) throw new AgreementError("not_accepted", "no acceptance on chain yet");
     const body = {
-      presentation, acceptance_bundle, proposal: p,
+      presentation, proposal: p,
       price: st.terms.price, fees: st.terms.fees, contribution: p.contribution, sealed_terms,
     };
     return this.#custodian(p.custodian, "/api/escrow/lock", body);

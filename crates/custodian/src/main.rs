@@ -35,6 +35,9 @@ struct App {
     deposits: Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>>,
     identity: Arc<chain::Identity>,
     reputation: Arc<reputation::Reputation>,
+    /// Reads proposals and acceptances back off the ledger: the chain, not the
+    /// caller, is what the lock is verified against (browserid-pay-3a8p).
+    reader: Arc<dyn chain::ChainReader>,
 }
 
 #[tokio::main]
@@ -70,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
         writer: writer.clone(),
         chain_audience: cfg.chain_audience.clone(),
     });
-    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: publisher.clone(), identity: identity.clone(), reputation: Arc::new(reputation::Reputation::new(cfg.dev)), deposits: Default::default() };
+    let app = App { cfg: Arc::new(cfg.clone()), db, verify: Arc::new(verify), publisher: publisher.clone(), identity: identity.clone(), reputation: Arc::new(reputation::Reputation::new(cfg.dev)), reader: reader.clone(), deposits: Default::default() };
 
     // Load the identity, or provision it in the background (prints the approval
     // URL). In dev mode without a credential nothing is provisioned unless
@@ -114,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/pay", post(api_pay))
         .route("/admin/credit", post(admin_credit))
         .route("/api/deposit", post(api_deposit))
+        .route("/api/escrow/register", post(escrow_register))
         .route("/api/escrow/lock", post(escrow_lock))
         .route("/api/escrow/:id", get(escrow_get))
         .route("/api/escrow/:id/acknowledge", post(escrow_acknowledge))
@@ -464,8 +468,22 @@ fn escrow_status(e: &escrow::EscrowError) -> StatusCode {
     }
 }
 
+/// An acceptor registers the account its earnings belong to, by presenting a
+/// contract grant once. The grant's GRANTOR is that account — signed by the
+/// human, so an agent cannot redirect its own human's earnings, which it could
+/// if the acceptance object simply declared an account.
+///
+/// Needed because the lock no longer carries the payee's credential: the chain
+/// proves who accepted, but not which account is theirs.
+async fn escrow_register(State(app): State<App>, Json(req): Json<escrow::RegisterRequest>) -> Response {
+    match escrow::register(&app.verify, &app.db, req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (escrow_status(&e), Json(e)).into_response(),
+    }
+}
+
 async fn escrow_lock(State(app): State<App>, Json(req): Json<escrow::LockRequest>) -> Response {
-    match escrow::lock(&app.verify, &app.db, app.publisher.as_ref(), &app.reputation, &app.cfg.origin, &app.cfg.currency, req).await {
+    match escrow::lock(&app.verify, &app.db, app.publisher.as_ref(), &app.reputation, &app.cfg.origin, &app.cfg.currency, app.reader.as_ref(), req).await {
         Ok(e) => Json(json!({ "lock": escrow::view(&e) })).into_response(),
         Err(e) => (escrow_status(&e), Json(e)).into_response(),
     }

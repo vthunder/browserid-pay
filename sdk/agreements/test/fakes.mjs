@@ -60,6 +60,9 @@ export async function fakeServers() {
     calls.push({ method: req.method, url: req.url, body });
     const json = (code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
     let m;
+    // The acceptor registers which account its earnings belong to; the real
+    // custodian keeps the mapping so it can pay a payee who is offline.
+    if (req.url === "/api/escrow/register") return json(200, { registered: true });
     if (req.url === "/api/escrow/lock") {
       const id = body.proposal.id;
       escrows.set(id, { id, state: "locked", sealed_terms: body.sealed_terms, price: body.price });

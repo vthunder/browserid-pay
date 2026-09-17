@@ -29,7 +29,7 @@ fn err(error: &'static str, d: impl Into<String>) -> EscrowError {
 /// dev/tests. Publication is best-effort and never fails the money move.
 #[async_trait::async_trait]
 pub trait Publisher: Send + Sync {
-    async fn lock(&self, contract_id: &str, locked_at: i64);
+    async fn lock(&self, contract_id: &str, locked_at: i64, accounts: (&str, &str));
     /// `price_minor`/`currency` feed the attestation's value band (never the
     /// amount); `parties` = (payer, payee), the acting identities.
     async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str, price_minor: i64, currency: &str);
@@ -38,7 +38,8 @@ pub trait Publisher: Send + Sync {
 pub struct Log;
 #[async_trait::async_trait]
 impl Publisher for Log {
-    async fn lock(&self, contract_id: &str, locked_at: i64) {
+    async fn lock(&self, contract_id: &str, locked_at: i64, accounts: (&str, &str)) {
+        let _ = accounts;
         tracing::info!(contract_id, locked_at, "escrow lock (publisher: log only)");
     }
     async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str, price_minor: i64, currency: &str) {
@@ -204,9 +205,11 @@ pub struct LockRequest {
     pub contribution: Value,
     #[serde(default)]
     pub sealed_terms: Option<String>,
-    /// The payee's presentation for the contract audience — the `bundle`
-    /// field of the on-chain acceptance (or of the proposal when the
-    /// proposer is the payee). Its grantor is the account the price goes to.
+    /// Ignored. The payee's consent and identity now come from the ACCEPTANCE
+    /// OBJECT on chain, whose attribution proves who wrote it — a presentation
+    /// embedded in a permanent object carries a five-minute assertion and
+    /// cannot be verified later (browserid-pay-3a8p). Kept so older clients
+    /// still parse.
     #[serde(default)]
     pub acceptance_bundle: Option<String>,
     /// Latest obligation deadline (unix), so `max_duration` can be checked
@@ -302,13 +305,25 @@ pub async fn lock(
     reputation: &crate::reputation::Reputation,
     origin: &str,
     deployment_currency: &str,
+    reader: &dyn chain::ChainReader,
     req: LockRequest,
 ) -> Result<Escrow, EscrowError> {
-    let p = &req.proposal;
-    let id = proposal_str(p, &["id"])?.to_string();
+    let id = proposal_str(&req.proposal, &["id"])?.to_string();
     if !id.starts_with("agr_") || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return Err(err("bad_request", "proposal.id"));
     }
+    // The LEDGER is the source of truth, not what the caller handed us. Both
+    // objects are read back and their attribution is the proof of who made
+    // them — the same guarantee that made the embedded presentations
+    // redundant. A caller cannot lock against a proposal it invented.
+    let path = format!("/agreements/{id}/");
+    let proposal_obj = reader.get_object(&path, "proposal").await
+        .map_err(|e| err("chain_unavailable", e.to_string()))?
+        .ok_or_else(|| err("no_proposal", id.clone()))?;
+    let acceptance_obj = reader.get_object(&path, "acceptance").await
+        .map_err(|e| err("chain_unavailable", e.to_string()))?
+        .ok_or_else(|| err("not_accepted", "no acceptance on chain yet"))?;
+    let p = &proposal_obj.value;
     let payer = proposal_str(p, &["roles", "payer"])?.to_string();
     let payee = proposal_str(p, &["roles", "payee"])?.to_string();
     let proposer = proposal_str(p, &["parties", "proposer"])?;
@@ -332,17 +347,34 @@ pub async fn lock(
     }
     let Some(warrant_key) = pc.warrant_key.clone() else { return Err(err("no_grant", "warrant has no status ref")) };
     let grant = contract_grant(&pc.scopes)?;
-    // The payee's side: its bundle names the account the price is released to.
-    let Some(acceptance_bundle) = req.acceptance_bundle.as_deref() else {
-        return Err(err("bad_request", "acceptance_bundle (the payee's presentation for the contract) is required"));
-    };
-    let yc = caller_for_contract(verify, &audience, acceptance_bundle).await
-        .map_err(|e| EscrowError { error: "payee_bundle_invalid", detail: e.detail })?;
-    let payee_account = yc.account.clone();
-    if yc.actor != payee {
-        return Err(err("payee_bundle_invalid", format!("{} is not the payee", yc.actor)));
+    // Who made each object is settled by the chain's attribution: the daemon
+    // will not accept a write attributed to an identity the writer cannot act
+    // for. So the proposal proves the proposer, the acceptance proves the
+    // acceptor, and neither needs to carry a credential.
+    if proposal_obj.creator != proposer {
+        return Err(err("bad_attribution", format!("proposal was written by {}, not {proposer}", proposal_obj.creator)));
     }
-    let payee_grant = contract_grant(&yc.scopes).map_err(|_| err("payee_bundle_invalid", "no contract:agreement scope"))?;
+    if acceptance_obj.creator != acceptor {
+        return Err(err("bad_attribution", format!("acceptance was written by {}, not {acceptor}", acceptance_obj.creator)));
+    }
+    // No proposal-hash check: the proposal is read from the chain, and a
+    // (path, id) slot holds exactly one first-valid write, so there is no other
+    // version for the acceptance to have referenced. The hash mattered only
+    // while the caller supplied the proposal.
+    // The payee's account: the human behind the accepting identity. Resolved
+    // from a warrant this custodian has already recorded for them — which is
+    // the same as saying they must have an account here to be paid into.
+    let payee_account = db
+        .with(|c| Ok(db::account_for_identity(c, &payee)?))
+        .map_err(|e: anyhow::Error| err("internal", e.to_string()))?
+        .ok_or_else(|| err("payee_has_no_account", format!("{payee} has never presented a grant to this custodian")))?;
+    // The acceptor's own requirements travel on their acceptance object, which
+    // is attributed to them, so it is their statement in the same way a scope
+    // parameter was.
+    let payee_min_reputation: Option<browserid_core::MinReputation> = acceptance_obj
+        .value
+        .get("min_reputation")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
     if grant.currency != deployment_currency {
         return Err(err("unsupported_currency", format!("cap is in {}", grant.currency)));
     }
@@ -353,8 +385,8 @@ pub async fn lock(
     // checked against the OTHER party's signed card at the indexer that side's
     // grantor named. Composes with `counterparties` (both must hold).
     let mut seen = serde_json::Map::new();
-    for (whose, g, other, key) in [("payer", &grant, &payee, "payee"), ("payee", &payee_grant, &payer, "payer")] {
-        if let Some(mr) = &g.min_reputation {
+    for (whose, mr_opt, other, key) in [("payer", &grant.min_reputation, &payee, "payee"), ("payee", &payee_min_reputation, &payer, "payer")] {
+        if let Some(mr) = mr_opt {
             match reputation.require(&mr.indexer, other, mr.score).await {
                 Ok(card) => { seen.insert(key.to_string(), card); }
                 Err(crate::reputation::ReputationError::Below { score, threshold, indexer }) => {
@@ -421,16 +453,39 @@ pub async fn lock(
             // agents; the lock is the payer's spend against its cap.
             Db::upsert_warrant(&tx, &grant_row(&pc, &warrant_key, &grant, &id, now))?;
             Db::record_spend(&tx, &warrant_key, total, &reference)?;
-            if let Some(k) = &yc.warrant_key {
-                Db::upsert_warrant(&tx, &grant_row(&yc, k, &payee_grant, &id, now))?;
-            }
+            // The payee's grant is no longer presented at lock, so there is no
+            // budget row to record for them here; it appears the next time they
+            // present one (settling, disputing). The payer's is recorded above.
             let e = get(&tx, &id)?.expect("just inserted");
             tx.commit()?;
             Ok(Ok(e))
         })
         .map_err(|e| err("internal", e.to_string()))??;
-    publisher.lock(&id, now).await;
+    publisher.lock(&id, now, (&payer_account, &payee_account)).await;
     Ok(escrow)
+}
+
+#[derive(Deserialize)]
+pub struct RegisterRequest {
+    pub presentation: String,
+    /// Which agreement's audience the presentation was minted for, when it is a
+    /// per-agreement warrant. Omit for a standing one.
+    #[serde(default)]
+    pub agreement: Option<String>,
+}
+
+/// Record the identity → account mapping from a presented contract grant, so
+/// the payee can be paid later without presenting anything (their consent by
+/// then is the attributed acceptance on chain). Idempotent.
+pub async fn register(verify: &Verify, db: &Db, req: RegisterRequest) -> Result<Value, EscrowError> {
+    let audience = req.agreement.as_deref().map(contract_audience).unwrap_or_else(|| COLLECTION_AUDIENCE.to_string());
+    let c = caller_for_contract(verify, &audience, &req.presentation).await?;
+    let grant = contract_grant(&c.scopes)?;
+    let Some(key) = c.warrant_key.clone() else { return Err(err("no_grant", "warrant has no status ref")) };
+    let now = db::now();
+    db.with(|conn| Db::upsert_warrant(conn, &grant_row(&c, &key, &grant, "", now)))
+        .map_err(|e: anyhow::Error| err("internal", e.to_string()))?;
+    Ok(serde_json::json!({ "identity": c.actor, "account": c.account }))
 }
 
 /// The audience a warrant for ONE agreement names.
@@ -758,23 +813,23 @@ mod tests {
         let (idx, _) = stub_indexer(61, false).await;
         let mut ok = lock_req(&s, "agr_r1", "60.00", None);
         ok.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r1"), vec![contract_scope_rated("60.00", &idx, 40)], 1);
-        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", ok).await.unwrap();
+        let e = lock_t(&s, &rep, ok).await.unwrap();
         let seen: Value = serde_json::from_str(e.reputation_seen.as_deref().unwrap()).unwrap();
         assert_eq!(seen["payee"]["score"], 61, "the card seen is stored with the escrow");
         let mut low = lock_req(&s, "agr_r2", "60.00", None);
         low.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r2"), vec![contract_scope_rated("60.00", &idx, 80)], 2);
-        let err = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", low).await.err().unwrap();
+        let err = lock_t(&s, &rep, low).await.err().unwrap();
         assert_eq!(err.error, "reputation_below_minimum");
         assert!(err.detail.unwrap().contains("rated 61"));
         // A card signed by the wrong key is unavailable, never a pass.
         let (bad, _) = stub_indexer(99, true).await;
         let mut b = lock_req(&s, "agr_r3", "60.00", None);
         b.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r3"), vec![contract_scope_rated("60.00", &bad, 10)], 3);
-        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", b).await.err().unwrap().error, "reputation_unavailable");
+        assert_eq!(lock_t(&s, &rep, b).await.err().unwrap().error, "reputation_unavailable");
         // An unreachable indexer is unavailable too.
         let mut u = lock_req(&s, "agr_r4", "60.00", None);
         u.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &contract_audience("agr_r4"), vec![contract_scope_rated("60.00", "http://127.0.0.1:9", 10)], 4);
-        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", u).await.err().unwrap().error, "reputation_unavailable");
+        assert_eq!(lock_t(&s, &rep, u).await.err().unwrap().error, "reputation_unavailable");
     }
 
     fn proposal(id: &str) -> Value {
@@ -783,6 +838,36 @@ mod tests {
             "roles": { "payer": "alice+agent@x.test", "payee": "bob+agent@y.test" },
             "adjudicator": "judge+agent@dsp.test", "custodian": ORIGIN,
             "contribution": { "recipient": "fund@dsp.test", "percentage": 1.0 }, "expires": 4_000_000_000i64 })
+    }
+
+    /// A chain the tests can put objects on, with the attribution that the
+    /// lock now depends on. `creator` is the whole point: it is what proves who
+    /// wrote each object, in place of an embedded credential.
+    #[derive(Default)]
+    struct FakeChain(std::sync::Mutex<Vec<chain::ObjectView>>);
+    impl FakeChain {
+        fn put(&self, path: &str, id: &str, creator: &str, value: Value) {
+            self.0.lock().unwrap().push(chain::ObjectView {
+                path: path.into(), id: id.into(), creator: creator.into(), value, confirmed: true,
+            });
+        }
+        /// The usual pair: alice proposed it, bob accepted it.
+        fn agreement(id: &str) -> Self {
+            let c = Self::default();
+            let path = format!("/agreements/{id}/");
+            c.put(&path, "proposal", "alice+agent@x.test", proposal(id));
+            c.put(&path, "acceptance", "bob+agent@y.test", json!({ "v": 1, "id": id }));
+            c
+        }
+    }
+    #[async_trait::async_trait]
+    impl chain::ChainReader for FakeChain {
+        async fn get_object(&self, path: &str, id: &str) -> anyhow::Result<Option<chain::ObjectView>> {
+            Ok(self.0.lock().unwrap().iter().find(|o| o.path == path && o.id == id).cloned())
+        }
+        async fn list_prefix(&self, prefix: &str) -> anyhow::Result<Vec<chain::ObjectView>> {
+            Ok(self.0.lock().unwrap().iter().filter(|o| o.path.starts_with(prefix)).cloned().collect())
+        }
     }
 
     struct Setup { issuer: KeyPair, db: Db, verify: Verify }
@@ -804,6 +889,21 @@ mod tests {
             proposal: proposal(id), price: json!("50.00"), fees: json!({ "custodian": "0.50", "adjudicator": "5.00" }),
             contribution: json!({ "recipient": "fund@dsp.test", "percentage": 1.0 }), sealed_terms: Some("sealed".into()), latest_deadline: None,
         }
+    }
+
+    /// Lock against a chain carrying the proposal and acceptance for whatever
+    /// agreement the request names — the arrangement every test wants.
+    async fn lock_t(s: &Setup, rep: &crate::reputation::Reputation, req: LockRequest) -> Result<Escrow, EscrowError> {
+        let id = req.proposal.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        // The payee registers once, the way a real acceptor does at accept
+        // time, so the custodian knows which account its earnings belong to.
+        register_payee(s, "bob@y.test", "bob+agent@y.test").await;
+        lock(&s.verify, &s.db, &Log, rep, ORIGIN, "USD", &FakeChain::agreement(&id), req).await
+    }
+
+    async fn register_payee(s: &Setup, account: &str, identity: &str) {
+        let pres = presentation(&s.issuer, account, identity, COLLECTION_AUDIENCE, vec![standing_scope("500.00", Some("P30D"), None)], 77);
+        register(&s.verify, &s.db, RegisterRequest { presentation: pres, agreement: None }).await.unwrap();
     }
 
     fn bal(s: &Setup, who: &str) -> i64 { s.db.account(who).unwrap().map(|a| a.balance_minor).unwrap_or(0) }
@@ -837,11 +937,11 @@ mod tests {
         // One warrant on the collection, no per-agreement approval anywhere.
         // Each agreement costs 56.00, so a 150.00 cap admits exactly two.
         for id in ["agr_s1", "agr_s2"] {
-            let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, id, "150.00", Some("P30D"))).await.unwrap();
+            let e = lock_t(&s, &rep, standing_lock_req(&s, id, "150.00", Some("P30D"))).await.unwrap();
             assert_eq!(e.state, "locked", "{id} should lock under the standing grant");
         }
         // The third exceeds what is left, and the error says how much is left.
-        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_s3", "150.00", Some("P30D"))).await.err().unwrap();
+        let e = lock_t(&s, &rep, standing_lock_req(&s, "agr_s3", "150.00", Some("P30D"))).await.err().unwrap();
         assert_eq!(e.error, "cap_exceeded");
         let d = e.detail.unwrap_or_default();
         assert!(d.contains("38.00") && d.contains("112.00"), "should report remaining and committed: {d}");
@@ -856,7 +956,7 @@ mod tests {
         let rep = crate::reputation::Reputation::new(true);
         s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
 
-        lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_life", "500.00", Some("P30D"))).await.unwrap();
+        lock_t(&s, &rep, standing_lock_req(&s, "agr_life", "500.00", Some("P30D"))).await.unwrap();
         // Settle with a presentation minted for the COLLECTION audience.
         let ack = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE, vec![standing_scope("500.00", Some("P30D"), None)], 1);
         let e = acknowledge(&s.verify, &s.db, &Log, "agr_life", &ack).await.unwrap();
@@ -864,7 +964,7 @@ mod tests {
         assert_eq!(bal(&s, "bob@y.test"), 5_000);
 
         // And a dispute under the same standing authority.
-        lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_life2", "500.00", Some("P30D"))).await.unwrap();
+        lock_t(&s, &rep, standing_lock_req(&s, "agr_life2", "500.00", Some("P30D"))).await.unwrap();
         let d = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", COLLECTION_AUDIENCE, vec![standing_scope("500.00", Some("P30D"), None)], 9);
         let (e2, sealed) = dispute(&s.verify, &s.db, "agr_life2", &d).await.unwrap();
         assert_eq!(e2.state, "disputed");
@@ -877,11 +977,11 @@ mod tests {
         let rep = crate::reputation::Reputation::new(true);
         s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
         // A small standing grant cannot cover this agreement...
-        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_big", "20.00", Some("P30D"))).await.err().unwrap();
+        let e = lock_t(&s, &rep, standing_lock_req(&s, "agr_big", "20.00", Some("P30D"))).await.err().unwrap();
         assert_eq!(e.error, "cap_exceeded");
         // ...so the human approves just this one, on the per-agreement
         // audience, without raising the blanket cap.
-        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", lock_req(&s, "agr_big", "60.00", None)).await.unwrap();
+        let e = lock_t(&s, &rep, lock_req(&s, "agr_big", "60.00", None)).await.unwrap();
         assert_eq!(e.state, "locked");
     }
 
@@ -894,33 +994,46 @@ mod tests {
         // Blanket on amount, but only for one domain — and the payee is not in it.
         r.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE,
             vec![standing_scope("500.00", Some("P30D"), Some(vec!["*@z.test"]))], 1);
-        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", r).await.err().unwrap().error, "counterparty_not_allowed");
+        assert_eq!(lock_t(&s, &rep, r).await.err().unwrap().error, "counterparty_not_allowed");
 
         // The same grant widened to the payee's domain admits it.
         let mut r = standing_lock_req(&s, "agr_c2", "500.00", Some("P30D"));
         r.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE,
             vec![standing_scope("500.00", Some("P30D"), Some(vec!["*@y.test"]))], 1);
-        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", r).await.unwrap().state, "locked");
+        assert_eq!(lock_t(&s, &rep, r).await.unwrap().state, "locked");
     }
 
     #[tokio::test]
     async fn lock_then_acknowledge_pays_everyone() {
         let s = setup();
-        let e = lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_1", "60.00", None)).await.unwrap();
+        let e = lock_t(&s, &crate::reputation::Reputation::new(true), lock_req(&s, "agr_1", "60.00", None)).await.unwrap();
         assert_eq!(e.state, "locked");
         assert_eq!((e.payer.as_str(), e.payer_account.as_str()), ("alice+agent@x.test", "alice@x.test"));
         assert_eq!((e.payee.as_str(), e.payee_account.as_str()), ("bob+agent@y.test", "bob@y.test"));
-        // The lock needs the payee's bundle, and it must be the payee's.
-        let mut r = lock_req(&s, "agr_9", "60.00", None);
-        r.acceptance_bundle = None;
-        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", r).await.err().unwrap().error, "bad_request");
-        let mut r = lock_req(&s, "agr_9", "60.00", None);
-        r.acceptance_bundle = Some(presentation(&s.issuer, "carol@z.test", "carol+agent@z.test", &contract_audience("agr_9"), vec![contract_scope("60.00", None)], 8));
-        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", r).await.err().unwrap().error, "payee_bundle_invalid");
+        // The payee's consent is the ACCEPTANCE ON CHAIN, not a bundle in the
+        // request: no acceptance object, no lock.
+        let rep = crate::reputation::Reputation::new(true);
+        let bare = FakeChain::default();
+        bare.put("/agreements/agr_9/", "proposal", "alice+agent@x.test", proposal("agr_9"));
+        let e9 = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", &bare, lock_req(&s, "agr_9", "60.00", None)).await.err().unwrap();
+        assert_eq!(e9.error, "not_accepted");
+        // And an acceptance written by somebody who is not the named acceptor
+        // is refused on attribution, which is what replaced the bundle check.
+        let forged = FakeChain::default();
+        forged.put("/agreements/agr_9/", "proposal", "alice+agent@x.test", proposal("agr_9"));
+        forged.put("/agreements/agr_9/", "acceptance", "carol+agent@z.test", json!({ "v": 1, "id": "agr_9" }));
+        let ef = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", &forged, lock_req(&s, "agr_9", "60.00", None)).await.err().unwrap();
+        assert_eq!(ef.error, "bad_attribution");
+        // A proposal not written by the identity it names is refused too.
+        let spoof = FakeChain::default();
+        spoof.put("/agreements/agr_9/", "proposal", "mallory@evil.test", proposal("agr_9"));
+        spoof.put("/agreements/agr_9/", "acceptance", "bob+agent@y.test", json!({ "v": 1, "id": "agr_9" }));
+        let es = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", &spoof, lock_req(&s, "agr_9", "60.00", None)).await.err().unwrap();
+        assert_eq!(es.error, "bad_attribution");
         // 50 + 0.50 + 5 + 1% of 50 (0.50) = 56.00 locked
         assert_eq!(bal(&s, "alice@x.test"), 10_000 - 5_600);
         // Locking twice is refused.
-        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_1", "60.00", None)).await.err().unwrap().error, "already_locked");
+        assert_eq!(lock_t(&s, &crate::reputation::Reputation::new(true), lock_req(&s, "agr_1", "60.00", None)).await.err().unwrap().error, "already_locked");
 
         let aud = contract_audience("agr_1");
         let ack = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &aud, vec![contract_scope("60.00", None)], 1);
@@ -938,7 +1051,7 @@ mod tests {
     #[tokio::test]
     async fn lock_records_both_parties_grants_as_budgets() {
         let s = setup();
-        lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_b", "60.00", Some(vec!["bob+agent@y.test"]))).await.unwrap();
+        lock_t(&s, &crate::reputation::Reputation::new(true), lock_req(&s, "agr_b", "60.00", Some(vec!["bob+agent@y.test"]))).await.unwrap();
         // Alice (the payer's human) sees her agent's agreement cap with the lock spent against it.
         let alice = s.db.warrants_for("alice@x.test").unwrap();
         let g = alice.iter().find(|w| w.agreement_id.as_deref() == Some("agr_b")).expect("payer grant recorded");
@@ -948,9 +1061,11 @@ mod tests {
         assert_eq!(g.counterparties.as_deref(), Some(r#"["bob+agent@y.test"]"#));
         let spent = s.db.with(|c| Db::spent_since(c, &g.key, 0)).unwrap();
         assert_eq!(spent, 5_600, "the lock is the spend against the cap");
-        // Bob's human sees his agent's grant too, unspent.
+        // Bob's grant is no longer presented at the lock — the chain proves he
+        // accepted — so what his human sees is the grant he REGISTERED, not one
+        // pinned to this agreement, and nothing is spent against it.
         let bob = s.db.warrants_for("bob@y.test").unwrap();
-        let gb = bob.iter().find(|w| w.agreement_id.as_deref() == Some("agr_b")).expect("payee grant recorded");
+        let gb = bob.first().expect("the payee's registered grant is visible to their human");
         assert_eq!(gb.grantee, "bob+agent@y.test");
         assert_eq!(s.db.with(|c| Db::spent_since(c, &gb.key, 0)).unwrap(), 0);
     }
@@ -958,20 +1073,20 @@ mod tests {
     #[tokio::test]
     async fn cap_and_counterparties_bound_the_lock() {
         let s = setup();
-        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_2", "55.00", None)).await.err().unwrap().error, "cap_exceeded");
-        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_2", "60.00", Some(vec!["*@z.test"]))).await.err().unwrap().error, "counterparty_not_allowed");
-        lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_2", "60.00", Some(vec!["*@y.test"]))).await.unwrap();
+        assert_eq!(lock_t(&s, &crate::reputation::Reputation::new(true), lock_req(&s, "agr_2", "55.00", None)).await.err().unwrap().error, "cap_exceeded");
+        assert_eq!(lock_t(&s, &crate::reputation::Reputation::new(true), lock_req(&s, "agr_2", "60.00", Some(vec!["*@z.test"]))).await.err().unwrap().error, "counterparty_not_allowed");
+        lock_t(&s, &crate::reputation::Reputation::new(true), lock_req(&s, "agr_2", "60.00", Some(vec!["*@y.test"]))).await.unwrap();
         // The payee cannot lock (not the payer), even with a grant.
         let aud = contract_audience("agr_3");
         let mut r = lock_req(&s, "agr_3", "60.00", None);
         r.presentation = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", &aud, vec![contract_scope("60.00", None)], 2);
-        assert_eq!(lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", r).await.err().unwrap().error, "not_payer");
+        assert_eq!(lock_t(&s, &crate::reputation::Reputation::new(true), r).await.err().unwrap().error, "not_payer");
     }
 
     #[tokio::test]
     async fn dispute_then_ruling_only_from_the_named_adjudicator() {
         let s = setup();
-        lock(&s.verify, &s.db, &Log, &crate::reputation::Reputation::new(true), ORIGIN, "USD", lock_req(&s, "agr_4", "60.00", None)).await.unwrap();
+        lock_t(&s, &crate::reputation::Reputation::new(true), lock_req(&s, "agr_4", "60.00", None)).await.unwrap();
         let aud = contract_audience("agr_4");
         let bob = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", &aud, vec![contract_scope("60.00", None)], 3);
         let (e, sealed) = dispute(&s.verify, &s.db, "agr_4", &bob).await.unwrap();

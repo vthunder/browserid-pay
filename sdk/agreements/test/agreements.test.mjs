@@ -113,14 +113,15 @@ test("accept refuses a bad commitment, a wrong party, an undersized cap", async 
     const carol = new FakeAgent("carol@z.test");
     const csdk = new Agreements({ agent: carol, chain: w.chain, repo: REPO, verify: fakeVerify, obtainWarrants: carol.obtainAll });
     await assert.rejects(csdk.accept(p.id, p.terms), /not_acceptor/);
-    // Proposer's cap below the total → refused at accept.
-    w.alice.agent.grant(contractAudience(p.id, REPO), [{ scope: "contract:agreement", cap: { amount: "1.00", currency: "USD" } }]);
+    // A proposer whose cap is too small is no longer caught at accept: the
+    // proposal carries no credential to inspect (browserid-pay-3a8p), so the
+    // acceptor cannot pre-flight it. The cap is enforced where the money moves
+    // — the custodian refuses the LOCK — so the worst case is a wasted
+    // acceptance, never work done for a payer who cannot pay.
     const p2 = await w.alice.sdk.propose(TERMS, { acceptor: "bob@y.test" });
-    w.alice.agent.grant(contractAudience(p2.id, REPO), [{ scope: "contract:agreement", cap: { amount: "1.00", currency: "USD" } }]);
-    // Re-post is impossible (slot taken), so simulate a stingy proposer by editing the chain copy.
-    const obj = await w.chain.get(`/agreements/${p2.id}/`, "proposal");
-    obj.payload.bundle = await w.alice.agent.assertionFor(contractAudience(p2.id, REPO));
-    await assert.rejects(w.bob.sdk.accept(p2.id, p2.terms), /cap_too_small/);
+    const acc = await w.bob.sdk.accept(p2.id, p2.terms);
+    assert.ok(acc.acceptance, "accept succeeds without inspecting the proposer's grant");
+    assert.equal(acc.acceptance.bundle, undefined, "no presentation is embedded in the acceptance");
   } finally { await servers.close(); }
 });
 

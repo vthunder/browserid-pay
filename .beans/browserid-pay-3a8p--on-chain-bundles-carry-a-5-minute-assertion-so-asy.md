@@ -1,11 +1,11 @@
 ---
 # browserid-pay-3a8p
 title: On-chain bundles carry a 5-minute assertion, so async agreements cannot work
-status: todo
+status: completed
 type: bug
 priority: critical
 created_at: 2026-09-17T15:44:04Z
-updated_at: 2026-09-17T15:44:04Z
+updated_at: 2026-09-17T16:11:30Z
 ---
 
 Found in a live run 2026-09-17, after the standing-audience fix unblocked bob.
@@ -48,7 +48,26 @@ Likely needs a change in browserid-ng (`~/src/browserid-ng`), not just here.
 
 Re-propose and accept within five minutes. Nothing else works today.
 
-- [ ] decide between (1), (2), (3)
-- [ ] fix propose → accept
-- [ ] fix accept → fund, and the custodian side
-- [ ] test with a deliberate delay longer than the assertion lifetime — the gap that no current test covers
+- [x] decide between (1), (2), (3)
+- [x] fix propose → accept
+- [x] fix accept → fund, and the custodian side
+- [x] test with a deliberate delay longer than the assertion lifetime — the gap that no current test covers
+
+## Summary of Changes
+
+Took option 1: **publish authority, not possession** (Dan, 2026-09-17 — "sbo already guarantees that an object posted by an email can only be posted by that email or someone authorized to act as that email").
+
+No proposal or acceptance carries a presentation any more. Who wrote each object is settled by SBO attribution, which the daemon enforces at write time, so the embedded credential was redundant for identity and fatal for durability.
+
+**Custodian — the ledger is what it verifies against.** `lock` now reads the proposal AND acceptance back off the chain through the `ChainReader` it already had, instead of trusting what the caller handed it, and checks each object's `creator` against the party it names. A forged proposal or an acceptance written by someone who is not the named acceptor is refused as `bad_attribution`. The proposal-hash check went away with it: a `(path, id)` slot holds exactly one first-valid write, so there is no other version to have referenced.
+
+**Consequences that had to be solved, not assumed:**
+
+- *The payee's account.* Attribution names the accepting IDENTITY; the money belongs to the human behind it. New `POST /api/escrow/register`: an acceptor presents a contract grant once and the custodian keeps the identity → account mapping. Deliberately not a field on the acceptance object — the grant's grantor is signed by the human, so an agent cannot redirect its own human's earnings, which a self-declared account would allow.
+- *The acceptor's own `min_reputation`.* It used to ride in their grant. It now travels on their acceptance object, which is attributed to them, so it is still their signed statement.
+- *Reputation aggregation.* The indexer read each party's controlling account out of the embedded bundles; without them **nothing would ever have counted** (`why_not_counted: "a party's controlling account is unknown"`), silently disabling the same-account sybil guard. The custodian now writes both accounts onto the lock object it already posts — attested, since it verified both — and the indexer prefers that, falling back to the old bundles so existing agreements keep working.
+- *The acceptor's early checks.* Cap and counterparty pre-flight are gone: there is no credential to inspect, and they were never the enforcement point (the custodian refuses the lock). `min_reputation` is now declared in the clear on the proposal so an acceptor can still tell before doing work whether it qualifies.
+
+**Demo.** Two latent problems surfaced once the custodian started reading and writing: it was pointed at the PRODUCTION daemon while the demo wrote to a stub, and it had no chain identity at all, so every attestation and lock object it "posted" was silently dropped. Both fixed in `run-local.mjs`.
+
+**Tests**: acceptance long after the proposal (the gap nothing covered); forged attribution on the proposal and on the acceptance; no acceptance on chain; plus the existing 25 SDK and 21 custodian tests, and the local e2e.

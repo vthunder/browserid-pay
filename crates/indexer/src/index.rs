@@ -439,9 +439,30 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
         references.extend(lock.map(Reference::from));
         references.extend(ruling.map(Reference::from));
         references.extend(evidence.iter().map(|o| Reference::from(*o)));
+        // The controlling account behind an agent identity. Historically read
+        // from a presentation embedded in the object; those are no longer
+        // published (browserid-pay-3a8p), because a permanent object cannot
+        // carry a credential that expires in minutes. Older objects still have
+        // one, so it is read when present and simply unknown otherwise —
+        // reputation then aggregates per identity rather than per human, which
+        // is a weaker grouping, not a wrong one. Tracked as a follow-up.
         let grantor_of = |o: Option<&Obj>| o.and_then(|o| o.json().get("bundle").and_then(|b| b.as_str()).and_then(grantor_of_bundle));
-        let proposer_grantor = grantor_of(Some(proposal));
-        let acceptor_grantor = grantor_of(acceptance);
+        // Preferred source: the custodian's LOCK object, which names the
+        // controlling account behind each party. The custodian verified both,
+        // so this is attested rather than self-declared. Older agreements
+        // instead carried a presentation inside the proposal/acceptance; those
+        // are still read, so history keeps working.
+        let lock_account = |key: &str| lock.and_then(|l| l.json().get(key).and_then(|v| v.as_str()).map(String::from));
+        let payer_ident = s(&["roles", "payer"]);
+        let proposer_ident = s(&["parties", "proposer"]);
+        let payer_is_proposer = !payer_ident.is_empty() && payer_ident == proposer_ident;
+        let (from_lock_proposer, from_lock_acceptor) = if payer_is_proposer {
+            (lock_account("payer_account"), lock_account("payee_account"))
+        } else {
+            (lock_account("payee_account"), lock_account("payer_account"))
+        };
+        let proposer_grantor = from_lock_proposer.or_else(|| grantor_of(Some(proposal)));
+        let acceptor_grantor = from_lock_acceptor.or_else(|| grantor_of(acceptance));
         let ruling_value = ruling.map(|r| r.json());
         out.push(Agreement {
             id,

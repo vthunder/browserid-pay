@@ -50,8 +50,17 @@ impl ChainPublisher {
 
 #[async_trait::async_trait]
 impl Publisher for ChainPublisher {
-    async fn lock(&self, contract_id: &str, locked_at: i64) {
-        let payload = json!({ "v": 1, "id": contract_id, "locked_at": locked_at });
+    async fn lock(&self, contract_id: &str, locked_at: i64, accounts: (&str, &str)) {
+        // The controlling accounts behind the two agent identities. The
+        // custodian verified both — the payer's from a live presentation, the
+        // payee's from the grant they registered — so this is an attested
+        // statement, not a self-declaration. It replaces the presentation that
+        // used to be embedded in the proposal and acceptance, which could not
+        // survive in a permanent object (browserid-pay-3a8p), and it is what
+        // lets an indexer group reputation by human and spot two agents run by
+        // the same account.
+        let payload = json!({ "v": 1, "id": contract_id, "locked_at": locked_at,
+            "payer_account": accounts.0, "payee_account": accounts.1 });
         self.post(
             WriteSpec {
                 path: format!("/agreements/{contract_id}/"),
