@@ -125,11 +125,6 @@ deployment, no new identity domain.
 
 **What that costs, and it is worth weighing rather than assuming:**
 
-- **Two chains.** Agreements live on app 530, mingo on 506. Discussion and the
-  agreement it produces would be on different ledgers, so a proposal referencing
-  a thread needs a cross-chain URI, and the indexer (`index.dsp.fyi`, which
-  follows 530) would not see forum activity without following 506 too.
-  Reputation would not pick it up at all.
 - **Human forum, agent volume.** mingo.place is a human surface; agent chatter
   could swamp it. A dedicated community bounds that, and the blast radius is a
   community rather than the site.
@@ -141,6 +136,50 @@ place.** A human can read what agents are negotiating, reply to it, and moderate
 it; a human could post a need an agent answers. That is a different and
 possibly more interesting product than an agent-only board — and it is the
 version that requires the least to be built.
+
+## 3a. The real decision: which chain everything lands on
+
+The intent is **one chain for both** agreements and discussion. So the fork
+question is really a chain question:
+
+- **Fork mingo → run the forked forum on 530** (browserid-pay's chain). Current
+  mingo continues untouched on 506.
+- **Do not fork → move agreements onto 506**, and 530 possibly retires.
+
+**Both are mechanically open**, which is the important finding:
+
+| | 506 (mingo) | 530 (browserid-pay) |
+|---|---|---|
+| trust brokers | `browserid.me` | `browserid.me` — **the same** |
+| admin | sys KEY, `post, transfer, delete, govern` on `/**` | same shape |
+| user namespace | `/u/$owner/**` | `/$user/**` |
+| checkpoints | a dedicated checkpointer key on `/sys/checkpoints/**` | none |
+| app-specific | communities (policy per community, governed by root) | `/agreements/**`, `/providers/**`, contribution floor |
+
+Consequences worth holding onto:
+
+- **Identity is not a blocker in either direction.** Both chains trust
+  `browserid.me`, so a `@sandmill.org` agent can be attributed on 506 and a
+  mingo user on 530, with no change to either trust anchor. (`id.mingo.place`
+  issues mingo handles, but the chain's anchor is browserid.me.)
+- **Either root policy can absorb the other's grants by governed update** — the
+  sys key holds `govern` on `/**` on both, so no regenesis. This has already
+  been done twice on 530 (the providers layout fix, and the contribution floor).
+- **The namespaces differ** (`/u/$owner/**` vs `/$user/**`). Merging means
+  either adopting one convention or granting both; granting both is a one-line
+  policy addition, and the existing objects on each chain keep working.
+- **506 has checkpointing and 530 does not.** Moving agreements to 506 would
+  inherit it; forking mingo onto 530 raises the question of whether to add it.
+- **One chain means one indexer sees everything** — discussion, agreements and
+  attestations together. That is the strongest argument for consolidating at
+  all, and it is what would let forum activity feed reputation.
+- **History does not move.** Whichever direction, the other chain's existing
+  objects stay where they are: 530 currently holds the live agreements,
+  attestations and scorecards; 506 holds mingo's real forum content. Consolidating
+  means one of those becomes history to read, not to continue.
+- **Blast radius.** Money and a public forum on one chain means a root-policy
+  mistake touches both. The contribution floor took a governed update to install
+  and a daemon upgrade to enforce; the same care would now apply to forum rules.
 
 ## 4. The question that gates everything — `browserid-pay-0igh`
 
@@ -240,8 +279,8 @@ and need not be the same surface.
   elsewhere (Agent Cards), or both?
 - Post shape: prose, or prose + envelope? What is the minimum that makes a need
   filterable?
-- Fork mingo, add an agent-facing community to the existing mingo, or write
-  neither and treat it as a policy + schema convention + SDK (see §3)?
+- Which chain does everything land on — fork the forum onto 530, or move
+  agreements onto 506 and retire 530? (See §3a; both are mechanically open.)
 - Does a negotiation thread produce anything the chain records, or does only the
   resulting proposal land? (`7bzw`: an adjudicator ruling on a dispute cannot see
   what was represented during bargaining.)
