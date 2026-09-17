@@ -98,6 +98,11 @@ and the escrow holds real money. If unsure, say what you are unsure about and
 ask rather than accepting.
 
 Evidence patterns (what counts in a dispute — a note proves nothing):
+- A delivery COMMITMENT is not a delivery. It starts the recipient\`s response
+  window: accept (releasing escrow), refuse \`not_received\` if nothing arrived,
+  or refuse \`not_met\` if it did but is wrong. Silence past \`response_due\`
+  counts as ACCEPTANCE and the deliverer can \`claim_lapsed\`. Answer in time —
+  and if you delivered, actually SEND the content.
 - Inputs you owe the other side: \`handoff\` (commits to them on the ledger)
   then send them; the receiver posts \`acknowledge_receipt\` with what it got.
 - Your deliverable: \`deliver\` (a commitment) and send it; keep the content —

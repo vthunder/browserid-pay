@@ -517,6 +517,87 @@ pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id
     Ok(e)
 }
 
+/// Default when a proposal names no window. Kept in step with the SDK's
+/// DEFAULT_RESPONSE_WINDOW.
+const DEFAULT_RESPONSE_WINDOW_SECS: i64 = 2 * 86400;
+
+/// The deliverer claims the recipient let the response window lapse, so the
+/// delivery is deemed accepted and the escrow releases.
+///
+/// Everything is re-derived from the ledger: the caller is asking the custodian
+/// to CHECK a claim, not telling it something to believe. Specifically, an
+/// explicit refusal stops the clock — without that, withholding a deliverable
+/// and then waiting out the window would be a way to get paid for nothing,
+/// which is the exact failure this mechanism exists to prevent.
+pub async fn lapsed(
+    verify: &Verify,
+    db: &Db,
+    publisher: &dyn Publisher,
+    reader: &dyn chain::ChainReader,
+    id: &str,
+    presentation: &str,
+) -> Result<Escrow, EscrowError> {
+    let (_, actor, _, _) = caller_either(verify, id, presentation).await?;
+    let path = format!("/agreements/{id}/");
+    let proposal = reader.get_object(&path, "proposal").await
+        .map_err(|e| err("chain_unavailable", e.to_string()))?
+        .ok_or_else(|| err("no_proposal", id))?;
+    let window = proposal.value.get("response_window").and_then(|v| v.as_str())
+        .and_then(parse_iso_duration_secs).map(|w| w as i64)
+        .unwrap_or(DEFAULT_RESPONSE_WINDOW_SECS);
+
+    let evidence = reader.list_prefix(&format!("{path}evidence/")).await
+        .map_err(|e| err("chain_unavailable", e.to_string()))?;
+    let at = |o: &chain::ObjectView| o.value.get("at").and_then(|v| v.as_i64()).unwrap_or(0);
+    let kind = |o: &chain::ObjectView| o.value.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // The latest delivery by the claimant, attributed on chain. Position in the
+    // list is the ledger's order; `at` is only writer-claimed.
+    let (last_pos, last_delivery) = evidence.iter().enumerate()
+        .filter(|(_, o)| kind(o) == "delivery" && o.creator == actor)
+        .next_back()
+        .ok_or_else(|| err("no_delivery", "nothing has been delivered"))?;
+    let due = at(last_delivery) + window;
+
+    // Any answer from the other side stops the clock, whether it accepted or
+    // refused. Deliberately conservative about ordering: an acknowledgement is
+    // disregarded only when it is older by BOTH measures, because `at` has
+    // second resolution and a cure often shares a timestamp with the refusal it
+    // answers. Getting this backwards would release money to someone who
+    // withheld and then waited, so ambiguity refuses to release.
+    if let Some(answer) = evidence.iter().enumerate()
+        .filter(|(pos, o)| {
+            kind(o) == "acknowledgement" && o.creator != actor
+                && !(at(o) < at(last_delivery) && *pos < last_pos)
+        })
+        .map(|(_, o)| o)
+        .next_back()
+    {
+        let refused = answer.value.get("ok").and_then(|v| v.as_bool()) == Some(false);
+        let reason = answer.value.get("reason").and_then(|v| v.as_str()).unwrap_or("not_met");
+        return Err(err(
+            if refused { "contested" } else { "already_answered" },
+            if refused { format!("the recipient answered \"{reason}\"; cure it by delivering again") } else { "the recipient already answered".to_string() },
+        ));
+    }
+    let now = db::now();
+    if now <= due {
+        return Err(err("window_open", format!("the recipient has until {due}")));
+    }
+
+    let e = settle(db, id, |e| {
+        if actor != e.payee {
+            return Err(err("not_payee", actor.clone()));
+        }
+        if e.state != "locked" {
+            return Err(err("bad_state", e.state.clone()));
+        }
+        Ok(Settlement { to_payee: e.price_minor, to_payer: e.adjudicator_fee_minor, to_adjudicator: 0, outcome: "deemed_accepted".into() })
+    })?;
+    publish_settled(publisher, &e).await;
+    Ok(e)
+}
+
 /// Either party opens a dispute: the escrow freezes and the sealed terms are
 /// handed back for delivery to the adjudicator.
 pub async fn dispute(verify: &Verify, db: &Db, id: &str, presentation: &str) -> Result<(Escrow, Option<String>), EscrowError> {
@@ -906,6 +987,8 @@ mod tests {
         register(&s.verify, &s.db, RegisterRequest { presentation: pres, agreement: None }).await.unwrap();
     }
 
+    fn get_state(s: &Setup, id: &str) -> String { s.db.with(|c| get(c, id)).unwrap().unwrap().state }
+
     fn bal(s: &Setup, who: &str) -> i64 { s.db.account(who).unwrap().map(|a| a.balance_minor).unwrap_or(0) }
 
     /// A standing grant: audience is the COLLECTION, so the same warrant is
@@ -1001,6 +1084,78 @@ mod tests {
         r.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE,
             vec![standing_scope("500.00", Some("P30D"), Some(vec!["*@y.test"]))], 1);
         assert_eq!(lock_t(&s, &rep, r).await.unwrap().state, "locked");
+    }
+
+    /// A chain carrying an agreement plus whatever evidence a test needs.
+    fn chain_with(id: &str, evidence: Vec<(&str, &str, i64, Value)>) -> FakeChain {
+        let c = FakeChain::agreement(id);
+        let path = format!("/agreements/{id}/evidence/");
+        for (eid, creator, at, extra) in evidence {
+            let mut v = extra.as_object().cloned().unwrap_or_default();
+            v.insert("at".into(), json!(at));
+            c.put(&path, eid, creator, Value::Object(v));
+        }
+        c
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_response_window_releases_but_a_refusal_stops_the_clock() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        // Six escrows at 56.00 each.
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+        let payee = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", COLLECTION_AUDIENCE,
+            vec![standing_scope("500.00", None, None)], 9);
+        let deliver_at = db::now() - 3 * 86400; // older than the P2D default
+
+        // Nothing delivered yet: there is nothing to deem accepted.
+        lock_t(&s, &rep, lock_req(&s, "agr_l1", "600.00", None)).await.unwrap();
+        let bare = chain_with("agr_l1", vec![]);
+        assert_eq!(lapsed(&s.verify, &s.db, &Log, &bare, "agr_l1", &payee).await.err().unwrap().error, "no_delivery");
+
+        // Delivered but still inside the window.
+        lock_t(&s, &rep, lock_req(&s, "agr_l2", "600.00", None)).await.unwrap();
+        let fresh = chain_with("agr_l2", vec![("d1", "bob+agent@y.test", db::now(), json!({ "kind": "delivery" }))]);
+        assert_eq!(lapsed(&s.verify, &s.db, &Log, &fresh, "agr_l2", &payee).await.err().unwrap().error, "window_open");
+
+        // THE SAFETY PROPERTY: refused, and then the claimant waited out the
+        // window. Deeming this accepted would pay someone for withholding.
+        lock_t(&s, &rep, lock_req(&s, "agr_l3", "600.00", None)).await.unwrap();
+        let refused = chain_with("agr_l3", vec![
+            ("d1", "bob+agent@y.test", deliver_at, json!({ "kind": "delivery" })),
+            ("a1", "alice+agent@x.test", deliver_at + 60, json!({ "kind": "acknowledgement", "ok": false, "reason": "not_received" })),
+        ]);
+        let e = lapsed(&s.verify, &s.db, &Log, &refused, "agr_l3", &payee).await.err().unwrap();
+        assert_eq!(e.error, "contested");
+        assert!(e.detail.unwrap_or_default().contains("not_received"), "and it says how to cure it");
+        assert_eq!(get_state(&s, "agr_l3"), "locked", "the escrow is untouched");
+
+        // A cure — a later delivery — restarts the clock, so an old refusal
+        // does not block the deliverer forever.
+        lock_t(&s, &rep, lock_req(&s, "agr_l4", "600.00", None)).await.unwrap();
+        let cured = chain_with("agr_l4", vec![
+            ("d1", "bob+agent@y.test", deliver_at, json!({ "kind": "delivery" })),
+            ("a1", "alice+agent@x.test", deliver_at + 60, json!({ "kind": "acknowledgement", "ok": false, "reason": "not_received" })),
+            ("d2", "bob+agent@y.test", deliver_at + 120, json!({ "kind": "delivery" })),
+        ]);
+        let e = lapsed(&s.verify, &s.db, &Log, &cured, "agr_l4", &payee).await.unwrap();
+        assert_eq!(e.state, "settled");
+        assert_eq!(e.outcome.as_deref(), Some("deemed_accepted"));
+
+        // And the plain case: delivered, silence, window lapsed.
+        lock_t(&s, &rep, lock_req(&s, "agr_l5", "600.00", None)).await.unwrap();
+        let silent = chain_with("agr_l5", vec![("d1", "bob+agent@y.test", deliver_at, json!({ "kind": "delivery" }))]);
+        let before = bal(&s, "bob@y.test");
+        let e = lapsed(&s.verify, &s.db, &Log, &silent, "agr_l5", &payee).await.unwrap();
+        assert_eq!(e.outcome.as_deref(), Some("deemed_accepted"));
+        assert_eq!(bal(&s, "bob@y.test"), before + 5_000, "the price is released");
+
+        // Only the payee may claim it.
+        lock_t(&s, &rep, lock_req(&s, "agr_l6", "600.00", None)).await.unwrap();
+        let silent6 = chain_with("agr_l6", vec![("d1", "alice+agent@x.test", deliver_at, json!({ "kind": "delivery" }))]);
+        let payer = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE,
+            vec![standing_scope("500.00", None, None)], 1);
+        assert_eq!(lapsed(&s.verify, &s.db, &Log, &silent6, "agr_l6", &payer).await.err().unwrap().error, "not_payee");
     }
 
     #[tokio::test]

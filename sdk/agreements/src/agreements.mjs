@@ -17,6 +17,20 @@ export const contractAudience = (id, repo = DEFAULTS.repo) => `${collectionAudie
  * preferred when held — a blanket grant for small agreements plus a one-off
  * approval for a large one is the intended combination.
  */
+/**
+ * How long the recipient has to respond to a delivery before silence is taken
+ * as acceptance. A ledger default; an agreement may set its own in the terms.
+ * Short enough that withholding cannot stall, long enough for a human to look.
+ */
+export const DEFAULT_RESPONSE_WINDOW = "P2D";
+/** ISO-8601 duration → seconds. Days/hours/minutes/seconds only. */
+export function windowSecs(iso) {
+  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(iso || ""));
+  if (!m || !m.slice(1).some(Boolean)) return null;
+  const [d, h, mi, sec] = m.slice(1).map((x) => Number(x || 0));
+  return d * 86400 + h * 3600 + mi * 60 + sec;
+}
+
 export const collectionAudience = (repo = DEFAULTS.repo) => `${repo.replace(/\/+$/, "")}/agreements`;
 export const agreementPath = (id) => `/agreements/${id}/`;
 const newId = () => "agr_" + randomBytes(12).toString("base64url");
@@ -315,6 +329,9 @@ export class Agreements {
       // before doing any work. The AUTHORITY is still the proposer's grant,
       // which the custodian reads at lock — this is the courtesy copy, and a
       // proposal that understates it simply fails there.
+      // Clear, not in the sealed terms: the custodian has to know when silence
+      // becomes acceptance, and it cannot read the terms in commitment mode.
+      response_window: o.response_window || DEFAULT_RESPONSE_WINDOW,
       ...(o.min_reputation ? { min_reputation: { indexer: (o.min_reputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(o.min_reputation.score)) } } : {}),
       contribution: contributionOut,
       // Fees are CLEAR on the proposal even in commitment mode: a chain policy
@@ -547,17 +564,45 @@ export class Agreements {
     const [lock, evidence] = await Promise.all([this.chain.get(path, "lock"), this.chain.list(`${path}evidence/`)]);
     // The payload's own `id` is the AGREEMENT id; the evidence id is the object id.
     const evs = evidence.map((e) => ({ ...e.payload, agreement: e.payload?.id, id: e.id, block: e.block ?? null }));
-    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles });
+    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles, responseWindow: p.response_window });
   }
 
   /** Payer acknowledges delivery: evidence on chain, then the custodian releases. */
-  async settle(id, { note } = {}) {
+  /**
+   * Answer a delivery. Accepting releases the escrow; refusing does not, and
+   * stops the clock so silence cannot later be read as acceptance.
+   *
+   * `reason` says which kind of refusal it is, because they are not the same
+   * complaint: `not_received` is the deliverer's to cure by delivering again,
+   * `not_met` is a disagreement about the work and belongs to the adjudicator.
+   */
+  async settle(id, { note, ok = true, reason } = {}) {
     const p = await this.#proposal(id);
     if (p.roles.payer !== this.email) throw new AgreementError("not_payer");
-    const ev = await this.#evidence(id, "acknowledgement", { note });
+    if (!ok) {
+      if (!["not_received", "not_met"].includes(reason || "")) {
+        throw new AgreementError("bad_request", 'refusing needs reason "not_received" or "not_met"');
+      }
+      // Evidence only: nothing is released, and the escrow stays locked.
+      return this.#evidence(id, "acknowledgement", { note, ok: false, reason });
+    }
+    const ev = await this.#evidence(id, "acknowledgement", { note, ok: true });
     const presentation = await this.#contractAssertion(id);
     const release = await this.#custodian(p.custodian, `/api/escrow/${id}/acknowledge`, { presentation });
     return { ...ev, release };
+  }
+
+  /**
+   * The deliverer claims a lapsed response window: the recipient neither
+   * accepted nor refused within it, so the delivery is deemed accepted and the
+   * escrow releases. The custodian re-derives this from the chain — this is a
+   * request to check, not an assertion to believe.
+   */
+  async claimLapsed(id) {
+    const p = await this.#proposal(id);
+    if (p.roles.payee !== this.email) throw new AgreementError("not_payee");
+    const presentation = await this.#contractAssertion(id);
+    return this.#custodian(p.custodian, `/api/escrow/${id}/lapsed`, { presentation });
   }
 
   /** Either party disputes: evidence on chain, freeze at the custodian, file with the adjudicator. */
@@ -837,9 +882,30 @@ export class Agreements {
         return { action: "deliver", why: `my deliverable "${deliverable.what}" is ${deliverable.state}`,
                  obligation: deliverable.index, then: "tell the other party with send_message" };
       }
-      const delivered = (st.evidence || []).some((e) => e.kind === "delivery");
-      if (delivered && iAmPayer) {
-        return { action: "settle", why: "the deliverable is in and I am the payer" };
+      // A delivery awaiting my answer: my clock is running, and saying nothing
+      // will be read as acceptance.
+      const awaiting = obs.find((o) => o.state === "delivered" && o.by !== me);
+      if (awaiting && iAmPayer) {
+        return {
+          action: "settle", why: `${awaiting.by} delivered "${awaiting.what}" and it is my turn to answer`,
+          response_due: awaiting.response_due ?? null,
+          then: 'check what actually arrived. Accept to release the escrow; if nothing arrived call settle with ok:false and reason "not_received" so they can send it again; if it arrived but is wrong, reason "not_met". Silence past response_due counts as acceptance.',
+        };
+      }
+      // My own delivery was refused: cure it by delivering again (which
+      // restarts their clock), or dispute if the refusal is unfounded.
+      const refused = obs.find((o) => o.state === "contested" && o.by === me);
+      if (refused) {
+        return refused.contest_reason === "not_received"
+          ? { action: "deliver", why: `${other(me, parties)} says "${refused.what}" never arrived`, obligation: refused.index,
+              then: "deliver again and SEND the content this time; that restarts their window" }
+          : { action: "none", why: `${other(me, parties)} contested "${refused.what}" as not meeting the terms; agree a fix or dispute it` };
+      }
+      // They neither answered nor refused in time: claim the lapse.
+      const lapsed = obs.find((o) => o.by === me && o.deemed_accepted);
+      if (lapsed && !iAmPayer && st.escrow?.state === "locked") {
+        return { action: "claim_lapsed", why: `the response window on "${lapsed.what}" passed with no answer`,
+                 then: "the custodian re-checks this against the ledger before releasing" };
       }
       const blocked = mineUnmet.find((o) => o.state === "blocked");
       if (blocked) return { action: "none", why: `my "${blocked.what}" is blocked on obligation ${blocked.depends_on}` };
@@ -860,7 +926,10 @@ export class Agreements {
     if (stage === "binding" && lock) stage = "active";
     const kinds = evidence.map((e) => e.payload?.kind);
     if (stage === "active" && kinds.includes("delivery")) stage = "delivered";
-    if (stage !== "none" && kinds.includes("acknowledgement")) stage = "settled";
+    // Only an ACCEPTING acknowledgement settles it. A refusal (`ok: false`) is
+    // an acknowledgement too, and treating it as a settlement would hide a
+    // still-open agreement from both parties.
+    if (stage !== "none" && evidence.some((e) => e.payload?.kind === "acknowledgement" && e.payload?.ok !== false)) stage = "settled";
     if (kinds.includes("dispute")) stage = "disputed";
     if (ruling) stage = "ruled";
     // While disputed, the judge's case shows the response window and whether
@@ -1013,7 +1082,12 @@ function defaultManifest(content) {
  * blocks the obligation until its dependency is met, and slides its deadline
  * by the dependency's lateness (met after its own deadline).
  */
-export function deriveObligations(obligations, { evidence = [], lock = false, now = nowS(), parties = {}, roles = {} } = {}) {
+function other(me, parties = {}) {
+  return [parties.proposer, parties.acceptor].filter(Boolean).find((x) => x !== me) || "the other party";
+}
+
+export function deriveObligations(obligations, { evidence = [], lock = false, now = nowS(), parties = {}, roles = {}, responseWindow = DEFAULT_RESPONSE_WINDOW } = {}) {
+  const respondSecs = windowSecs(responseWindow) ?? windowSecs(DEFAULT_RESPONSE_WINDOW);
   const ofObligation = (kind, i, by) => evidence.filter((e) => e.kind === kind && (e.obligation === undefined ? (by === undefined || e.by === by) : e.obligation === i));
   const out = obligations.map((o, i) => ({ index: i, by: o.by, what: o.what, kind: o.kind || "deliverable", deadline: o.deadline ?? null, depends_on: o.depends_on ?? null }));
   // First pass: when was each obligation met (writer-claimed `at`, else unknown).
@@ -1026,9 +1100,34 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
       return { met: false };
     }
     if (o.kind === "payment") return { met: lock, at: null };
-    const deliveries = evidence.filter((e) => e.kind === "delivery" && (o.by === undefined || e.by === o.by));
-    if (deliveries.length) return { met: true, at: Math.min(...deliveries.map((d) => d.at ?? Infinity)) };
-    return { met: false };
+    // A delivery COMMITMENT is not yet a delivery: it starts the recipient's
+    // response window. Silence past it is deemed acceptance; an explicit
+    // refusal contests it; a later delivery is a cure and restarts the clock.
+    // Only the LATEST delivery and any answer after it matter.
+    // Order by the LEDGER, not by wall clock: `at` is writer-claimed and has
+    // second resolution, so a cure and the refusal it answers routinely share a
+    // timestamp. Position in the (chain-ordered) evidence list breaks ties, and
+    // block number leads when present.
+    const rank = (e) => [e.block ?? Number.MAX_SAFE_INTEGER, e.seq];
+    const ordered = evidence.map((e, seq) => ({ ...e, seq }));
+    const after = (a, b) => { const [x1, y1] = rank(a), [x2, y2] = rank(b); return x1 !== x2 ? x1 > x2 : y1 > y2; };
+    const deliveries = ordered.filter((e) => e.kind === "delivery" && (o.by === undefined || e.by === o.by));
+    if (!deliveries.length) return { met: false };
+    const last = deliveries[deliveries.length - 1];
+    const answer = ordered
+      .filter((e) => e.kind === "acknowledgement" && e.by !== o.by && after(e, last))
+      .pop();
+    if (answer) {
+      // An acknowledgement with no `ok` is an acceptance: that is what every
+      // acknowledgement meant before this field existed.
+      if (answer.ok === false) {
+        return { met: false, delivered: true, contested: true, reason: answer.reason || "not_met", at: answer.at ?? null };
+      }
+      return { met: true, at: answer.at ?? last.at ?? Infinity };
+    }
+    const due = (last.at ?? now) + respondSecs;
+    if (now > due) return { met: true, at: due, deemed: true };
+    return { met: false, delivered: true, response_due: due };
   };
   const status = out.map(metAt);
   // Second pass: effective deadlines (slid by a dependency's lateness) and state.
@@ -1049,11 +1148,17 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     let state;
     if (st.met) state = "met";
     else if (st.contested) state = "contested";
+    else if (st.delivered) state = "delivered";
     else if (o.depends_on != null && !status[o.depends_on]?.met) state = "blocked";
     else if (st.handed_off) state = "handed_off";
     else if (deadline != null && now > deadline) state = "late";
     else state = "pending";
     return { ...o, effective_deadline: deadline, state, met_at: st.met && Number.isFinite(st.at) ? st.at : null,
+      ...(st.response_due ? { response_due: st.response_due } : {}),
+      ...(st.deemed ? { deemed_accepted: true } : {}),
+      ...(st.reason ? { contest_reason: st.reason } : {}),
+      // A contested delivery is the deliverer's to cure, so the dispute right
+      // sits with the party who raised it; `late` is unchanged.
       dispute_right: state === "late" || state === "contested" ? other(o.by) : null };
   });
 }

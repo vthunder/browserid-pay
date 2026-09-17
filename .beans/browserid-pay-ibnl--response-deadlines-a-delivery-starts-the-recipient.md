@@ -1,11 +1,11 @@
 ---
 # browserid-pay-ibnl
 title: 'Response deadlines: a delivery starts the recipient''s clock, silence is deemed acceptance'
-status: draft
+status: completed
 type: feature
 priority: high
 created_at: 2026-09-17T17:31:10Z
-updated_at: 2026-09-17T17:31:10Z
+updated_at: 2026-09-17T17:57:14Z
 ---
 
 The mitigation for non-attributable withholding (`browserid-pay-oz63`) that needs no cryptography (Dan, 2026-09-17).
@@ -38,8 +38,41 @@ Inputs do this: `handoff` → `receipt`, and a receipt carrying `ok: false` mark
 
 ## Open
 
-- [ ] the consequence of lapsing is what makes the clock real — "deemed accepted" pays the proposer, so it must NOT fire when the recipient answered "not received". Get that interaction right first.
-- [ ] where the windows live: terms (negotiable per agreement) or a ledger default?
-- [ ] does a cure re-start the response window? (It should, or a proposer could cure at the last second.)
+- [x] the consequence of lapsing is what makes the clock real — "deemed accepted" pays the proposer, so it must NOT fire when the recipient answered "not received". Get that interaction right first.
+- [x] where the windows live: terms (negotiable per agreement) or a ledger default?
+- [x] does a cure re-start the response window? (It should, or a proposer could cure at the last second.)
 - [ ] a lapse that settles unattended is `browserid-pay-b1ue` — this gives that bean its trigger, and the two should be designed together.
 - [ ] what the adjudicator is told to make of each combination of claims and timings.
+
+## Summary of Changes
+
+Built. A delivery commitment now starts the recipient's clock, and silence past it is acceptance.
+
+**The state machine**, derived from the LATEST delivery and any answer after it: `pending` → `delivered` (clock running, `response_due` exposed) → `met` (accepted, or deemed accepted at the deadline) / `contested` (refused, with `not_received` or `not_met`). A cure is simply a later delivery — it becomes the latest and the clock restarts, so no new verb was needed.
+
+**`response_window`** is a CLEAR field on the proposal (ISO-8601, default P2D). It has to be clear: the custodian decides releases from it and cannot read sealed terms.
+
+**`settle(id, {ok, reason})`** — accepting releases as before; refusing posts evidence and releases NOTHING, and must say which refusal it is, because they are different complaints: `not_received` is the deliverer's to cure, `not_met` belongs to the adjudicator.
+
+**`claim_lapsed`** — the payee asks the custodian to release. The custodian re-derives the whole claim from the ledger: latest delivery attributed to the claimant, no answer after it, window elapsed. It is a request to CHECK, never an assertion to believe.
+
+## Two things the work turned up
+
+**`status()` settled on any acknowledgement**, including a refusal — so a refused delivery looked settled and vanished from both parties' view. Only an accepting acknowledgement settles now.
+
+**Wall-clock ordering was wrong.** `at` is writer-claimed with second resolution, and a cure routinely shares a timestamp with the refusal it answers, which made the stale refusal look like an answer to the cure. Ordering is now by ledger position. The custodian is deliberately stricter than the SDK: it disregards an acknowledgement only when it is older by BOTH measures, because the unsafe direction there releases money to someone who withheld and then waited.
+
+## Guarantees
+
+- A withholder cannot stall: the recipient must answer quickly, and their `not_received` lands on chain, timestamped, right after the commitment. At adjudication the judge sees a prompt claim and a deliverer who never cured.
+- A recipient cannot sit on delivered work: silence pays the deliverer.
+- A false `not_received` is cheaply refuted — the deliverer just delivers again.
+
+Does not stop either party lying; it removes silence as a free option and turns absence of evidence into a dated record.
+
+Tested: the safety property both sides (a refusal stops deemed acceptance in the obligations model AND at the custodian), cure restarts, legacy acknowledgements with no `ok` still accept, `next_step` driving both sides through refuse → cure → accept, and a refusal releasing nothing.
+
+## Still open
+
+- `browserid-pay-b1ue` (unattended settlement) now has its trigger, but nothing sweeps: a lapse releases only when the payee CLAIMS it. That is deliberate — no background job, and the payee has the incentive — but an escrow whose payee never returns still sits.
+- What the adjudicator makes of each combination of claims and timings is unchanged; the judge prompt has not been told about response windows yet.

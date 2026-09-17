@@ -262,3 +262,65 @@ test("updating a standing policy does not drag it into the errand pipeline", asy
     await servers.close();
   }
 });
+
+test("next_step drives the response window from both sides", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+    const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test", response_window: "PT1H" });
+    assert.equal(p.proposal.response_window, "PT1H", "the window is a clear term the custodian can read");
+    await w.bob.accept(p.id, p.terms);
+    await w.alice.fund(p.id);
+    await w.bob.deliver(p.id, { content: "the work" });
+
+    // Alice is on the clock and is told what her three options are.
+    let s = await w.alice.nextStep();
+    assert.equal(s.action, "settle");
+    assert.ok(s.response_due > 0, "with a deadline attached");
+    assert.match(s.then, /not_received/);
+    // Bob has nothing to do while her window runs — he cannot claim a lapse yet.
+    assert.equal((await w.bob.nextStep()).action, "none");
+
+    // She says it never arrived. That stops the clock and hands it back to him.
+    await w.alice.settle(p.id, { ok: false, reason: "not_received" });
+    s = await w.bob.nextStep();
+    assert.equal(s.action, "deliver", s.why);
+    assert.match(s.then, /restarts their window/);
+    // And she is not asked to answer again until he cures.
+    assert.equal((await w.alice.nextStep()).action, "none");
+
+    // He cures; her clock restarts.
+    await w.bob.deliver(p.id, { content: "the work, actually sent" });
+    assert.equal((await w.alice.nextStep()).action, "settle");
+
+    // She accepts: settled, and neither side has anything left.
+    await w.alice.settle(p.id);
+    assert.equal((await w.alice.nextStep()).action, "none");
+    assert.equal((await w.bob.nextStep()).action, "none");
+  } finally {
+    await servers.close();
+  }
+});
+
+test("refusing a delivery does not release the escrow", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+    const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test", response_window: "PT1H" });
+    await w.bob.accept(p.id, p.terms);
+    await w.alice.fund(p.id);
+    await w.bob.deliver(p.id, { content: "x" });
+
+    const refusal = await w.alice.settle(p.id, { ok: false, reason: "not_received" });
+    assert.equal(refusal.release, undefined, "a refusal is evidence only — no release");
+    assert.equal(refusal.evidence.ok, false);
+    assert.equal(refusal.evidence.reason, "not_received");
+    // And a refusal has to say which kind it is.
+    await assert.rejects(w.alice.settle(p.id, { ok: false }), /bad_request/);
+    await assert.rejects(w.alice.settle(p.id, { ok: false, reason: "dunno" }), /bad_request/);
+  } finally {
+    await servers.close();
+  }
+});

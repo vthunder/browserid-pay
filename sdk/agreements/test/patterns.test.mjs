@@ -59,7 +59,9 @@ test("handoff → receipt verifies the hash; obligations move blocked → pendin
     assert.deepEqual(obs.map((o) => o.state), ["met", "pending"], "receipt met the input; bob's deliverable is now pending");
     await w.bob.sdk.deliver(p.id, { content: { summaries: 3 } });
     obs = await w.bob.sdk.obligations(p.id);
-    assert.deepEqual(obs.map((o) => o.state), ["met", "met"]);
+    // A delivery commitment starts alice's response window; it is not yet met.
+    assert.deepEqual(obs.map((o) => o.state), ["met", "delivered"]);
+    assert.ok(obs[1].response_due > 0, "the recipient is now on a clock");
 
     await assert.rejects(w.bob.sdk.acknowledgeReceipt(p.id, { handoff_id: "ev_nope", content: papers }), /no_handoff/);
     await assert.rejects(w.bob.sdk.acknowledgeReceipt(p.id, { handoff_id: h.evidence_id }), /bad_request/);
@@ -95,8 +97,53 @@ test("deriveObligations: lateness, sliding deadlines, dispute rights", () => {
   s = deriveObligations(obligations, { evidence: [ev[0], { ...ev[1], id: "r2", ok: false, reason: "wrong files" }], lock: true, now: 1600, parties });
   assert.equal(s[0].state, "contested");
   assert.equal(s[0].dispute_right, "b");
-  // Untyped obligations behave as before: a deliverable met by any delivery from `by`.
-  s = deriveObligations([{ by: "b", what: "x", deadline: 10 }], { evidence: [{ id: "d", kind: "delivery", by: "b", at: 5 }], now: 20 });
+  // Untyped obligations are still deliverables, and a delivery now starts the
+  // recipient's response window rather than settling the obligation outright.
+  const one = [{ by: "b", what: "x", deadline: 10 }];
+  const delivered = [{ id: "d", kind: "delivery", by: "b", at: 5 }];
+  s = deriveObligations(one, { evidence: delivered, now: 20, responseWindow: "PT1H" });
   assert.equal(s[0].kind, "deliverable");
+  assert.equal(s[0].state, "delivered");
+  assert.equal(s[0].response_due, 5 + 3600);
+});
+
+test("a delivery starts the recipient's clock; silence is acceptance, a refusal is not", () => {
+  const obligations = [{ by: "b", what: "the work", kind: "deliverable", deadline: 10_000 }];
+  const parties = { proposer: "a", acceptor: "b" };
+  const deliver = { id: "d1", kind: "delivery", by: "b", at: 1000 };
+  const opts = (now, evidence) => ({ evidence, now, parties, responseWindow: "PT1H" });
+
+  // Inside the window: awaiting a response, not met.
+  let s = deriveObligations(obligations, opts(1500, [deliver]));
+  assert.equal(s[0].state, "delivered");
+  assert.equal(s[0].response_due, 4600);
+
+  // Past it with no answer: deemed accepted, dated at the deadline rather than
+  // at "now", so the moment it became met does not depend on when you ask.
+  s = deriveObligations(obligations, opts(9999, [deliver]));
   assert.equal(s[0].state, "met");
+  assert.equal(s[0].deemed_accepted, true);
+  assert.equal(s[0].met_at, 4600);
+
+  // THE SAFETY PROPERTY: an explicit refusal must stop the clock, or the
+  // deemed-acceptance rule would pay a withholder who simply waited.
+  const refused = [deliver, { id: "a1", kind: "acknowledgement", by: "a", at: 1200, ok: false, reason: "not_received" }];
+  s = deriveObligations(obligations, opts(9999, refused));
+  assert.equal(s[0].state, "contested");
+  assert.equal(s[0].contest_reason, "not_received");
+  assert.equal(s[0].deemed_accepted, undefined);
+  assert.equal(s[0].dispute_right, "a", "the party who refused holds it");
+
+  // A cure is simply a later delivery: it becomes the latest and the clock
+  // restarts, so the refusal no longer stands.
+  const cured = [...refused, { id: "d2", kind: "delivery", by: "b", at: 2000 }];
+  s = deriveObligations(obligations, opts(2100, cured));
+  assert.equal(s[0].state, "delivered");
+  assert.equal(s[0].response_due, 2000 + 3600);
+
+  // And an acknowledgement with no `ok` is an acceptance, as it always was.
+  const legacy = [deliver, { id: "a2", kind: "acknowledgement", by: "a", at: 1200 }];
+  s = deriveObligations(obligations, opts(1300, legacy));
+  assert.equal(s[0].state, "met");
+  assert.equal(s[0].met_at, 1200);
 });
