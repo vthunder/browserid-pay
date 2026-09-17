@@ -114,7 +114,7 @@ How to work:
 
 Before proposing, you need: the counterparty, what they must deliver, the price, and a deadline. Ask the human for whatever is missing, in one go rather than one question at a time. State the defaults you intend to use — the discovered custodian and adjudicator, the suggested contribution, commitment mode — and let them object rather than making them configure. Then propose.
 
-When \`next_step\` says \`accept\`, it hands you a \`review\` block: who proposed it, what \`i_must\` do, what you are paid, the adjudicator, the expiry. Decide whether you can actually do that work before accepting — accepting is binding and the escrow holds real money. If you are not sure, say what you are unsure about and ask the human instead of accepting. Never accept to be agreeable.
+If the human describes ongoing or repeated dealings rather than one deal — "any agreement with bob", "up to $200 a month" — offer \`request_standing_consent\` before the first proposal. One card then covers every agreement that fits, and the ones after it need no approval. Say plainly how broad it is before they approve. A single agreement the standing grant will not cover still gets its own card, so a blanket grant does not have to be raised for one unusual deal.\n\nWhen \`next_step\` says \`accept\`, it hands you a \`review\` block: who proposed it, what \`i_must\` do, what you are paid, the adjudicator, the expiry. Decide whether you can actually do that work before accepting — accepting is binding and the escrow holds real money. If you are not sure, say what you are unsure about and ask the human instead of accepting. Never accept to be agreeable.
 
 Set up the recurring check EARLY — as soon as the human has told you what they want, before the first proposal, not after several turns of doing steps by hand. In Claude Code that is \`/loop 60s Follow the agreement workflow.\` (the responding side needs no goal; the initiating side repeats its goal in the loop prompt). Use a SHORT interval, 60 seconds: the two sides take turns, so a long interval multiplies across every step and a five-minute loop makes a six-step agreement take half an hour. Tell the human you have set it up. Then stop and ask whenever you need an approval or a judgement that is theirs to make.`;
 
@@ -191,6 +191,18 @@ server.registerTool("respond", {
   description: "Answer a dispute filed against you within the judge's response window: a note and, with reveal=true (default), open every delivery commitment you made for this agreement so the judge sees the actual content. The judge rules right after.",
   inputSchema: { id: z.string(), note: z.string().optional(), reveal: z.boolean().optional() },
 }, ({ id, note, reveal }) => run((a) => a.respond(id, { note, reveal: reveal !== false })));
+
+server.registerTool("request_standing_consent", {
+  title: "Ask once for a standing agreement grant",
+  description: "Ask the human ONCE for authority covering every agreement that fits a shape — a spending cap over a rolling window, and optionally which counterparties. Later agreements then need no approval at all. The cap is the ceiling ACROSS agreements in the window, not per agreement. Offer this when the human says they want ongoing or repeated dealings; do not request it silently, because the card is far broader than one agreement's. A per-agreement approval remains available for a one-off that the standing grant will not cover.",
+  inputSchema: {
+    cap: z.object({ amount: z.string().describe("decimal, e.g. \"200.00\""), currency: z.string() }),
+    window: z.string().optional().describe("ISO-8601 duration the cap rolls over, e.g. P30D. Omit for a lifetime cap."),
+    counterparties: z.array(z.string()).optional().describe('identities, "*@domain" for anyone at a domain, or "*" for anyone'),
+    max_duration: z.string().optional().describe("ISO-8601: longest agreement this grant may enter"),
+    min_reputation: z.object({ indexer: z.string().optional(), score: z.number().int().min(0).max(100) }).optional(),
+  },
+}, (args) => run((a) => a.requestStandingConsent(args)));
 
 server.registerTool("next_step", {
   title: "What to do next",

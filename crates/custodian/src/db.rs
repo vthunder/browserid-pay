@@ -323,6 +323,19 @@ pub fn with_running_balance(rows: &[LedgerRow]) -> Vec<(LedgerRow, i64)> {
 /// Rolling window start for a warrant: windows tile from `iat` in steps of
 /// `window_secs`; the current one is the latest boundary at or before `now`.
 /// No window ⇒ lifetime (start = iat).
+/// Total committed under a warrant since `since`: every escrow it locked that
+/// has not been refunded outright. A settled escrow still counts — the money
+/// was spent — which is what makes a rolling cap a spending limit rather than
+/// a concurrency limit.
+pub fn locked_since(c: &Connection, warrant_key: &str, since: i64) -> rusqlite::Result<i64> {
+    c.query_row(
+        "SELECT COALESCE(SUM(price_minor + custodian_fee_minor + adjudicator_fee_minor + contribution_minor), 0)
+           FROM escrows WHERE warrant_key = ?1 AND locked_at >= ?2",
+        rusqlite::params![warrant_key, since],
+        |r| r.get(0),
+    )
+}
+
 pub fn window_start(iat: i64, window_secs: Option<i64>, now: i64) -> i64 {
     match window_secs {
         Some(w) if w > 0 && now >= iat => iat + ((now - iat) / w) * w,

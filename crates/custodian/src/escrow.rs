@@ -153,6 +153,10 @@ struct ContractGrant {
     currency: String,
     counterparties: Option<Vec<String>>,
     max_duration_secs: Option<i64>,
+    /// Rolling window on the cap, from the warrant's `iat`. `None` is a
+    /// lifetime cap — which for a per-agreement warrant is the whole story,
+    /// and for a standing one means "this much, ever".
+    window_secs: Option<i64>,
 }
 
 fn contract_grant(scopes: &[ScopeEntry]) -> Result<ContractGrant, EscrowError> {
@@ -167,7 +171,8 @@ fn contract_grant(scopes: &[ScopeEntry]) -> Result<ContractGrant, EscrowError> {
             Some(d) => Some(parse_iso_duration_secs(d).ok_or_else(|| err("no_grant", "malformed max_duration"))? as i64),
             None => None,
         };
-        return Ok(ContractGrant { min_reputation: p.min_reputation.clone(), cap_minor, currency: cap.currency.clone(), counterparties: p.counterparties.clone(), max_duration_secs });
+        let window_secs = cap.window_secs().map_err(|_| err("no_grant", "malformed cap window"))?.map(|w| w as i64);
+        return Ok(ContractGrant { min_reputation: p.min_reputation.clone(), cap_minor, currency: cap.currency.clone(), counterparties: p.counterparties.clone(), max_duration_secs, window_secs });
     }
     Err(EscrowError { error: "no_grant", detail: None })
 }
@@ -245,6 +250,22 @@ async fn caller_full(verify: &Verify, audience: &str, presentation: &str) -> Res
     Ok(Caller { account: v.identity.email, actor: v.identity.grantee, scopes: v.scopes, warrant_key, iat: v.iat, exp: v.exp })
 }
 
+/// Verify a contract presentation against the per-agreement audience, falling
+/// back to the standing collection audience. Each party chooses independently:
+/// the payer may be acting under a blanket grant while the payee approved this
+/// one deal, or the other way round.
+async fn caller_for_contract(verify: &Verify, agreement_audience: &str, presentation: &str) -> Result<Caller, EscrowError> {
+    match caller_full(verify, agreement_audience, presentation).await {
+        Ok(c) => Ok(c),
+        Err(narrow) => match caller_full(verify, COLLECTION_AUDIENCE, presentation).await {
+            Ok(c) => Ok(c),
+            // Report the narrow failure: it is the one the caller most likely
+            // meant, and a revocation must not be masked by an audience miss.
+            Err(broad) => Err(if narrow.error == "revoked" { narrow } else { broad }),
+        },
+    }
+}
+
 /// A party's `contract:agreement` grant as a budget row: cap, counterparties,
 /// pinned to this agreement. What the account page lists under the agent.
 fn grant_row(c: &Caller, key: &str, g: &ContractGrant, agreement_id: &str, now: i64) -> WarrantRow {
@@ -255,7 +276,7 @@ fn grant_row(c: &Caller, key: &str, g: &ContractGrant, agreement_id: &str, now: 
         scope: CONTRACT_SCOPE.to_string(),
         cap_minor: g.cap_minor,
         currency: g.currency.clone(),
-        window_secs: None,
+        window_secs: g.window_secs,
         iat: c.iat,
         exp: c.exp,
         first_seen: now,
@@ -291,8 +312,11 @@ pub async fn lock(
     if !((payer == proposer && payee == acceptor) || (payer == acceptor && payee == proposer)) {
         return Err(err("bad_request", "roles must be the two parties"));
     }
+    // Either authority is valid: a warrant for THIS agreement, or a standing
+    // warrant on the collection. Try the narrow one first so a one-off
+    // approval is preferred when the human gave one.
     let audience = contract_audience(&id);
-    let pc = caller_full(verify, &audience, &req.presentation).await?;
+    let pc = caller_for_contract(verify, &audience, &req.presentation).await?;
     let (payer_account, actor) = (pc.account.clone(), pc.actor.clone());
     if actor != payer {
         return Err(err("not_payer", format!("{actor} is not the payer")));
@@ -303,7 +327,7 @@ pub async fn lock(
     let Some(acceptance_bundle) = req.acceptance_bundle.as_deref() else {
         return Err(err("bad_request", "acceptance_bundle (the payee's presentation for the contract) is required"));
     };
-    let yc = caller_full(verify, &audience, acceptance_bundle).await
+    let yc = caller_for_contract(verify, &audience, acceptance_bundle).await
         .map_err(|e| EscrowError { error: "payee_bundle_invalid", detail: e.detail })?;
     let payee_account = yc.account.clone();
     if yc.actor != payee {
@@ -343,9 +367,6 @@ pub async fn lock(
     if price <= 0 {
         return Err(err("bad_request", "price must be positive"));
     }
-    if total > grant.cap_minor {
-        return Err(err("cap_exceeded", format!("total {} exceeds cap {}", crate::pay::fmt_minor(total), crate::pay::fmt_minor(grant.cap_minor))));
-    }
     if let (Some(max), Some(deadline)) = (grant.max_duration_secs, req.latest_deadline) {
         if deadline - db::now() > max {
             return Err(err("duration_exceeded", "latest deadline is beyond max_duration"));
@@ -357,6 +378,22 @@ pub async fn lock(
             let tx = c.transaction()?;
             if get(&tx, &id)?.is_some() {
                 return Ok(Err(err("already_locked", id.clone())));
+            }
+            // The cap binds ACROSS agreements under the same warrant, not just
+            // this one — otherwise a standing "$200 a month" would silently
+            // mean "$200 per agreement". Inside the transaction, so two locks
+            // racing cannot both read a stale total and both pass.
+            let window_from = db::window_start(pc.iat, grant.window_secs, now);
+            let already = db::locked_since(&tx, &warrant_key, window_from)?;
+            if already + total > grant.cap_minor {
+                let remaining = (grant.cap_minor - already).max(0);
+                return Ok(Err(err("cap_exceeded", if already > 0 {
+                    format!("total {} exceeds the {} left of the {} cap ({} already committed in this window)",
+                        crate::pay::fmt_minor(total), crate::pay::fmt_minor(remaining),
+                        crate::pay::fmt_minor(grant.cap_minor), crate::pay::fmt_minor(already))
+                } else {
+                    format!("total {} exceeds cap {}", crate::pay::fmt_minor(total), crate::pay::fmt_minor(grant.cap_minor))
+                })));
             }
             let reference = format!("escrow:{id}");
             if Db::adjust(&tx, &payer_account, deployment_currency, -total, "escrow_lock", Some(&reference)).is_err() {
@@ -387,9 +424,17 @@ pub async fn lock(
     Ok(escrow)
 }
 
+/// The audience a warrant for ONE agreement names.
 pub fn contract_audience(id: &str) -> String {
-    format!("sbo+raw://avail:turing:530/agreements/{id}")
+    format!("{COLLECTION_AUDIENCE}/{id}")
 }
+
+/// The audience a STANDING warrant names: the agreements collection on the
+/// ledger, not one agreement and not one custodian. A grant here covers every
+/// agreement its parameters admit — `counterparties`, `cap` (with a window),
+/// `min_reputation`, `max_duration` — so a human approves the shape of the
+/// deals once instead of each deal.
+pub const COLLECTION_AUDIENCE: &str = "sbo+raw://avail:turing:530/agreements";
 
 /// Payer acknowledges delivery: price → payee, fees → custodian and (unused)
 /// adjudicator fee back to payer, contribution → recipient.
@@ -753,6 +798,77 @@ mod tests {
     }
 
     fn bal(s: &Setup, who: &str) -> i64 { s.db.account(who).unwrap().map(|a| a.balance_minor).unwrap_or(0) }
+
+    /// A standing grant: audience is the COLLECTION, so the same warrant is
+    /// presented for every agreement. `idx` is what identifies the warrant, so
+    /// reusing it is what makes the cap accumulate.
+    fn standing_scope(amount: &str, window: Option<&str>, counterparties: Option<Vec<&str>>) -> ScopeEntry {
+        ScopeEntry::Parameterized(ScopeParams {
+            scope: CONTRACT_SCOPE.into(), mode: None,
+            cap: Some(Cap { amount: amount.into(), currency: "USD".into(), window: window.map(String::from) }),
+            counterparties: counterparties.map(|v| v.into_iter().map(String::from).collect()),
+            max_duration: None, min_reputation: None,
+        })
+    }
+
+    fn standing_lock_req(s: &Setup, id: &str, cap: &str, window: Option<&str>) -> LockRequest {
+        LockRequest {
+            presentation: presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE, vec![standing_scope(cap, window, None)], 1),
+            acceptance_bundle: Some(presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", COLLECTION_AUDIENCE, vec![standing_scope("500.00", window, None)], 9)),
+            proposal: proposal(id), price: json!("50.00"), fees: json!({ "custodian": "0.50", "adjudicator": "5.00" }),
+            contribution: json!({ "recipient": "fund@dsp.test", "percentage": 1.0 }), sealed_terms: Some("sealed".into()), latest_deadline: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_standing_grant_covers_many_agreements_until_its_cap_runs_out() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+        // One warrant on the collection, no per-agreement approval anywhere.
+        // Each agreement costs 56.00, so a 150.00 cap admits exactly two.
+        for id in ["agr_s1", "agr_s2"] {
+            let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, id, "150.00", Some("P30D"))).await.unwrap();
+            assert_eq!(e.state, "locked", "{id} should lock under the standing grant");
+        }
+        // The third exceeds what is left, and the error says how much is left.
+        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_s3", "150.00", Some("P30D"))).await.err().unwrap();
+        assert_eq!(e.error, "cap_exceeded");
+        let d = e.detail.unwrap_or_default();
+        assert!(d.contains("38.00") && d.contains("112.00"), "should report remaining and committed: {d}");
+    }
+
+    #[tokio::test]
+    async fn a_one_off_warrant_still_works_alongside_a_standing_one() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+        // A small standing grant cannot cover this agreement...
+        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_big", "20.00", Some("P30D"))).await.err().unwrap();
+        assert_eq!(e.error, "cap_exceeded");
+        // ...so the human approves just this one, on the per-agreement
+        // audience, without raising the blanket cap.
+        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", lock_req(&s, "agr_big", "60.00", None)).await.unwrap();
+        assert_eq!(e.state, "locked");
+    }
+
+    #[tokio::test]
+    async fn a_standing_grant_still_honors_counterparties() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+        let mut r = standing_lock_req(&s, "agr_c1", "500.00", Some("P30D"));
+        // Blanket on amount, but only for one domain — and the payee is not in it.
+        r.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE,
+            vec![standing_scope("500.00", Some("P30D"), Some(vec!["*@z.test"]))], 1);
+        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", r).await.err().unwrap().error, "counterparty_not_allowed");
+
+        // The same grant widened to the payee's domain admits it.
+        let mut r = standing_lock_req(&s, "agr_c2", "500.00", Some("P30D"));
+        r.presentation = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE,
+            vec![standing_scope("500.00", Some("P30D"), Some(vec!["*@y.test"]))], 1);
+        assert_eq!(lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", r).await.unwrap().state, "locked");
+    }
 
     #[tokio::test]
     async fn lock_then_acknowledge_pays_everyone() {

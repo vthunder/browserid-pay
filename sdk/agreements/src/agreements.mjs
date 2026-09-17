@@ -8,7 +8,16 @@ import { DaemonChain, DEFAULTS } from "./chain.mjs";
 const AGREEMENT_SCOPE = "contract:agreement";
 const CHAIN_SCOPES = (email) => ["action:post", "path:/agreements/**", `path:/${email}/**`];
 
-export const contractAudience = (id, repo = DEFAULTS.repo) => `${repo.replace(/\/+$/, "")}/agreements/${id}`;
+export const contractAudience = (id, repo = DEFAULTS.repo) => `${collectionAudience(repo)}/${id}`;
+/**
+ * The audience a STANDING agreement warrant names: the agreements collection on
+ * the ledger, not one agreement and not one custodian. A grant here covers every
+ * agreement its parameters admit, so the human approves the shape of the deals
+ * once instead of each deal. Per-agreement warrants remain valid and are
+ * preferred when held — a blanket grant for small agreements plus a one-off
+ * approval for a large one is the intended combination.
+ */
+export const collectionAudience = (repo = DEFAULTS.repo) => `${repo.replace(/\/+$/, "")}/agreements`;
 export const agreementPath = (id) => `/agreements/${id}/`;
 const newId = () => "agr_" + randomBytes(12).toString("base64url");
 const nowS = () => Math.floor(Date.now() / 1000);
@@ -138,8 +147,22 @@ export class Agreements {
    */
   async #contractWarrant(id, totalMinor, currency, counterparty, adjudicatorOrigin, minReputation) {
     const aud = contractAudience(id, this.repo);
+    const standing = collectionAudience(this.repo);
     const held = this.agent.warrantedAudiences();
     const grants = [];
+    // Prefer authority already held, narrowest first: a one-off approval for
+    // THIS agreement beats a blanket one, and either beats asking again. The
+    // custodian re-checks the grant's cap and counterparties at lock, so
+    // reaching for the standing warrant here is a convenience, not a bypass —
+    // if it does not actually cover this deal the lock refuses and the agent
+    // can ask for a one-off.
+    if (!held.includes(aud) && held.includes(standing)) {
+      if (adjudicatorOrigin && !held.includes(adjudicatorOrigin)) grants.push({ audience: adjudicatorOrigin, scopes: ["dispute"] });
+      if (!held.includes(this.repo)) grants.push({ audience: this.repo, scopes: CHAIN_SCOPES(this.email) });
+      for (const g of this.extraGrants) if (!held.includes(g.audience)) grants.push(g);
+      if (grants.length) await this.obtainWarrants(grants);
+      return this.agent.assertionFor(standing);
+    }
     if (!held.includes(aud)) {
       // A reputation-gated grant names a threshold at an indexer instead of
       // (or as well as) the counterparty: "any agent rated ≥ N at …".
@@ -153,6 +176,31 @@ export class Agreements {
     for (const g of this.extraGrants) if (!held.includes(g.audience)) grants.push(g);
     if (grants.length) await this.obtainWarrants(grants);
     return this.agent.assertionFor(aud);
+  }
+
+  /**
+   * Ask the human once for a STANDING agreement grant, so later agreements need
+   * no card at all. `cap` is the ceiling across every agreement in `window`
+   * (an ISO-8601 duration, rolling from the warrant's issue time), not per
+   * agreement. `counterparties` may name identities, `"*@domain"`, or `"*"`.
+   *
+   * Deliberately explicit: nothing requests this implicitly, because the card
+   * it produces is much broader than a single agreement's.
+   */
+  async requestStandingConsent({ cap, window, counterparties, min_reputation, max_duration } = {}) {
+    if (!cap?.amount || !cap?.currency) throw new AgreementError("bad_request", "a standing grant needs cap { amount, currency }");
+    const aud = collectionAudience(this.repo);
+    if (this.agent.warrantedAudiences().includes(aud)) {
+      return { audience: aud, already_held: true };
+    }
+    const entry = { scope: AGREEMENT_SCOPE, cap: { amount: cap.amount, currency: cap.currency, ...(window ? { window } : {}) } };
+    if (counterparties?.length) entry.counterparties = counterparties;
+    if (max_duration) entry.max_duration = max_duration;
+    if (min_reputation) entry.min_reputation = { indexer: (min_reputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(min_reputation.score)) };
+    const grants = [{ audience: aud, scopes: [entry] }];
+    if (!this.agent.warrantedAudiences().includes(this.repo)) grants.push({ audience: this.repo, scopes: CHAIN_SCOPES(this.email) });
+    await this.obtainWarrants(grants);
+    return { audience: aud, granted: entry };
   }
 
   /** One indexer's signed scorecard for `subject` (default: the configured index). */
