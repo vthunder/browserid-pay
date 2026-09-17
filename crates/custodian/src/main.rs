@@ -121,7 +121,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/escrow/lock", post(escrow_lock))
         .route("/api/escrow/:id", get(escrow_get))
         .route("/api/escrow/:id/acknowledge", post(escrow_acknowledge))
-        .route("/api/escrow/:id/lapsed", post(escrow_lapsed))
         .route("/api/escrow/:id/dispute", post(escrow_dispute))
         .route("/api/escrow/:id/ruling", post(escrow_ruling))
         .with_state(app)
@@ -506,16 +505,6 @@ struct PresentationBody {
 async fn escrow_acknowledge(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(b): Json<PresentationBody>) -> Response {
     match escrow::acknowledge(&app.verify, &app.db, app.publisher.as_ref(), &id, &b.presentation).await {
         Ok(e) => Json(escrow::view(&e)).into_response(),
-        Err(e) => (escrow_status(&e), Json(e)).into_response(),
-    }
-}
-
-/// The deliverer claims a lapsed response window. The custodian re-derives the
-/// claim from the ledger rather than trusting it.
-async fn escrow_lapsed(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(req): Json<serde_json::Value>) -> Response {
-    let presentation = req.get("presentation").and_then(|v| v.as_str()).unwrap_or_default();
-    match escrow::lapsed(&app.verify, &app.db, app.publisher.as_ref(), app.reader.as_ref(), &id, presentation).await {
-        Ok(e) => Json(json!({ "release": escrow::view(&e) })).into_response(),
         Err(e) => (escrow_status(&e), Json(e)).into_response(),
     }
 }

@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: high
 created_at: 2026-09-17T17:31:10Z
-updated_at: 2026-09-17T19:29:00Z
+updated_at: 2026-09-17T20:03:44Z
 ---
 
 The mitigation for non-attributable withholding (`browserid-pay-oz63`) that needs no cryptography (Dan, 2026-09-17).
@@ -93,3 +93,17 @@ Silence is still acceptance regardless of the absolute clock — this bounds an 
 `next_step` sends the deliverer to `dispute` rather than to a payout.
 
 **The limit of this, stated plainly**: a cure is no more verifiable than the original delivery, so the chain records the same objects whether the deliverer is withholding and curing on paper or the recipient is lying about non-receipt. The clock bounds the argument and denies either side a payoff for stalling; it does not decide who is telling the truth. That needs `browserid-pay-ifz9` (sealed delivery on chain), after which a cure is checkable and the question becomes decidable. Accepted knowingly: the tie-break at adjudication favours the party holding verifiable artifacts.
+
+## Revision 2026-09-17: silence settles nothing
+
+The first two cuts made a lapsed window a SETTLEMENT — the deliverer could claim the release unilaterally, with no adjudicator involved. Dan called it: that means the recipient must be online and dispute inside the window or lose the ability to dispute at all (the custodian requires `state == "locked"`), and it makes withholding cheap — hold the work back, wait out an inattentive recipient, collect.
+
+Reversed. Silence is now missing information, not a conclusion:
+
+- A lapsed response window leaves the obligation `unanswered` and the escrow **locked**. `dispute_right` is deliberately nobody: silence is not yet anyone's fault, and which way it goes is what a dispute is for.
+- `claim_lapsed` and the custodian's `/lapsed` route are **gone**. There is no unilateral release. The only ways out are the payer acknowledging, or either party disputing.
+- `next_step` sends the deliverer to `dispute` (reminding them to message first — an answer is cheaper than a ruling), and still offers the recipient `settle` marked `overdue`, because being slow should not cost them their say. Answering late still works.
+
+**This is the bigger part of the fix for `browserid-pay-oz63`.** Under the old rule a withholder could be paid without ever facing a judge. Now they must file, reveal, and meet the rule already in the judge prompt: *"a delivery whose commitment was never opened is undelivered."* A withholder who will not reveal loses; one who does reveal has actually produced the thing.
+
+Costs, accepted: reaching an adjudicator spends the adjudicator fee, which is already escrowed and would otherwise be refunded to the payer — so inattention costs the payer that fee, not new money. And if NEITHER party acts the escrow sits indefinitely, which is `browserid-pay-b1ue` and is made more pressing by this, not caused by it.

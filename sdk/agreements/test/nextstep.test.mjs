@@ -349,10 +349,44 @@ test("a stalled arrival sends the deliverer to the adjudicator, not to a payout"
     assert.equal(s.action, "dispute", s.why);
     assert.match(s.then, /adjudicator fee already covers it/);
 
-    // That the escrow will not release itself here — a refusal blocks the lapse
-    // claim however stale it is — is enforced by the custodian and tested
-    // there (`a_lapsed_response_window_releases_but_a_refusal_stops_the_clock`).
-    // Asserting it against the stub would only be testing the stub.
+    // That nothing releases the escrow on silence or a refusal is enforced by
+    // the custodian and tested there
+    // (`silence_releases_nothing_the_only_ways_out_are_acknowledge_or_dispute`).
+  } finally {
+    await servers.close();
+  }
+});
+
+test("an unanswered delivery sends the deliverer to the adjudicator, and the recipient can still answer", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const p = await w.alice.propose(T, { acceptor: "bob@y.test", response_window: "PT1S" });
+    await w.bob.accept(p.id, p.terms);
+    await w.alice.fund(p.id);
+    await w.bob.deliver(p.id, { content: "the work" });
+    await new Promise((r) => setTimeout(r, 2500));
+
+    const obs = await w.bob.obligations(p.id);
+    assert.equal(obs[0].state, "unanswered", "silence settles nothing");
+    assert.equal(obs[0].met_at, null);
+
+    // Bob is not handed the money — he is pointed at the adjudicator.
+    const b = await w.bob.nextStep();
+    assert.equal(b.action, "dispute", b.why);
+    assert.match(b.then, /unopened commitment counts as undelivered/);
+    assert.match(b.then, /cheaper than a ruling/);
+
+    // Alice has not lost her say by being slow: she is still told to answer.
+    const a = await w.alice.nextStep();
+    assert.equal(a.action, "settle");
+    assert.equal(a.overdue, true);
+    assert.match(a.then, /still answer/);
+
+    // And answering late still works and settles it properly.
+    await w.alice.settle(p.id);
+    assert.equal((await w.bob.obligations(p.id))[0].state, "met");
   } finally {
     await servers.close();
   }

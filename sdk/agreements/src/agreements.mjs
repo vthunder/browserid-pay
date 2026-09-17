@@ -603,19 +603,6 @@ export class Agreements {
     return { ...ev, release };
   }
 
-  /**
-   * The deliverer claims a lapsed response window: the recipient neither
-   * accepted nor refused within it, so the delivery is deemed accepted and the
-   * escrow releases. The custodian re-derives this from the chain — this is a
-   * request to check, not an assertion to believe.
-   */
-  async claimLapsed(id) {
-    const p = await this.#proposal(id);
-    if (p.roles.payee !== this.email) throw new AgreementError("not_payee");
-    const presentation = await this.#contractAssertion(id);
-    return this.#custodian(p.custodian, `/api/escrow/${id}/lapsed`, { presentation });
-  }
-
   /** Either party disputes: evidence on chain, freeze at the custodian, file with the adjudicator. */
   async dispute(id, { note } = {}) {
     // Safe to retry: the human-facing step (the judge's sign-in card) comes
@@ -895,12 +882,18 @@ export class Agreements {
       }
       // A delivery awaiting my answer: my clock is running, and saying nothing
       // will be read as acceptance.
-      const awaiting = obs.find((o) => o.state === "delivered" && o.by !== me);
+      const awaiting = obs.find((o) => ["delivered", "unanswered"].includes(o.state) && o.by !== me);
       if (awaiting && iAmPayer) {
+        const overdue = awaiting.state === "unanswered";
         return {
-          action: "settle", why: `${awaiting.by} delivered "${awaiting.what}" and it is my turn to answer`,
+          action: "settle",
+          why: overdue
+            ? `${awaiting.by} delivered "${awaiting.what}" and my window to answer has already passed`
+            : `${awaiting.by} delivered "${awaiting.what}" and it is my turn to answer`,
           response_due: awaiting.response_due ?? null,
-          then: 'check what actually arrived. Accept to release the escrow; if nothing arrived call settle with ok:false and reason "not_received" so they can send it again; if it arrived but is wrong, reason "not_met". Silence past response_due counts as acceptance.',
+          ...(overdue ? { overdue: true } : {}),
+          then: 'check what actually arrived. Accept to release the escrow; if nothing arrived call settle with ok:false and reason "not_received" so they can send it again; if it arrived but is wrong, reason "not_met".'
+            + (overdue ? " You can still answer, and answering is far cheaper than a ruling — but they may go to the adjudicator at any point now." : ""),
         };
       }
       // My own delivery was refused: cure it by delivering again (which
@@ -919,11 +912,12 @@ export class Agreements {
         return { action: "dispute", why: `"${stalled.what}": ${other(me, parties)} has not acknowledged receipt and the time to settle that has run out`,
                  then: "the adjudicator sees the whole exchange — every delivery, every refusal and when each happened — and the escrowed adjudicator fee already covers it" };
       }
-      // They neither answered nor refused in time: claim the lapse.
-      const lapsed = obs.find((o) => o.by === me && o.deemed_accepted);
-      if (lapsed && !iAmPayer && st.escrow?.state === "locked") {
-        return { action: "claim_lapsed", why: `the response window on "${lapsed.what}" passed with no answer`,
-                 then: "the custodian re-checks this against the ledger before releasing" };
+      // Nobody answered. Nothing releases the escrow on its own, so being paid
+      // means asking the adjudicator.
+      const unanswered = obs.find((o) => o.state === "unanswered" && o.by === me);
+      if (unanswered && st.escrow?.state === "locked") {
+        return { action: "dispute", why: `the delivery of "${unanswered.what}" went unanswered past the window`,
+                 then: "open your delivery commitment for the adjudicator — an unopened commitment counts as undelivered — and the fee is already escrowed. Message them first if you have not: an answer is far cheaper than a ruling." };
       }
       const blocked = mineUnmet.find((o) => o.state === "blocked");
       if (blocked) return { action: "none", why: `my "${blocked.what}" is blocked on obligation ${blocked.depends_on}` };
@@ -1156,9 +1150,11 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
       };
     }
     const due = (last.at ?? now) + respondSecs;
-    // Silence is acceptance whatever the absolute clock says: this limit exists
-    // to bound an ARGUMENT about arrival, not to punish a quiet recipient.
-    if (now > due) return { met: true, at: due, deemed: true };
+    // A lapsed window is missing information, not a completed job. Treating
+    // silence as acceptance let a withholder wait out an inattentive recipient
+    // and take the money without ever facing an adjudicator; now nobody wins by
+    // default and somebody has to ask for a decision.
+    if (now > due) return { met: false, delivered: true, unanswered: true, response_due: due, absolute_due: absoluteDue };
     return { met: false, delivered: true, response_due: due, absolute_due: absoluteDue };
   };
   const status = out.map(metAt);
@@ -1183,6 +1179,7 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     // tested BEFORE the plain contested case or it can never surface.
     else if (st.stalled) state = "stalled";
     else if (st.contested) state = "contested";
+    else if (st.unanswered) state = "unanswered";
     else if (st.delivered) state = "delivered";
     else if (o.depends_on != null && !status[o.depends_on]?.met) state = "blocked";
     else if (st.handed_off) state = "handed_off";
@@ -1191,13 +1188,15 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     return { ...o, effective_deadline: deadline, state, met_at: st.met && Number.isFinite(st.at) ? st.at : null,
       ...(st.response_due ? { response_due: st.response_due } : {}),
       ...(st.absolute_due ? { absolute_due: st.absolute_due } : {}),
-      ...(st.deemed ? { deemed_accepted: true } : {}),
       ...(st.reason ? { contest_reason: st.reason } : {}),
       // A contested delivery is the deliverer's to cure, so the dispute right
       // sits with the party who raised it; `late` is unchanged.
       // `stalled` is the deliverer's to escalate — the recipient will not
       // resolve it and nothing else will. (Either party may in fact dispute;
       // this names who has reason to.)
+      // `unanswered` deliberately names nobody: silence is not yet anyone's
+      // fault, and which way it goes is what the dispute is for. Either party
+      // may raise one — the deliverer to be paid, the recipient to be refunded.
       dispute_right: state === "stalled" ? o.by : state === "late" || state === "contested" ? other(o.by) : null };
   });
 }

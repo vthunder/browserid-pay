@@ -63,7 +63,6 @@ export async function fakeServers() {
     // The acceptor registers which account its earnings belong to; the real
     // custodian keeps the mapping so it can pay a payee who is offline.
     if (req.url === "/api/escrow/register") return json(200, { registered: true });
-    if (/^\/api\/escrow\/[^/]+\/lapsed$/.test(req.url)) return json(200, { release: { state: "settled", outcome: "deemed_accepted" } });
     if (req.url === "/api/escrow/lock") {
       const id = body.proposal.id;
       escrows.set(id, { id, state: "locked", sealed_terms: body.sealed_terms, price: body.price });

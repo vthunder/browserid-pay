@@ -107,7 +107,7 @@ test("deriveObligations: lateness, sliding deadlines, dispute rights", () => {
   assert.equal(s[0].response_due, 5 + 3600);
 });
 
-test("a delivery starts the recipient's clock; silence is acceptance, a refusal is not", () => {
+test("a delivery starts the recipient's clock; silence resolves nothing, a refusal stops it", () => {
   const obligations = [{ by: "b", what: "the work", kind: "deliverable", deadline: 10_000 }];
   const parties = { proposer: "a", acceptor: "b" };
   const deliver = { id: "d1", kind: "delivery", by: "b", at: 1000 };
@@ -118,12 +118,14 @@ test("a delivery starts the recipient's clock; silence is acceptance, a refusal 
   assert.equal(s[0].state, "delivered");
   assert.equal(s[0].response_due, 4600);
 
-  // Past it with no answer: deemed accepted, dated at the deadline rather than
-  // at "now", so the moment it became met does not depend on when you ask.
+  // Past it with no answer: UNANSWERED, not met. Silence is missing
+  // information, not a finished job — treating it as acceptance would let a
+  // withholder wait out an inattentive recipient and be paid without ever
+  // facing an adjudicator.
   s = deriveObligations(obligations, opts(9999, [deliver]));
-  assert.equal(s[0].state, "met");
-  assert.equal(s[0].deemed_accepted, true);
-  assert.equal(s[0].met_at, 4600);
+  assert.equal(s[0].state, "unanswered");
+  assert.equal(s[0].met_at, null);
+  assert.equal(s[0].dispute_right, null, "silence is nobody's fault yet; either party may raise it");
 
   // THE SAFETY PROPERTY: an explicit refusal must stop the clock, or the
   // deemed-acceptance rule would pay a withholder who simply waited.
@@ -131,7 +133,7 @@ test("a delivery starts the recipient's clock; silence is acceptance, a refusal 
   s = deriveObligations(obligations, opts(9999, refused));
   assert.equal(s[0].state, "contested");
   assert.equal(s[0].contest_reason, "not_received");
-  assert.equal(s[0].deemed_accepted, undefined);
+  assert.notEqual(s[0].state, "met");
   assert.equal(s[0].dispute_right, "a", "the party who refused holds it");
 
   // A cure is simply a later delivery: it becomes the latest and the clock
@@ -177,9 +179,8 @@ test("repeated not_received cannot stall for ever: the absolute clock does not r
   assert.equal(s[0].contest_reason, "not_met");
   assert.equal(s[0].dispute_right, "a");
 
-  // And silence is still acceptance, whatever the absolute clock says — this
-  // limit bounds an argument, it does not punish a quiet recipient.
+  // Silence, however long, still resolves nothing on its own.
   s = deriveObligations(obligations, opts(99_000, [deliver("d1", 1000)]));
-  assert.equal(s[0].state, "met");
-  assert.equal(s[0].deemed_accepted, true);
+  assert.equal(s[0].state, "unanswered");
+  assert.equal(s[0].met_at, null);
 });
