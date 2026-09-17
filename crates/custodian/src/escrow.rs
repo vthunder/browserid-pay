@@ -575,9 +575,13 @@ pub async fn lapsed(
     {
         let refused = answer.value.get("ok").and_then(|v| v.as_bool()) == Some(false);
         let reason = answer.value.get("reason").and_then(|v| v.as_str()).unwrap_or("not_met");
+        // A refusal blocks the claim however old it is. The absolute
+        // resolution clock bounds the ARGUMENT, not this release: when it runs
+        // out the answer is an adjudicator, never an automatic payout — paying
+        // out here would hand the money to whoever waited longest.
         return Err(err(
             if refused { "contested" } else { "already_answered" },
-            if refused { format!("the recipient answered \"{reason}\"; cure it by delivering again") } else { "the recipient already answered".to_string() },
+            if refused { format!("the recipient answered \"{reason}\"; cure it by delivering again, or dispute once the resolution window has run out") } else { "the recipient already answered".to_string() },
         ));
     }
     let now = db::now();

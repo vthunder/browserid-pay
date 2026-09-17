@@ -23,6 +23,16 @@ export const contractAudience = (id, repo = DEFAULTS.repo) => `${collectionAudie
  * Short enough that withholding cannot stall, long enough for a human to look.
  */
 export const DEFAULT_RESPONSE_WINDOW = "P2D";
+/**
+ * The absolute limit on settling whether a delivery ARRIVED, measured from the
+ * FIRST delivery and never restarted by a cure. Without it, "I never got it"
+ * resets the clock every time and stalls indefinitely.
+ *
+ * Default: three response windows. It only bites while an arrival is actively
+ * disputed — silence is still acceptance, and a quality complaint (`not_met`)
+ * acknowledges receipt and leaves this clock behind.
+ */
+export const DEFAULT_RESOLUTION_MULTIPLE = 3;
 /** ISO-8601 duration → seconds. Days/hours/minutes/seconds only. */
 export function windowSecs(iso) {
   const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(iso || ""));
@@ -332,6 +342,7 @@ export class Agreements {
       // Clear, not in the sealed terms: the custodian has to know when silence
       // becomes acceptance, and it cannot read the terms in commitment mode.
       response_window: o.response_window || DEFAULT_RESPONSE_WINDOW,
+      ...(o.resolution_window ? { resolution_window: o.resolution_window } : {}),
       ...(o.min_reputation ? { min_reputation: { indexer: (o.min_reputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(o.min_reputation.score)) } } : {}),
       contribution: contributionOut,
       // Fees are CLEAR on the proposal even in commitment mode: a chain policy
@@ -564,7 +575,7 @@ export class Agreements {
     const [lock, evidence] = await Promise.all([this.chain.get(path, "lock"), this.chain.list(`${path}evidence/`)]);
     // The payload's own `id` is the AGREEMENT id; the evidence id is the object id.
     const evs = evidence.map((e) => ({ ...e.payload, agreement: e.payload?.id, id: e.id, block: e.block ?? null }));
-    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles, responseWindow: p.response_window });
+    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles, responseWindow: p.response_window, resolutionWindow: p.resolution_window });
   }
 
   /** Payer acknowledges delivery: evidence on chain, then the custodian releases. */
@@ -901,6 +912,13 @@ export class Agreements {
               then: "deliver again and SEND the content this time; that restarts their window" }
           : { action: "none", why: `${other(me, parties)} contested "${refused.what}" as not meeting the terms; agree a fix or dispute it` };
       }
+      // The arrival argument ran out of time: nothing here will resolve it, and
+      // no clock will release the escrow, so it takes an adjudicator.
+      const stalled = obs.find((o) => o.state === "stalled" && o.by === me);
+      if (stalled) {
+        return { action: "dispute", why: `"${stalled.what}": ${other(me, parties)} has not acknowledged receipt and the time to settle that has run out`,
+                 then: "the adjudicator sees the whole exchange — every delivery, every refusal and when each happened — and the escrowed adjudicator fee already covers it" };
+      }
       // They neither answered nor refused in time: claim the lapse.
       const lapsed = obs.find((o) => o.by === me && o.deemed_accepted);
       if (lapsed && !iAmPayer && st.escrow?.state === "locked") {
@@ -1086,8 +1104,9 @@ function other(me, parties = {}) {
   return [parties.proposer, parties.acceptor].filter(Boolean).find((x) => x !== me) || "the other party";
 }
 
-export function deriveObligations(obligations, { evidence = [], lock = false, now = nowS(), parties = {}, roles = {}, responseWindow = DEFAULT_RESPONSE_WINDOW } = {}) {
+export function deriveObligations(obligations, { evidence = [], lock = false, now = nowS(), parties = {}, roles = {}, responseWindow = DEFAULT_RESPONSE_WINDOW, resolutionWindow = null } = {}) {
   const respondSecs = windowSecs(responseWindow) ?? windowSecs(DEFAULT_RESPONSE_WINDOW);
+  const resolveSecs = windowSecs(resolutionWindow) ?? respondSecs * DEFAULT_RESOLUTION_MULTIPLE;
   const ofObligation = (kind, i, by) => evidence.filter((e) => e.kind === kind && (e.obligation === undefined ? (by === undefined || e.by === by) : e.obligation === i));
   const out = obligations.map((o, i) => ({ index: i, by: o.by, what: o.what, kind: o.kind || "deliverable", deadline: o.deadline ?? null, depends_on: o.depends_on ?? null }));
   // First pass: when was each obligation met (writer-claimed `at`, else unknown).
@@ -1117,17 +1136,30 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     const answer = ordered
       .filter((e) => e.kind === "acknowledgement" && e.by !== o.by && after(e, last))
       .pop();
+    // Measured from the FIRST delivery and never restarted, so repeated
+    // "I never got it" cannot extend the argument for ever.
+    const absoluteDue = (deliveries[0].at ?? now) + resolveSecs;
     if (answer) {
       // An acknowledgement with no `ok` is an acceptance: that is what every
       // acknowledgement meant before this field existed.
-      if (answer.ok === false) {
-        return { met: false, delivered: true, contested: true, reason: answer.reason || "not_met", at: answer.at ?? null };
+      if (answer.ok !== false) return { met: true, at: answer.at ?? last.at ?? Infinity };
+      const reason = answer.reason || "not_met";
+      // `not_met` ACKNOWLEDGES receipt and argues about the work, so the
+      // arrival question is closed and this clock stops. Only an unresolved
+      // arrival keeps running against it.
+      if (reason === "not_met") {
+        return { met: false, delivered: true, contested: true, reason, at: answer.at ?? null };
       }
-      return { met: true, at: answer.at ?? last.at ?? Infinity };
+      return {
+        met: false, delivered: true, contested: true, reason, at: answer.at ?? null,
+        absolute_due: absoluteDue, ...(now > absoluteDue ? { stalled: true } : {}),
+      };
     }
     const due = (last.at ?? now) + respondSecs;
+    // Silence is acceptance whatever the absolute clock says: this limit exists
+    // to bound an ARGUMENT about arrival, not to punish a quiet recipient.
     if (now > due) return { met: true, at: due, deemed: true };
-    return { met: false, delivered: true, response_due: due };
+    return { met: false, delivered: true, response_due: due, absolute_due: absoluteDue };
   };
   const status = out.map(metAt);
   // Second pass: effective deadlines (slid by a dependency's lateness) and state.
@@ -1147,6 +1179,9 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     const deadline = effectiveDeadline(o);
     let state;
     if (st.met) state = "met";
+    // `stalled` is a contested arrival that ran out of time, so it must be
+    // tested BEFORE the plain contested case or it can never surface.
+    else if (st.stalled) state = "stalled";
     else if (st.contested) state = "contested";
     else if (st.delivered) state = "delivered";
     else if (o.depends_on != null && !status[o.depends_on]?.met) state = "blocked";
@@ -1155,10 +1190,14 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     else state = "pending";
     return { ...o, effective_deadline: deadline, state, met_at: st.met && Number.isFinite(st.at) ? st.at : null,
       ...(st.response_due ? { response_due: st.response_due } : {}),
+      ...(st.absolute_due ? { absolute_due: st.absolute_due } : {}),
       ...(st.deemed ? { deemed_accepted: true } : {}),
       ...(st.reason ? { contest_reason: st.reason } : {}),
       // A contested delivery is the deliverer's to cure, so the dispute right
       // sits with the party who raised it; `late` is unchanged.
-      dispute_right: state === "late" || state === "contested" ? other(o.by) : null };
+      // `stalled` is the deliverer's to escalate — the recipient will not
+      // resolve it and nothing else will. (Either party may in fact dispute;
+      // this names who has reason to.)
+      dispute_right: state === "stalled" ? o.by : state === "late" || state === "contested" ? other(o.by) : null };
   });
 }

@@ -5,7 +5,7 @@ status: completed
 type: feature
 priority: high
 created_at: 2026-09-17T17:31:10Z
-updated_at: 2026-09-17T17:57:14Z
+updated_at: 2026-09-17T19:29:00Z
 ---
 
 The mitigation for non-attributable withholding (`browserid-pay-oz63`) that needs no cryptography (Dan, 2026-09-17).
@@ -76,3 +76,20 @@ Tested: the safety property both sides (a refusal stops deemed acceptance in the
 
 - `browserid-pay-b1ue` (unattended settlement) now has its trigger, but nothing sweeps: a lapse releases only when the payee CLAIMS it. That is deliberate — no background job, and the payee has the incentive — but an escrow whose payee never returns still sits.
 - What the adjudicator makes of each combination of claims and timings is unchanged; the judge prompt has not been told about response windows yet.
+
+## Addendum 2026-09-17: the absolute resolution clock
+
+The first cut let a cure restart the recipient's window, which made repeated "I never got it" an unbounded stall (Dan spotted it).
+
+Fixed by separating the two questions a recipient can answer:
+
+- **Did it arrive?** An unresolved arrival runs against a `resolution_window` measured from the FIRST delivery and never restarted by a cure. When it runs out the obligation goes `stalled`. Default: three response windows; settable as a clear proposal term.
+- **Is the work any good?** `not_met` acknowledges receipt, so the arrival clock is behind us and it stays an ordinary contest for as long as it takes.
+
+Silence is still acceptance regardless of the absolute clock — this bounds an argument, it does not punish a quiet recipient.
+
+**A stalled arrival pays nobody.** The custodian still refuses `claim_lapsed` while any refusal stands, however stale; the only way out is the adjudicator, whose fee is already escrowed, so an honest recipient is not out of pocket for defending themselves. Releasing automatically here would hand the money to whoever waited longest, which is the failure the whole mechanism exists to prevent.
+
+`next_step` sends the deliverer to `dispute` rather than to a payout.
+
+**The limit of this, stated plainly**: a cure is no more verifiable than the original delivery, so the chain records the same objects whether the deliverer is withholding and curing on paper or the recipient is lying about non-receipt. The clock bounds the argument and denies either side a payoff for stalling; it does not decide who is telling the truth. That needs `browserid-pay-ifz9` (sealed delivery on chain), after which a cure is checkable and the question becomes decidable. Accepted knowingly: the tie-break at adjudication favours the party holding verifiable artifacts.

@@ -147,3 +147,39 @@ test("a delivery starts the recipient's clock; silence is acceptance, a refusal 
   assert.equal(s[0].state, "met");
   assert.equal(s[0].met_at, 1200);
 });
+
+test("repeated not_received cannot stall for ever: the absolute clock does not reset", () => {
+  const obligations = [{ by: "b", what: "the work", kind: "deliverable", deadline: 10_000 }];
+  const parties = { proposer: "a", acceptor: "b" };
+  // Response window 1h, absolute limit 3h from the FIRST delivery.
+  const opts = (now, evidence) => ({ evidence, now, parties, responseWindow: "PT1H", resolutionWindow: "PT3H" });
+  const deliver = (id, at) => ({ id, kind: "delivery", by: "b", at });
+  const refuse = (id, at) => ({ id, kind: "acknowledgement", by: "a", at, ok: false, reason: "not_received" });
+
+  // Cure #1, refused again: still contested, still inside the absolute limit.
+  let ev = [deliver("d1", 1000), refuse("a1", 1100), deliver("d2", 2000), refuse("a2", 2100)];
+  let s = deriveObligations(obligations, opts(2200, ev));
+  assert.equal(s[0].state, "contested");
+  assert.equal(s[0].absolute_due, 1000 + 3 * 3600, "measured from the FIRST delivery, not the latest");
+
+  // Cure #3 lands after the absolute limit. Under the old rule each cure reset
+  // the clock and this could run for ever; now the argument is out of time.
+  ev = [...ev, deliver("d3", 12_000), refuse("a3", 12_100)];
+  s = deriveObligations(obligations, opts(12_200, ev));
+  assert.equal(s[0].state, "stalled");
+  assert.equal(s[0].dispute_right, "b", "the deliverer escalates — nothing else will resolve it");
+
+  // A quality complaint is different: it ACKNOWLEDGES receipt, so the arrival
+  // clock is behind us and this stays an ordinary contest however long it runs.
+  const quality = [deliver("d1", 1000), { id: "q", kind: "acknowledgement", by: "a", at: 1100, ok: false, reason: "not_met" }];
+  s = deriveObligations(obligations, opts(99_000, quality));
+  assert.equal(s[0].state, "contested");
+  assert.equal(s[0].contest_reason, "not_met");
+  assert.equal(s[0].dispute_right, "a");
+
+  // And silence is still acceptance, whatever the absolute clock says — this
+  // limit bounds an argument, it does not punish a quiet recipient.
+  s = deriveObligations(obligations, opts(99_000, [deliver("d1", 1000)]));
+  assert.equal(s[0].state, "met");
+  assert.equal(s[0].deemed_accepted, true);
+});

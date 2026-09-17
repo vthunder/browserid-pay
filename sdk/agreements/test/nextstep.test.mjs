@@ -324,3 +324,36 @@ test("refusing a delivery does not release the escrow", async () => {
     await servers.close();
   }
 });
+
+test("a stalled arrival sends the deliverer to the adjudicator, not to a payout", async () => {
+  const servers = await fakeServers();
+  try {
+    const w = world(servers);
+    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    // Both windows already elapsed by the time the refusal is examined.
+    const p = await w.alice.propose(T, { acceptor: "bob@y.test", response_window: "PT1S", resolution_window: "PT1S" });
+    assert.equal(p.proposal.resolution_window, "PT1S", "the absolute limit is a clear term too");
+    await w.bob.accept(p.id, p.terms);
+    await w.alice.fund(p.id);
+    await w.bob.deliver(p.id, { content: "x" });
+    await w.alice.settle(p.id, { ok: false, reason: "not_received" });
+    // Second-resolution timestamps: wait past the tick, not just past the duration.
+    await new Promise((r) => setTimeout(r, 2500));
+
+    const obs = await w.bob.obligations(p.id);
+    assert.equal(obs[0].state, "stalled");
+
+    // Bob is sent to the adjudicator — NOT told to claim a lapse, which would
+    // pay him for an arrival nobody has confirmed.
+    const s = await w.bob.nextStep();
+    assert.equal(s.action, "dispute", s.why);
+    assert.match(s.then, /adjudicator fee already covers it/);
+
+    // That the escrow will not release itself here — a refusal blocks the lapse
+    // claim however stale it is — is enforced by the custodian and tested
+    // there (`a_lapsed_response_window_releases_but_a_refusal_stops_the_clock`).
+    // Asserting it against the stub would only be testing the stub.
+  } finally {
+    await servers.close();
+  }
+});
