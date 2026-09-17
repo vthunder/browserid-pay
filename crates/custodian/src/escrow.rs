@@ -232,6 +232,15 @@ async fn caller(verify: &Verify, audience: &str, presentation: &str) -> Result<(
     Ok((c.account, c.actor, c.scopes, c.warrant_key))
 }
 
+/// Like [`caller`], but accepting a standing warrant on the collection as well
+/// as one for this agreement. Every contract presentation in the lifecycle —
+/// lock, acknowledge, dispute — has to accept both, or a party that approved a
+/// blanket grant can open an agreement and then not settle it.
+async fn caller_either(verify: &Verify, id: &str, presentation: &str) -> Result<(String, String, Vec<ScopeEntry>, Option<String>), EscrowError> {
+    let c = caller_for_contract(verify, &contract_audience(id), presentation).await?;
+    Ok((c.account, c.actor, c.scopes, c.warrant_key))
+}
+
 /// Everything the lock needs to record a party's grant as a budget.
 struct Caller {
     account: String,
@@ -439,7 +448,7 @@ pub const COLLECTION_AUDIENCE: &str = "sbo+raw://avail:turing:530/agreements";
 /// Payer acknowledges delivery: price → payee, fees → custodian and (unused)
 /// adjudicator fee back to payer, contribution → recipient.
 pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id: &str, presentation: &str) -> Result<Escrow, EscrowError> {
-    let (_, actor, _, _) = caller(verify, &contract_audience(id), presentation).await?;
+    let (_, actor, _, _) = caller_either(verify, id, presentation).await?;
     let e = settle(db, id, |e| {
         if actor != e.payer {
             return Err(err("not_payer", actor.clone()));
@@ -456,7 +465,7 @@ pub async fn acknowledge(verify: &Verify, db: &Db, publisher: &dyn Publisher, id
 /// Either party opens a dispute: the escrow freezes and the sealed terms are
 /// handed back for delivery to the adjudicator.
 pub async fn dispute(verify: &Verify, db: &Db, id: &str, presentation: &str) -> Result<(Escrow, Option<String>), EscrowError> {
-    let (_, actor, _, _) = caller(verify, &contract_audience(id), presentation).await?;
+    let (_, actor, _, _) = caller_either(verify, id, presentation).await?;
     db.with(|c| {
         let Some(e) = get(c, id)? else { return Ok(Err(err("not_found", id))) };
         if actor != e.payer && actor != e.payee {
@@ -836,6 +845,30 @@ mod tests {
         assert_eq!(e.error, "cap_exceeded");
         let d = e.detail.unwrap_or_default();
         assert!(d.contains("38.00") && d.contains("112.00"), "should report remaining and committed: {d}");
+    }
+
+    #[tokio::test]
+    async fn a_standing_grant_carries_the_whole_lifecycle_not_just_the_lock() {
+        // Regression: lock accepted the collection audience but acknowledge and
+        // dispute did not, so a party on a blanket grant could open an
+        // agreement and then be unable to settle or dispute it.
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+
+        lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_life", "500.00", Some("P30D"))).await.unwrap();
+        // Settle with a presentation minted for the COLLECTION audience.
+        let ack = presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE, vec![standing_scope("500.00", Some("P30D"), None)], 1);
+        let e = acknowledge(&s.verify, &s.db, &Log, "agr_life", &ack).await.unwrap();
+        assert_eq!(e.state, "settled");
+        assert_eq!(bal(&s, "bob@y.test"), 5_000);
+
+        // And a dispute under the same standing authority.
+        lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", standing_lock_req(&s, "agr_life2", "500.00", Some("P30D"))).await.unwrap();
+        let d = presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", COLLECTION_AUDIENCE, vec![standing_scope("500.00", Some("P30D"), None)], 9);
+        let (e2, sealed) = dispute(&s.verify, &s.db, "agr_life2", &d).await.unwrap();
+        assert_eq!(e2.state, "disputed");
+        assert_eq!(sealed.as_deref(), Some("sealed"));
     }
 
     #[tokio::test]

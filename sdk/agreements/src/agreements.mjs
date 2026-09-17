@@ -202,9 +202,20 @@ export class Agreements {
     if (max_duration) entry.max_duration = max_duration;
     if (min_reputation) entry.min_reputation = { indexer: (min_reputation.indexer || this.index).replace(/\/+$/, ""), score: Math.round(Number(min_reputation.score)) };
     const grants = [{ audience: aud, scopes: [entry] }];
-    if (!this.agent.warrantedAudiences().includes(this.repo)) grants.push({ audience: this.repo, scopes: CHAIN_SCOPES(this.email) });
+    const held = this.agent.warrantedAudiences();
+    if (!held.includes(this.repo)) grants.push({ audience: this.repo, scopes: CHAIN_SCOPES(this.email) });
+    // Bundle the default adjudicator's `dispute` grant into the SAME card.
+    // Otherwise the first agreement under a "no more cards" standing grant
+    // still produces one, which is exactly the promise this is meant to keep.
+    // An agreement naming a DIFFERENT adjudicator will still ask — correctly,
+    // since that is authority the human has not given.
+    try {
+      const disc = await this.discover();
+      const adj = this.overrides.adjudicator || disc.adjudicators?.[0];
+      if (adj?.origin && !held.includes(adj.origin)) grants.push({ audience: adj.origin, scopes: ["dispute"] });
+    } catch { /* discovery is a convenience here, not a requirement */ }
     await this.obtainWarrants(grants);
-    return { audience: aud, granted: entry };
+    return { audience: aud, granted: entry, bundled: grants.map((g) => g.audience) };
   }
 
   /** One indexer's signed scorecard for `subject` (default: the configured index). */
@@ -215,9 +226,31 @@ export class Agreements {
   }
 
   /** Verify a counterparty's bundle for the contract and check its cap covers the total. */
+  /**
+   * My presentation for an agreement, under whichever authority I actually
+   * hold: a warrant for THIS agreement if there is one, else the standing
+   * warrant on the collection. Minting for the wrong audience is an
+   * "assertion: audience mismatch" the counterparty cannot diagnose.
+   */
+  async #contractAssertion(id) {
+    const aud = contractAudience(id, this.repo);
+    const held = this.agent.warrantedAudiences();
+    if (!held.includes(aud) && held.includes(collectionAudience(this.repo))) {
+      return this.agent.assertionFor(collectionAudience(this.repo));
+    }
+    return this.agent.assertionFor(aud);
+  }
+
   async #checkBundle(id, bundle, expectIdentity, totalMinor, currency) {
-    const r = await this.verify(bundle, contractAudience(id, this.repo));
-    if (!r.ok) throw new AgreementError("bad_bundle", r.reason);
+    // The counterparty may be acting under a warrant for this agreement or
+    // under a standing one on the collection; either is valid authority, and
+    // which they hold is not our business. Try the narrow one first.
+    let r = await this.verify(bundle, contractAudience(id, this.repo));
+    if (!r.ok) {
+      const broad = await this.verify(bundle, collectionAudience(this.repo));
+      if (broad.ok) r = broad;
+      else throw new AgreementError("bad_bundle", r.reason);
+    }
     if (r.grantee !== expectIdentity && r.email !== expectIdentity) throw new AgreementError("wrong_party", `${r.grantee} is not ${expectIdentity}`);
     const entry = (r.scopes || []).find((s) => (typeof s === "string" ? s : s?.scope) === AGREEMENT_SCOPE);
     if (!entry) throw new AgreementError("no_contract_scope");
@@ -337,7 +370,7 @@ export class Agreements {
     if (p.roles.payer !== this.email) throw new AgreementError("not_payer");
     const adjudicator = st.adjudicator?.sealing_key ? st.adjudicator : await this.#adjudicatorFor(p);
     const sealed_terms = adjudicator?.sealing_key ? seal(canonicalize(st.terms), adjudicator.sealing_key) : null;
-    const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
+    const presentation = await this.#contractAssertion(id);
     // The payee's bundle: its grantor is the account the price is released to.
     const payeeIsProposer = p.roles.payee === p.parties.proposer;
     const acc = payeeIsProposer ? null : await this.chain.get(agreementPath(id), "acceptance");
@@ -509,7 +542,7 @@ export class Agreements {
     const p = await this.#proposal(id);
     if (p.roles.payer !== this.email) throw new AgreementError("not_payer");
     const ev = await this.#evidence(id, "acknowledgement", { note });
-    const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
+    const presentation = await this.#contractAssertion(id);
     const release = await this.#custodian(p.custodian, `/api/escrow/${id}/acknowledge`, { presentation });
     return { ...ev, release };
   }
@@ -529,7 +562,7 @@ export class Agreements {
     const ev = existing
       ? { evidence: existing.payload, evidence_id: existing.id, submission: null, reused: true }
       : await this.#evidence(id, "dispute", { note });
-    const presentation = await this.agent.assertionFor(contractAudience(id, this.repo));
+    const presentation = await this.#contractAssertion(id);
     let frozen;
     try {
       frozen = await this.#custodian(p.custodian, `/api/escrow/${id}/dispute`, { presentation });
