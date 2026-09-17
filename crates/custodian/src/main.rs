@@ -515,7 +515,7 @@ async fn escrow_acknowledge(State(app): State<App>, axum::extract::Path(id): axu
 /// for a friendlier judge.
 async fn escrow_replace_adjudicator(State(app): State<App>, axum::extract::Path(id): axum::extract::Path<String>, Json(req): Json<serde_json::Value>) -> Response {
     let presentation = req.get("presentation").and_then(|v| v.as_str()).unwrap_or_default();
-    match escrow::replace_adjudicator(&app.verify, &app.db, app.reader.as_ref(), &id, presentation).await {
+    match escrow::replace_adjudicator(&app.verify, &app.db, app.publisher.as_ref(), app.reader.as_ref(), &id, presentation).await {
         Ok(e) => Json(json!({ "escrow": escrow::view(&e) })).into_response(),
         Err(e) => (escrow_status(&e), Json(e)).into_response(),
     }

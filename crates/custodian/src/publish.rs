@@ -73,6 +73,20 @@ impl Publisher for ChainPublisher {
         .await;
     }
 
+    async fn adjudicator_replaced(&self, contract_id: &str, from: &str, to: &str) {
+        let payload = json!({ "v": 1, "id": contract_id, "from": from, "to": to, "at": chrono::Utc::now().timestamp() });
+        self.post(
+            WriteSpec {
+                path: format!("/agreements/{contract_id}/"),
+                id: "adjudicator".into(),
+                schema: "agreement.adjudicator.v1".into(),
+                payload: serde_json::to_vec(&payload).expect("adjudicator json"),
+            },
+            &format!("adjudicator replacement for {contract_id}"),
+        )
+        .await;
+    }
+
     async fn settled(&self, contract_id: &str, parties: (&str, &str), outcome: &str, price_minor: i64, currency: &str) {
         // A ruling-driven settlement is a dispute in the reputation record.
         let kind = if outcome.starts_with("ruled:") { "agreement:disputed" } else { "agreement:settled" };
