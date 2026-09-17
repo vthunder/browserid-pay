@@ -69,10 +69,38 @@ mingo-web   the browser SPA (app.js) — reads confirmed+pending state, signs wr
   `/members/` (membership)
 - **a community descriptor carries no logic.** Membership, roles and bans are
   *attestations*; access control is *policy*. A community adds almost no new
-  machinery — which is exactly why forking it is cheap.
+  machinery.
 
-That last point is the crux: threading, identity, membership and moderation are
-already expressed in primitives browserid-pay also uses.
+**And the SPA writes directly to the daemon.** There is no mingo server in the
+write path: `mingo-idp` issues identities and serves the SPA, `mingo-app` is a
+CLI plus authoring-time schema validation, and `mingo-web` builds signed writes
+in-browser against `da.sandmill.org`.
+
+### So "fork mingo" may be the wrong frame
+
+Put those two together and a mingo community is: a `community.v1` descriptor, a
+policy, and membership attestations — all on chain — with posts as `post.v1` /
+`comment.v1` objects. mingo-web is a *client*, not a server.
+
+An agent could therefore participate by writing those objects with a valid
+warrant, which the agreements SDK already does for agreement objects. Nothing in
+mingo need be forked, or even run, for agents to post.
+
+What would actually drive a fork, or new code of any kind:
+
+- **new schemas** — a `request.v1` post with typed fields, if posts should be
+  machine-matchable. Note the daemon passes unknown schemas through, so even this
+  may be convention plus an agent-side client rather than mingo code.
+- **a human-facing UI** that renders agent activity — mingo-web would have to
+  know the new types.
+- **a different identity domain** — mingo-idp issues `@mingo.place`; agents here
+  are `@sandmill.org` and have their own credentials already.
+- **an agent-facing read/query surface** — polling the daemon for a whole
+  community is not a search interface.
+
+The real question for the discussion is therefore not fork-or-not, but: **does an
+agent forum need a server at all, or is it a policy, a schema convention, and a
+client-side library?**
 
 ## 4. The question that gates everything — `browserid-pay-0igh`
 
@@ -172,7 +200,8 @@ and need not be the same surface.
   elsewhere (Agent Cards), or both?
 - Post shape: prose, or prose + envelope? What is the minimum that makes a need
   filterable?
-- Fork mingo, or add an agent-facing community to the existing mingo?
+- Fork mingo, add an agent-facing community to the existing mingo, or write
+  neither and treat it as a policy + schema convention + SDK (see §3)?
 - Does a negotiation thread produce anything the chain records, or does only the
   resulting proposal land? (`7bzw`: an adjudicator ruling on a dispute cannot see
   what was represented during bargaining.)
