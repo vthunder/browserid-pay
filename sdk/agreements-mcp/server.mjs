@@ -16,7 +16,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { DeviceAgent } from "@browserid-ng/agent";
-import { Agreements, DaemonChain } from "@browserid-ng/agreements";
+import { Agreements, DaemonChain, windowBlocks } from "@browserid-ng/agreements";
 
 const IDENTITY = process.env.AGREEMENTS_IDENTITY || join(homedir(), ".browserid-wallet", "identity.json");
 const TERMS_DIR = process.env.AGREEMENTS_TERMS_DIR || join(homedir(), ".browserid-agreements");
@@ -139,7 +139,9 @@ const TERMS = {
   title: z.string().optional(),
   description: z.string().optional(),
   obligations: z.array(z.object({
-    by: z.string(), what: z.string(), deadline: z.number().optional(),
+    by: z.string(), what: z.string(),
+    deadline_block: z.number().int().optional().describe("BLOCK HEIGHT this obligation is due by — NOT a time. Blocks are ~20s. Omit it and pass `deadline_in` instead unless you already know the exact height; if you omit both, the ledger's default window applies and EVERY obligation gets the SAME deadline, which usually is not what you want."),
+    deadline_in: z.string().optional().describe("How long this party gets, as an ISO-8601 duration from now (e.g. \"PT24H\", \"P3D\"), converted to a block height for you. Use this to give each party its own deadline. Ignored if `deadline_block` is set."),
     kind: z.enum(["input", "deliverable", "payment"]).optional().describe("input = something a party must hand over first (met by a receipt); deliverable (default) = met by a delivery; payment = met by the escrow lock"),
     depends_on: z.number().optional().describe("index of the obligation this one needs first; its deadline slides by that one's lateness"),
   })),
@@ -155,10 +157,34 @@ server.registerTool("propose", {
 }, (args) => run(async (a) => {
   // Same arguments ⇒ same proposal (id + salt), so a retry after the human's
   // approval resumes instead of minting a fresh id that no warrant matches.
-  const { acceptor, payer, expires, mode, min_reputation, goal, ...terms } = args;
+  const { acceptor, payer, expires, expires_in, mode, min_reputation, goal, ...terms } = args;
+  // Deadlines are BLOCK HEIGHTS (browserid-pay-e1ou). Reject the old
+  // wall-clock field loudly: silently carrying it left a junk time in the
+  // terms AND let every obligation fall back to the same default window,
+  // which is exactly how the first live proposals came out wrong.
+  for (const [i, ob] of (terms.obligations || []).entries()) {
+    if (ob && ob.deadline !== undefined) {
+      throw new Error(
+        `obligations[${i}] has \`deadline\`, which no longer exists: deadlines are BLOCK HEIGHTS now. ` +
+        `Use \`deadline_in\` (e.g. "PT24H") to give this party its own window, or \`deadline_block\` if you know the height.`
+      );
+    }
+  }
   const key = createHash("sha256").update(JSON.stringify(args)).digest("hex");
   const resume = proposals.get(key) || {};
   try {
+    // Resolve each `deadline_in` against the CURRENT head, so two obligations
+    // with different windows get different heights.
+    if ((terms.obligations || []).some((o) => o?.deadline_in)) {
+      const head = await a.chain.head();
+      terms.obligations = terms.obligations.map((o) => {
+        if (!o?.deadline_in || o.deadline_block != null) { const { deadline_in, ...rest } = o || {}; return rest; }
+        const blocks = windowBlocks(o.deadline_in);
+        if (blocks == null) throw new Error(`obligations: \`deadline_in: "${o.deadline_in}"\` is not an ISO-8601 duration like "PT24H" or "P3D"`);
+        const { deadline_in, ...rest } = o;
+        return { ...rest, deadline_block: head + blocks };
+      });
+    }
     const out = await a.propose(terms, { acceptor, payer, expires, mode, min_reputation, goal, ...resume });
     proposals.delete(key);
     return out;
