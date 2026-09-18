@@ -175,13 +175,24 @@ exactly what `b3gq` forbids.
 1. **Migration.** Live agreements on 530 carry unix-second deadlines. A height
    and a unix timestamp are both integers, so **nothing will fail loudly** —
    an old deadline read as a height is a number in the distant past, and every
-   obligation is instantly late. This needs an explicit version discriminator
-   (`v: 2`, or a `deadline_block` field distinct from `deadline`), not a silent
-   reinterpretation. **This is the single most dangerous part of the change.**
+   obligation is instantly late. **This is the single most dangerous part of the
+   change.**
+
+   **Recommendation: rename the field rather than version it.** `deadline_block`
+   and `expires_block`, distinct from `deadline` and `expires`. A version
+   integer only protects readers that check it; a renamed field fails loudly in
+   **both** directions — an old client reading a new agreement finds no
+   `deadline` and hits the existing "everything needs a bound" error, and a new
+   client seeing `deadline` knows immediately it is looking at the old units.
+   No silent misreading is possible. *Needs sign-off.*
 2. **Warrant coverage across domains** (spec `:172`). A wall-clock `exp` must
-   cover a height deadline. Convert the deadline to an estimated date using the
-   nominal rate, and require a margin — and decide which way to round, since
-   blocks can run slower than nominal and push the real deadline later.
+   cover a height deadline.
+
+   **Recommendation: convert pessimistically.** Blocks can only run *slower*
+   than nominal, never faster, so the real-world deadline can only land later
+   than the estimate. Convert `deadline_block` to a date using the nominal rate
+   **plus a margin**, and require `exp` to cover that. Erring the other way
+   produces a warrant that expires before the deadline it was meant to cover.
 3. **Head-height reads.** Who reads `/v1/state-root`, how often, and what
    happens when it is unreachable? A client that cannot read the head cannot
    evaluate a deadline. Cache with a bound?
@@ -189,15 +200,41 @@ exactly what `b3gq` forbids.
    than fetching inside — keeps it synchronous and testable. Confirm every
    caller can supply it.
 5. **Simultaneous rollout.** Both parties' clients run `deriveObligations` and
-   must agree. Old and new cannot interoperate, so this is a coordinated
-   cutover or a versioned agreement format — and the demo agents, the judge
-   and the indexer all move together.
-6. **Does `block` mean the same number everywhere?** Confirm the daemon's
-   `block_number` is the DA chain's block number (not an app-local index) and
-   that it is identical across apps 506 and 530 on the same Avail network.
-7. **Reorgs.** Can an object's `block` change after it is first observed? If
-   the DA layer can reorg, a deadline evaluation could flip. Probably settled
-   by finality, but confirm rather than assume.
+   must agree. Old and new cannot interoperate, so this is a coordinated cutover
+   — the demo agents, the judge and the indexer all move together.
+
+   **Open, and the one thing genuinely blocking a start:** do the agreements
+   currently live on 530 need to keep working, or were they demo runs that can
+   be left as history? If they can be abandoned, this is a hard cutover with no
+   interop code. If they must keep running, the renamed-field approach above
+   supports both formats coexisting, at the cost of dual evaluation paths.
+6. ~~**Does `block` mean the same number everywhere?**~~ **Settled: yes, it is
+   the Avail block number, global across apps.** The sync loop iterates Avail
+   block numbers (`sync.rs:1316`, `process_block(block_num)`) and reads
+   **several app_ids out of one block** —
+   `rpc.fetch_block_data_multi(block_number, &app_ids)` (`sync.rs:561`). Apps
+   506 and 530 are therefore numbered by the same chain, and a height means the
+   same instant in both.
+7. ~~**Reorgs.**~~ **Settled: the daemon only ever processes finalized blocks.**
+   `lc.subscribe_blocks()` (`lc.rs:106`, *"Subscribe to new finalized blocks"*)
+   reads the avail-light `/v2/status` head, which `main.rs:1599` calls the
+   "finalized head". The `rpc_only` fallback still bounds processing by that
+   same finalized head — it skips the light-client **availability** sampling,
+   not finality. So an object receives a `block_number` only once its block is
+   final, and a deadline evaluation cannot flip under it.
+
+   *Caveat, unrelated to timing:* `rpc_only` means trusting a full node's RPC
+   for block **data** (no DAS). That is a data-availability posture question for
+   production, not a reorg risk.
+8. ~~**`deriveObligations` purity.**~~ **Settled: thread the head in as a
+   parameter.** It already takes `now` with a default of `nowS()`; make it
+   required. The function stays synchronous and testable, and the caller — which
+   is already reading chain state for evidence — supplies it.
+9. ~~**Head-height reads.**~~ **Settled in shape:** read `GET /v1/state-root`,
+   cache for a few seconds (a block is ~20s, so a short cache costs nothing),
+   and **fail closed** — a client that cannot read the head must not guess a
+   deadline. This adds no new network dependency: every caller is already
+   reading the chain for evidence.
 
 ---
 
