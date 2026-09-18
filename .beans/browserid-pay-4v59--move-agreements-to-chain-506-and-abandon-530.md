@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-09-18T15:07:43Z
-updated_at: 2026-09-18T18:12:27Z
+updated_at: 2026-09-18T19:01:15Z
 ---
 
 **Decision (Dan, 2026-09-18): abandon app 530 and run agreements on 506, alongside mingo.** One chain for the forum and for agreements. The agreements currently live on 530 do not need to keep working.
@@ -152,3 +152,36 @@ New: `dsp-genesis policy-layer` prints just browserid-pay's grants and restricti
 ### Open question, not blocking
 
 - [ ] `crates/genesis` still builds a whole chain, which is now only meaningful for 530. `policy-layer` is the piece that stays useful. Keep the rest as a record, or strip it?
+
+## Live progress (2026-09-18)
+
+### Done on chain
+
+- [x] **daemon verified to enforce `sbo-pu34`** — empirically, not by version inference: `policy-probe` against 530 (where the floor was already installed) was refused with the exact pointer and minimum. A refused write leaves nothing behind
+- [x] **browserid-pay's layer merged into 506's root policy.** Grants 6 → 9, restrictions 2 → 5, everything outside those two arrays byte-identical, prior entries preserved in order. Confirmed on chain
+- [x] **floor verified on 506** — `policy-probe --repo …506/` refused a breaching proposal
+- [x] **`/sys/contribution` posted on 506**
+
+### New tooling
+
+- `mingo add-policy-layer` — merges an application's grants into the live root policy. Fetches rather than constructs, append-only and idempotent, proves preservation, dry-run by default. This is the tool for any future application layer, not just this one
+- `dsp-genesis policy-layer` — emits the fragment
+- `dsp-genesis load_key` accepts both key-file forms (JSON and `ed25519:<hex>`)
+
+### Two things the live work uncovered
+
+**`/sys/**` belongs to the host.** `/sys/contribution` had to be signed with **mingo's** sys key — browserid-pay's got `No matching grant`. Readers do not check the creator so nothing is broken, but it means browserid-pay cannot update its own ecosystem-contribution config without mingo's key. Either add a narrow grant for that exact object, or move the object out of `/sys/`. Not decided.
+
+**A credential for the old ledger loads fine and then writes nothing.** `Identity::load()` returns `Ok(true)` for a credential issued against 530, so a redeployed service would come up healthy and silently fail every write — an audience miss reads as "no matching grant", not "wrong ledger". The custodian holds money, so settlement attestations would have failed quietly. Fixed: both services now check `has_audience(chain_audience)` and re-provision when it does not hold, which routes them through the normal consent flow instead.
+
+### Remaining — needs a human at a browser
+
+1. Push and let CI build; `make release-pay` / `release-index`, and the judge workflow
+2. **Each service will print an approval URL and wait.** The custodian and judge hold 530 warrants and will re-provision for the 506 audience — **one consent approval each, by Dan**. This cannot be automated; it is the point of the consent card
+3. Provider listings then publish themselves (`ensure_listing` at startup, and the `/providers/<kind>/$user/**` grants are in place)
+4. Indexer rebuilds from 506 on boot
+5. `demo/run-local.mjs` end to end — still unverified since the block-height work
+
+### Then, and only then
+
+- [ ] tear down 530: drop the follow entry from mingo's `deploy/sbo-daemon/entrypoint.sh` and remove the host state. **After** 506 is verified working, not before — until then 530 is the fallback
