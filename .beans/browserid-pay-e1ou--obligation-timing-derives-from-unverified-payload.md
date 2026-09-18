@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: critical
 created_at: 2026-09-18T12:50:33Z
-updated_at: 2026-09-18T12:50:33Z
+updated_at: 2026-09-18T13:02:39Z
 blocking:
     - browserid-pay-b3gq
 ---
@@ -49,3 +49,24 @@ A second variant is worse because it costs the victim money: the response window
 - [ ] block number → time: is a block's timestamp available, or only its height? Height alone gives ordering, not deadlines
 - [ ] `deriveObligations` is used by both parties' clients — both must derive the same view, so the switch has to be simultaneous or versioned
 - [ ] re-check `browserid-pay-b3gq`'s floors once timing is trustworthy
+
+## Cross-stack investigation (2026-09-18): what is actually available
+
+**Block height is available today; block *time* is not.**
+
+- `sbo-daemon/src/main.rs:276` already exposes `block: obj.block_number` in the object JSON. Our `DaemonReader::view` (`crates/chain/src/daemon.rs:47`) simply does not read it. **Height is a one-line fix on our side** and gives trustworthy *ordering* immediately — which is what the judge's prompt already claims to have ("read the evidence in chain order").
+- **Time is not stored.** The daemon reads the DA block's `timestamp.set` inherent at `sync.rs:571` and threads it into `L2Context::for_block` for attribution and the HLC bound — then drops it. `StoredObject` keeps `block_number` and no timestamp. Filed as **`sbo-xgyr`** (high): persist and expose it.
+
+So the fix splits cleanly, and the first half is not blocked:
+
+1. **Now, in this repo:** read `block` into `ObjectView`, sort evidence by it, and pass it to the adjudicator. Stop the prompt claiming an ordering it was never given.
+2. **Then, once `sbo-xgyr` lands:** switch deadline evaluation to inclusion time.
+3. **Independently:** remove `at` from evidence payloads, and add an HLC to agreement writes for sub-block resolution.
+
+Note `main.rs:680` builds `L2Context::for_block(Some(now), ..)` on the local-submit path — that is the daemon's own clock, not block time. Whatever `sbo-xgyr` persists must come from the replay path, not that one.
+
+## How the rest of the stack handles time, for comparison
+
+**mingo does it properly-ish** (`mingo-jlo1`): every write carries an HLC (`app.js:473`, `:858`), display and sorting read it, and it is therefore *bounded* by `W`. Its spaces set `W = 86400`, so a post can claim to be 24h old — deliberate, since the seed corpus needs it — and the residual gaming (forward-dating by `ε` to top a sort) is cosmetic at human volume.
+
+**The contrast is the lesson.** mingo carries a bounded claim and treats it as a claim. We carry an *unbounded* claim in a payload field and treat it as a fact. Neither uses inclusion time, because until `sbo-xgyr` nobody can.
