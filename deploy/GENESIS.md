@@ -92,8 +92,34 @@ dsp-genesis contribution-update --repo sbo+raw://avail:turing:506/ \
     --key-file ~/secure-backup/mingo-sys.key
 ```
 
+**`/sys/**` belongs to the chain, not to an application.** Who may write what:
+
+| object | whose config | who can write it |
+|---|---|---|
+| `/sys/policies/root` | the chain's | admin key only |
+| `/sys/names/*` | anyone's | `*` create, owner update |
+| `/sys/dnssec/**` | self-authorizing | `*`, guarded by the proof predicate |
+| `/sys/checkpoints/**` | the chain's | the checkpointer key only |
+| `/sys/contribution` | **ours** | admin key only |
+
 **Later, not now:** the clean separation is three repos — base chain, mingo,
 browserid-pay — so the chain's own concerns stop living inside an application.
+
+### Keep this out of the shared repo
+
+mingo is a **public** repository and browserid-pay is private. Its `GENESIS.md`
+deliberately says only that other repositories keep objects on the chain and
+that their runbooks must be consulted before a regenesis — it does not name
+them or describe what they do. **Everything specific lives here.**
+
+`mingo add-policy-layer` is written generically for the same reason: it merges
+"an application's" grants and knows nothing about agreements, escrow or
+reputation.
+
+If a regenesis is ever run, the trail back to this file is: the databases the
+daemon follows (`mingo/deploy/sbo-daemon/entrypoint.sh`, which names this repo
+and app 530 — a pre-existing exposure from 2026-09-15) and `roles.admin` on the
+live root policy.
 
 And the update is a **merge, not a replace**. `/sys/policies/root` on 506 is
 mingo's policy; writing browserid-pay's over it would remove mingo's community
