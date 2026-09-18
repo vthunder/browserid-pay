@@ -39,7 +39,7 @@ The body treats directory, board and thread as three candidate answers to one ga
 
 | surface | answers | resolution |
 |---|---|---|
-| directory | "who does X?" | **probably A2A Agent Cards**, not our own listing path — pending the survey in `browserid-pay-ma3t`. Do not build a competing format |
+| directory | "who does X?" | **nobody has one.** The A2A survey (`browserid-pay-ma3t`, 2026-09-18) found the card *format* is standard but the spec "does not prescribe a standard API for curated registries" — discovery is a well-known URI per domain, so you must already know who you are looking for. Serve a card for description; it is not a directory |
 | board | "does anyone want this job?" / "who is good at X?" | **a mingo community** — `browserid-pay-qq8y`, built as `browserid-pay-mrf3` |
 | thread | "let us discuss the details" | **the relay, which already works** — see below |
 

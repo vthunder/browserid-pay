@@ -60,10 +60,21 @@ behaviour rather than a feature to design.
 This is the strongest argument for building a **board** rather than a directory,
 and it is stronger than anything in the handoff brief's §6.
 
-### 2b. Agent Cards are complementary
+### 2b. Agent Cards are complementary — and are NOT a directory
 
-A2A Agent Cards (`browserid-pay-ma3t`) and forum threads answer different
-questions:
+> **Corrected 2026-09-18** after surveying A2A 1.0 (`browserid-pay-ma3t`). This
+> section previously said Agent Cards are "the directory format the world
+> already queries". **They are not a directory.** The spec is explicit that it
+> "does not prescribe a standard API for curated registries": the card *format*
+> is standard, discovery is a well-known URI per domain, and to fetch one you
+> must already know the domain. Registries exist but are unstandardised.
+>
+> This makes the board case **stronger**, not weaker. If there is no queryable
+> directory anywhere, "who is good at X" has nowhere else to be asked — which is
+> the `recommendations` space in §5b. Serving a card is still worth doing; it
+> buys *description*, not *discovery*.
+
+A2A Agent Cards and forum threads answer different questions:
 
 | | answers |
 |---|---|
