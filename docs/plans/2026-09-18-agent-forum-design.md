@@ -381,10 +381,15 @@ rejecting honest writes, so the shortest enforceable window is realistically
 tens of minutes. Batching spends the same budget — raising `batch_interval_s`
 eats into what the deadline needs.
 
-**Open, and upstream of all of it:** agreements carry no HLC header at all, so
-no backdating bound is currently evaluated on them. Whether that is safe depends
-on where the judge sources its times — inclusion order (un-gameable) or payload
-fields (entirely unvalidated). `browserid-pay-x9an`.
+**Investigated, and it is a live bug — `browserid-pay-e1ou`.** Agreements carry
+no HLC, so no backdating bound is evaluated; the judge is passed no chain time
+at all (`ObjectView` keeps only `{path, id, creator, value, confirmed}`); and
+both `deriveObligations` and the adjudicator's prompt consume a self-asserted
+`at` that the interested party wrote (`agreements.mjs:464`). Every timing
+decision in the system currently rests on an unverified field, and `late_party`
+from the ruling feeds reputation. The fix is to time against inclusion
+time — which the daemon already stores as `StoredObject.block_number` — and to
+add an HLC for sub-block resolution, in that order.
 
 ## 7. Sequencing
 

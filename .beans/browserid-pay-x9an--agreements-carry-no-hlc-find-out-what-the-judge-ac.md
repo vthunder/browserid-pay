@@ -5,9 +5,11 @@ status: todo
 type: task
 priority: high
 created_at: 2026-09-18T12:27:11Z
-updated_at: 2026-09-18T12:27:11Z
+updated_at: 2026-09-18T12:50:55Z
 blocking:
     - browserid-pay-b3gq
+blocked_by:
+    - browserid-pay-e1ou
 ---
 
 **Agreement writes carry no HLC header, so no backdating bound is enforced on them at all.**
@@ -30,3 +32,15 @@ So the 5-minute `DEFAULT_MAX_AUTHORING_LAG_MS` discussed elsewhere is moot for a
 - [ ] only then decide whether agreements should start carrying an HLC at all
 
 Note also a stale doc comment in `check_hlc_bound`: *"per-collection `W` ... is wired in a later step"* — it already is; `collection_max_lag_ms(msg, state)` is called on the line above.
+
+## Investigated (2026-09-18) — answer: neither, and it is worse
+
+The question was whether the judge times against inclusion order (safe) or payload fields (bad). The answer is **payload fields, and the judge is given no chain time at all** — see `browserid-pay-e1ou`, which this bean now depends on.
+
+`ObjectView` drops everything but `{path, id, creator, value, confirmed}`, so no block number reaches the judge; meanwhile `deriveObligations` and the adjudicator's prompt both consume a self-asserted `at` written by the interested party.
+
+So the HLC question is settled, but as the *last* of four steps rather than the fix:
+
+**Yes, add an HLC to agreement writes** — it is self-asserted but bounded by `W` (5 min default), which is strictly better than an unbounded payload field, and it gives sub-block resolution. There is no reason not to.
+
+**But it is not the fix.** HLC constrains a claim; inclusion time is a fact no party controls. Deadline evaluation should use inclusion time, with HLC for ordering and resolution inside a block. Adding HLC while `deriveObligations` still reads payload `at` would change nothing.
