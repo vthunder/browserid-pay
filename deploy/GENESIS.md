@@ -64,6 +64,28 @@ The exact shapes are in `crates/genesis/src/main.rs` — see **Policy** below,
 which remains the authoritative expression even though the crate no longer
 builds the chain that runs.
 
+### Who can perform it — read this first
+
+**The governed update on 506 must be signed by MINGO's sys key, not
+browserid-pay's.** mingo's root policy grants `govern` only to its own sys
+pubkey, so a policy write signed by `dsp-sys.key` is refused. The failure is
+safe but opaque.
+
+And the update is a **merge, not a replace**. `/sys/policies/root` on 506 is
+mingo's policy; writing browserid-pay's over it would remove mingo's community
+governance, its checkpointer grant and `/u/$owner/**`. `dsp-genesis
+policy-update` does exactly that wholesale replace — correct when browserid-pay
+owned 530, wrong here — so **it now refuses any repo that is not 530**.
+
+Use instead:
+
+```
+dsp-genesis policy-layer        # prints just browserid-pay's grants + restrictions
+```
+
+Merge that fragment into 506's root policy and re-sign the whole thing with
+mingo's sys key.
+
 ### Order, and the one that bites
 
 1. **Verify the daemon first.** The contribution floor needs the `sbo-pu34`

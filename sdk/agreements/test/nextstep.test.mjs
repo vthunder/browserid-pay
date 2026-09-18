@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Agreements, MemoryChain, generateSealingKey } from "../index.mjs";
 import { FakeAgent, fakeVerify, fakeServers } from "./fakes.mjs";
 
-const REPO = "sbo+raw://avail:turing:530/";
+const REPO = "sbo+raw://avail:turing:506/";
 // Short windows so the tests exercise the real timing paths in milliseconds.
 // Local config, never a negotiated term.
 let WINDOWS = {};

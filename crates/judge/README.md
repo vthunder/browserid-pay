@@ -39,7 +39,7 @@ It is not an as-you grant and not `grantor: self` (the broker refuses that
 pair as contradictory). One approval covers the identity and the bundled
 warrants —
 
-- audience `sbo+raw://avail:turing:530/` with scopes `action:post`,
+- audience `sbo+raw://avail:turing:506/` with scopes `action:post`,
   `path:/agreements/**`, `path:/providers/adjudicators/**`,
   `path:/u/*/attestations/**` (chain writes), and
 - one warrant per custodian in `JUDGE_CUSTODIANS` with scope `ruling`

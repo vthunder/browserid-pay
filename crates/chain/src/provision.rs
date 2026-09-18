@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn request_is_a_delegated_agent_not_an_as_you_grant() {
         let grants = vec![
-            GrantRequest { audience: "sbo+raw://avail:turing:530/".into(), scopes: vec!["action:post".into()] },
+            GrantRequest { audience: crate::DEFAULT_REPO.into(), scopes: vec!["action:post".into()] },
             GrantRequest { audience: "https://pay.dsp.fyi".into(), scopes: vec!["ruling".into()] },
         ];
         let b = request_body("PUB", "judge", &grants, "adjudicator", "why");

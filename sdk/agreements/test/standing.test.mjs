@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Agreements, MemoryChain, generateSealingKey, collectionAudience, contractAudience } from "../index.mjs";
 import { FakeAgent, fakeVerify, fakeServers } from "./fakes.mjs";
 
-const REPO = "sbo+raw://avail:turing:530/";
+const REPO = "sbo+raw://avail:turing:506/";
 
 function world(servers) {
   const chain = new MemoryChain();

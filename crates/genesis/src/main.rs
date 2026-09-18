@@ -101,6 +101,19 @@ enum Commands {
     /// (`POST /v1/submit?repo=`). Admin holds `govern` on `/**`, so this is an
     /// ordinary governed write — the way to change policy without a regenesis.
     /// Polls until the daemon serves the new payload.
+    /// Print the grants and restrictions browserid-pay needs, as a fragment to
+    /// be MERGED into an existing root policy.
+    ///
+    /// This is what app 506 needs (`browserid-pay-4v59`): agreements now live on
+    /// mingo's chain, so browserid-pay must not write `/sys/policies/root` —
+    /// that object is mingo's, and replacing it would remove mingo's community
+    /// governance, its checkpointer grant and `/u/$owner/**`.
+    ///
+    /// **The merged policy must be signed by MINGO's sys key, not this one.**
+    /// mingo's root policy grants `govern` only to its own sys pubkey, so a
+    /// write signed here is refused — the failure is safe but confusing, which
+    /// is why `policy-update` now refuses up front.
+    PolicyLayer,
     PolicyUpdate {
         #[arg(long, default_value = "~/secure-backup/dsp-sys.key")]
         key_file: String,
@@ -131,7 +144,7 @@ enum Commands {
         key_file: String,
         #[arg(long, default_value = DEFAULT_DAEMON)]
         daemon: String,
-        #[arg(long, default_value = "sbo+raw://avail:turing:530/")]
+        #[arg(long, default_value = "sbo+raw://avail:turing:506/")]
         repo: String,
         /// Contribution percentage to claim. The default breaches the 0.01 floor.
         #[arg(long, default_value_t = 0.0)]
@@ -152,7 +165,7 @@ enum Commands {
         key_file: String,
         #[arg(long, default_value = DEFAULT_DAEMON)]
         daemon: String,
-        #[arg(long, default_value = "sbo+raw://avail:turing:530/")]
+        #[arg(long, default_value = "sbo+raw://avail:turing:506/")]
         repo: String,
         #[arg(long, default_value = "fund@dsp.fyi")]
         recipient: String,
@@ -165,7 +178,7 @@ enum Commands {
         #[arg(long, default_value = DEFAULT_DAEMON)]
         daemon: String,
         /// Repo selector passed to the daemon (it follows several databases).
-        #[arg(long, default_value = "sbo+raw://avail:turing:530/")]
+        #[arg(long, default_value = "sbo+raw://avail:turing:506/")]
         repo: String,
         #[arg(default_values_t = vec!["browserid.me".to_string()])]
         domains: Vec<String>,
@@ -304,6 +317,37 @@ const MIN_CONTRIBUTION_AMOUNT: f64 = 0.01;
 /// Minor units as a decimal string (money is carried as decimal strings).
 fn fmt_minor_str(minor: i64) -> String {
     format!("{}.{:02}", minor / 100, minor % 100)
+}
+
+/// The grants and restrictions that are browserid-pay's OWN — everything that
+/// must exist on a chain for agreements to work, and nothing that a general SBO
+/// chain already provides (`/sys/names/*`, the DNSSEC fragment, admin `govern`,
+/// a user namespace).
+///
+/// Split out because browserid-pay no longer owns a chain: on app 506 these have
+/// to be MERGED INTO mingo's root policy, not written over it
+/// (`browserid-pay-4v59`). `policy-layer` prints exactly this fragment.
+fn pay_policy_layer() -> serde_json::Value {
+    serde_json::json!({
+        "grants": [
+            { "to": "*", "can": ["post"], "on": "/providers/custodians/$user/**" },
+            { "to": "*", "can": ["post"], "on": "/providers/adjudicators/$user/**" },
+            { "to": "*", "can": ["create"], "on": "/agreements/**" }
+        ],
+        "restrictions": [
+            { "on": "/providers/**", "require": { "schema": "provider.v1", "max_size": 16384 } },
+            { "on": "/agreements/**", "require": { "max_size": 65536 } },
+            {
+                "on": "/agreements/*/",
+                "id": "proposal",
+                "require": { "fields": [
+                    { "pointer": "/contribution/fn", "eq": "max" },
+                    { "pointer": "/contribution/amount", "min": MIN_CONTRIBUTION_AMOUNT },
+                    { "pointer": "/contribution/percentage", "min": MIN_CONTRIBUTION_PERCENTAGE }
+                ]}
+            }
+        ]
+    })
 }
 
 fn root_policy(sys: &SigningKey) -> serde_json::Value {
@@ -502,7 +546,33 @@ async fn main() -> Result<()> {
             println!("daemon repos.json entry (append to the array):");
             println!("{}", serde_json::to_string(&entry[0])?);
         }
+        Commands::PolicyLayer => {
+            let layer = pay_policy_layer();
+            println!("{}", serde_json::to_string_pretty(&layer)?);
+            eprintln!();
+            eprintln!("Merge these into the TARGET chain's existing root policy — do not replace it.");
+            eprintln!("On app 506 that policy is mingo's, and it must be re-signed by MINGO's sys key:");
+            eprintln!("  browserid-pay's sys key holds no `govern` there, so a write signed by it is refused.");
+            eprintln!();
+            eprintln!("Before publishing the contribution floor, check the deployed daemon enforces the");
+            eprintln!("sbo-pu34 object-id + payload-field conditions. An older validator IGNORES both");
+            eprintln!("fields silently: the policy installs, looks right, and enforces nothing.");
+            eprintln!("Verify afterwards with `dsp-genesis policy-probe`, once the daemon has synced past");
+            eprintln!("the block carrying the policy.");
+        }
         Commands::PolicyUpdate { key_file, daemon, repo, dry_run, direct } => {
+            // This REPLACES /sys/policies/root wholesale. That was right when
+            // browserid-pay owned app 530; on a shared chain it would clobber
+            // the host's policy. Refuse rather than rely on the daemon's
+            // authorization check to save us (browserid-pay-4v59).
+            if !repo.contains(":530/") {
+                bail!(
+                    "policy-update writes browserid-pay's WHOLE root policy to /sys/policies/root, \
+                     replacing whatever is there. `{repo}` is not the chain browserid-pay owns. \
+                     For a shared chain use `policy-layer` and merge the fragment into that chain's \
+                     own root policy, signed by ITS admin key."
+                );
+            }
             let sys = load_key(&key_file)?;
             let policy = root_policy(&sys);
             let payload = serde_json::to_vec(&policy)?;

@@ -51,7 +51,7 @@ daemon validation of the SBO envelopes (stub).
 
 Services: <https://pay.dsp.fyi> (custodian), <https://judge.dsp.fyi>
 (adjudicator), <https://index.dsp.fyi> (indexer), chain
-`sbo+raw://avail:turing:530/` read through <https://da.sandmill.org>.
+`sbo+raw://avail:turing:506/` read through <https://da.sandmill.org>.
 Everything below is the same code path as local mode with the stand-ins
 removed. **Status (2026-09-15 evening):** all three services are released with
 TLS; the judge is `danmills+judge@sandmill.org` and the custodian is

@@ -22,7 +22,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET = process.env.CARGO_TARGET_DIR || join(homedir(), ".cache", "cargo-target");
 const BIN = (name) => join(TARGET, "debug", name);
 const PORTS = { idp: 3900, pay: 3300, judge: 3400, index: 3500 };
-const REPO = "sbo+raw://avail:turing:530/";
+const REPO = "sbo+raw://avail:turing:506/";
 // Humans (accounts) and their delegated agents (the parties on chain).
 const ALICE = "alice@x.test", BOB = "bob@y.test", JUDGE = "judge@dsp.test", ESCROW = "escrow@dsp.test", FUND = "fund@dsp.test";
 const ALICE_AGENT = "alice+agent@x.test", BOB_AGENT = "bob+agent@y.test";

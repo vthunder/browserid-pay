@@ -1,6 +1,6 @@
 # indexer — index.dsp.fyi
 
-A reverse index over the browserid-pay SBO database (`sbo+raw://avail:turing:530/`),
+A reverse index over the browserid-pay SBO database (`sbo+raw://avail:turing:506/`),
 read from the daemon at `da.sandmill.org`. Per the SBO Indexer & Client spec it is
 an **acceleration, never an authority**: every response carries the object
 references (`path`, `id`, `block`, `object_hash`) plus the daemon URL, so a client
@@ -100,6 +100,6 @@ already serves `proof=1`; the subtree proof endpoint does not exist yet.
 ## Config (env)
 
 `INDEX_PORT` (3400), `INDEX_ORIGIN`, `DAEMON` (`https://da.sandmill.org`),
-`REPO` (`sbo+raw://avail:turing:530/`), `POLL_SECS` (30), `DATABASE_PATH`.
+`REPO` (`sbo+raw://avail:turing:506/`), `POLL_SECS` (30), `DATABASE_PATH`.
 The whole index is rebuilt from the daemon's list reads on every poll — the
 database is small, and the daemon is the source of truth.

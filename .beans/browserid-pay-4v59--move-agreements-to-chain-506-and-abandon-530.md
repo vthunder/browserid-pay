@@ -5,7 +5,7 @@ status: in-progress
 type: epic
 priority: high
 created_at: 2026-09-18T15:07:43Z
-updated_at: 2026-09-18T17:13:35Z
+updated_at: 2026-09-18T18:12:27Z
 ---
 
 **Decision (Dan, 2026-09-18): abandon app 530 and run agreements on 506, alongside mingo.** One chain for the forum and for agreements. The agreements currently live on 530 do not need to keep working.
@@ -113,3 +113,42 @@ The JS SDK still sets no `Owner`, which is fine: it only writes under `/agreemen
 - [ ] reindex
 - [ ] decide what happens to 530 — left as history, or torn down
 - [ ] `crates/genesis` builds a WHOLE chain and is no longer the thing that runs; its root policy is now the reference for the governed update instead. Decide whether to keep it as a reference, repurpose it to emit the update, or delete it
+
+## Status (2026-09-18) — code side complete; what remains is ops
+
+The two checklists above were appended separately and overlap. This is the real state.
+
+### Done
+
+- [x] **`/u/**` namespace** — attestation write paths, both warrant scopes, the indexer's path parsing (new shape ONLY), demo, spec, judge README
+- [x] **`Owner` header** — was already set: `ChainIdentity::sign_write` passes `owner = agent.email()` on every write. No work was needed; the earlier note here was wrong
+- [x] **the shared sbo preset is not involved** — browserid-pay builds attestation paths itself, so `mingo-ibwg` does not block this repo
+- [x] **repointed to 506** — `chain::DEFAULT_REPO` is now one definition; custodian, judge, indexer, SDK, MCP, demo and READMEs follow it
+- [x] **`COLLECTION_AUDIENCE`** — the standing-consent audience was a hardcoded `530` const. Missing it would have refused **every standing grant**, silently: grants issued for one audience, checked against another. Now 506, with a test asserting it tracks `DEFAULT_REPO`
+- [x] **`policy-layer` tooling** and a guard on `policy-update` — see below
+- [x] **runbooks** — both `GENESIS.md` files
+
+### The finding that changes who does the ops step
+
+**The governed update on 506 must be signed by MINGO's sys key.** mingo's root
+policy grants `govern` only to its own pubkey, so a policy write signed by
+`dsp-sys.key` is refused — safe, but opaque.
+
+And it is a **merge, not a replace**. `/sys/policies/root` on 506 is mingo's; writing browserid-pay's over it would remove mingo's community governance, its checkpointer grant and `/u/$owner/**`. `dsp-genesis policy-update` does precisely that wholesale replace, which was right for 530 and is wrong here — **it now refuses any repo that is not 530**, rather than relying on the daemon's authorization check to catch it.
+
+New: `dsp-genesis policy-layer` prints just browserid-pay's grants and restrictions, as a fragment to merge.
+
+### Remaining — all operational, none of it code
+
+- [ ] **verify the deployed daemon enforces `sbo-pu34`** (object-id + payload-field conditions) **before** publishing the contribution floor. An older validator ignores both fields silently: the policy installs, looks right, enforces nothing
+- [ ] merge `dsp-genesis policy-layer` output into 506's root policy; re-sign with **mingo's** sys key; submit
+- [ ] `dsp-genesis policy-probe --repo …:506/` to confirm the floor actually bites — only once the daemon has synced past the policy block
+- [ ] re-post `/sys/contribution` and both provider listings on 506
+- [ ] deploy custodian, judge, indexer with the new default (or set the env vars)
+- [ ] reindex
+- [ ] run `demo/run-local.mjs` end to end — still the only thing that exercises the whole path, and unverified since the block-height work
+- [ ] decide what happens to 530 — left as history, or torn down
+
+### Open question, not blocking
+
+- [ ] `crates/genesis` still builds a whole chain, which is now only meaningful for 530. `policy-layer` is the piece that stays useful. Keep the rest as a record, or strip it?

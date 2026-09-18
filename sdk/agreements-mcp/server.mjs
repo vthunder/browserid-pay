@@ -6,7 +6,7 @@
 // returned in the tool result so the host can show it.
 //
 // Env: AGREEMENTS_IDENTITY, BROWSERID_BROKER (https://browserid.me),
-//      SBO_DAEMON (https://da.sandmill.org), SBO_REPO (sbo+raw://avail:turing:530/),
+//      SBO_DAEMON (https://da.sandmill.org), SBO_REPO (sbo+raw://avail:turing:506/),
 //      AGREEMENTS_TERMS_DIR (~/.browserid-agreements). Chain writes go through the daemon; no chain key.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";

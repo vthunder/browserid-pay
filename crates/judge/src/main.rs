@@ -696,7 +696,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = Config {
             port: 0, origin: ORIGIN.into(), data_dir: dir.to_string_lossy().into(), broker: "https://idp.test".into(),
-            handle: "judge".into(), chain_audience: "sbo+raw://avail:turing:530/".into(), daemon: "http://x".into(),
+            handle: "judge".into(), chain_audience: chain::DEFAULT_REPO.into(), daemon: "http://x".into(),
             custodians: vec!["https://pay.test".into()], accepted_fallbacks: vec![ISSUER.into()],
             price_amount: "5.00".into(), price_currency: "USD".into(), anthropic_api_key: String::new(),
             anthropic_model: "m".into(), dev: true, trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())],

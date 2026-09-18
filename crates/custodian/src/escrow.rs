@@ -537,7 +537,14 @@ pub fn contract_audience(id: &str) -> String {
 /// agreement its parameters admit — `counterparties`, `cap` (with a window),
 /// `min_reputation`, `max_duration` — so a human approves the shape of the
 /// deals once instead of each deal.
-pub const COLLECTION_AUDIENCE: &str = "sbo+raw://avail:turing:530/agreements";
+///
+/// **This must equal the SDK's `collectionAudience(repo)`** — `<repo>/agreements`
+/// with any trailing slash stripped (`sdk/agreements/src/agreements.mjs`). A
+/// mismatch is silent and total: every standing grant is issued for one audience
+/// and checked against the other, so none of them match and every standing lock
+/// is refused. Kept in lockstep with `chain::DEFAULT_REPO` (app 506 since
+/// 2026-09-18, browserid-pay-4v59).
+pub const COLLECTION_AUDIENCE: &str = "sbo+raw://avail:turing:506/agreements";
 
 /// Payer acknowledges delivery: price → payee, fees → custodian and (unused)
 /// adjudicator fee back to payer, contribution → recipient.
@@ -1391,6 +1398,16 @@ mod tests {
     /// and became sweepable one day after locking — however long the agreement
     /// (browserid-pay-usj3). A unit test on the function could not catch that;
     /// this one goes through `lock`.
+    /// The standing-consent audience must be `<repo>/agreements`, matching the
+    /// SDK's `collectionAudience()`. A mismatch fails silently and totally —
+    /// grants are issued for one audience and checked against the other, so
+    /// every standing lock is refused with no clue why. A repoint that misses
+    /// this const would do exactly that.
+    #[test]
+    fn the_collection_audience_tracks_the_repo() {
+        assert_eq!(COLLECTION_AUDIENCE, format!("{}agreements", chain::DEFAULT_REPO));
+    }
+
     #[tokio::test]
     async fn a_long_agreement_gets_a_long_backstop_through_the_lock_path() {
         let s = setup();

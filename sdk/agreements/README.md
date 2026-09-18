@@ -51,7 +51,7 @@ broker and hands the approve URL to `onApproveUrl`. Two are asked per agent:
 a ledger-write warrant (audience = the database, scopes `action:post`,
 `path:/agreements/**`, `path:/<me>/**`) and, per contract, a
 `contract:agreement` warrant at the **contract audience**
-`sbo+raw://avail:turing:530/agreements/<id>` with
+`sbo+raw://avail:turing:506/agreements/<id>` with
 `cap = price + fees + contribution` and `counterparties = [the other party]`.
 
 Discovery: custodian, adjudicator and the suggested contribution come from

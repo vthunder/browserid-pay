@@ -39,7 +39,10 @@ async fn main() -> anyhow::Result<()> {
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let port: u16 = env("INDEX_PORT", "3400").parse()?;
     let daemon = env("DAEMON", "https://da.sandmill.org");
-    let repo = env("REPO", "sbo+raw://avail:turing:530/");
+    // App 506 — mingo's chain, shared since 2026-09-18 (browserid-pay-4v59).
+    // Spelled out rather than taken from `chain::DEFAULT_REPO`: the indexer does
+    // not depend on that crate, and its own `chain` module would shadow it.
+    let repo = env("REPO", "sbo+raw://avail:turing:506/");
     let origin = env("INDEX_ORIGIN", &format!("http://localhost:{port}"));
     let interval: u64 = env("POLL_SECS", "30").parse()?;
     let db_path = env("DATABASE_PATH", "indexer.db");

@@ -1,6 +1,6 @@
 [package]
 name = "dsp-genesis"
-description = "Genesis / regenesis tooling for the browserid-pay SBO database (Avail turing app 530)"
+description = "Genesis / regenesis tooling for the browserid-pay SBO database (Avail turing app 530; the live layer now runs on 506)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

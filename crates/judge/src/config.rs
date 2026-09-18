@@ -52,7 +52,7 @@ impl Config {
             data_dir: get("JUDGE_DATA_DIR", "./judge-data"),
             broker: get("BROKER", "https://browserid.me"),
             handle: get("JUDGE_HANDLE", "judge"),
-            chain_audience: get("JUDGE_CHAIN_AUDIENCE", "sbo+raw://avail:turing:530/"),
+            chain_audience: get("JUDGE_CHAIN_AUDIENCE", chain::DEFAULT_REPO),
             daemon: get("SBO_DAEMON", "https://da.sandmill.org"),
             custodians: list("JUDGE_CUSTODIANS", "https://pay.dsp.fyi"),
             accepted_fallbacks: list("JUDGE_ACCEPTED_FALLBACKS", "browserid.me"),

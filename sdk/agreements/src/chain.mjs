@@ -6,7 +6,7 @@ import { parseEnvelope } from "./envelope.mjs";
 
 export const DEFAULTS = {
   daemon: "https://da.sandmill.org",
-  repo: "sbo+raw://avail:turing:530/",
+  repo: "sbo+raw://avail:turing:506/",
 };
 
 export class DaemonChain {

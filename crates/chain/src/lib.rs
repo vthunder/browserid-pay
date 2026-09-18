@@ -35,3 +35,16 @@ pub const NOMINAL_BLOCK_SECS: i64 = 20;
 pub fn blocks_to_secs(blocks: i64) -> i64 {
     blocks.saturating_mul(NOMINAL_BLOCK_SECS)
 }
+
+/// The SBO repo browserid-pay lives in. **App 506 — mingo's chain**, shared
+/// since 2026-09-18 (`browserid-pay-4v59`); app 530 was browserid-pay's own and
+/// is abandoned.
+///
+/// One definition so a repoint cannot be half-done. Every service still reads
+/// its own env var first (`PAY_CHAIN_AUDIENCE`, `JUDGE_CHAIN_AUDIENCE`, `REPO`);
+/// this is only the default.
+///
+/// Note this string is also the **warrant audience**, so changing it invalidates
+/// consent granted against the old one — deliberate, and visible to the human on
+/// the next consent card.
+pub const DEFAULT_REPO: &str = "sbo+raw://avail:turing:506/";
