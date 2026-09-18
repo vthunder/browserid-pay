@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: critical
 created_at: 2026-09-18T12:50:33Z
-updated_at: 2026-09-18T13:02:39Z
+updated_at: 2026-09-18T13:38:58Z
 blocking:
     - browserid-pay-b3gq
 ---
@@ -70,3 +70,21 @@ Note `main.rs:680` builds `L2Context::for_block(Some(now), ..)` on the local-sub
 **mingo does it properly-ish** (`mingo-jlo1`): every write carries an HLC (`app.js:473`, `:858`), display and sorting read it, and it is therefore *bounded* by `W`. Its spaces set `W = 86400`, so a post can claim to be 24h old — deliberate, since the seed corpus needs it — and the residual gaming (forward-dating by `ε` to top a sort) is cosmetic at human volume.
 
 **The contrast is the lesson.** mingo carries a bounded claim and treats it as a claim. We carry an *unbounded* claim in a payload field and treat it as a fact. Neither uses inclusion time, because until `sbo-xgyr` nobody can.
+
+## Proposed fix (2026-09-18, Dan): block heights as the agreement clock
+
+**Every contractually meaningful time becomes a block height** — obligation deadlines, proposal expiry, the delivery response window, the adjudicator's response window, the backstop. Wall-clock survives only where it is not binding: warrant credential lifetimes, polling schedules, and display estimates.
+
+Full analysis and a component-by-component plan: **`docs/plans/2026-09-18-block-height-timing-plan.md`**.
+
+**Why this rather than a partial fix:** it removes the class instead of shrinking it. Height is not a claim, so `W`, skew tolerance, HLC and clock trust all stop mattering for deadlines. Both sides derive the same view by integer comparison of a number neither controls — which `browserid-pay-b3gq` requires and today merely hopes for.
+
+**And it does not wait on `sbo-xgyr`.** `GET /v1/state-root` returns the head `block`, and `/v1/list` already returns `block` per object (`sbo-daemon/src/main.rs:276`) — our `DaemonReader::view` simply does not read it.
+
+**A correctness property worth noting:** delivering is an on-chain write, so under wall-clock deadlines a chain stall makes a party late when they could not possibly have performed. Under height deadlines the deadline cannot advance while blocks are not produced. And since Substrate skips slots rather than numbers, and blocks cannot be produced faster than the slot rate, a height-derived window is always **≥** its intended wall-clock duration — a party can be given more time than intended, never less.
+
+**The bug, stated precisely.** `docs/specs/agreement-v1.md:114` already says *"Every evidence object also carries `at` (writer-claimed unix time; **chain order is the truth**)."* The spec was right all along; the implementation does the opposite. This restores it.
+
+**Smallest useful step, worth doing even if the rest slips:** make the judge sort evidence by block and pass heights, and fix the prompt. That removes the adjudicator's exposure to the forged field without any format change.
+
+**Biggest risk, from the plan's open questions:** a height and a unix timestamp are both integers, so an un-migrated deadline **fails silently** — read as a height it is a number in the distant past and every obligation is instantly late. The change needs an explicit version discriminator, not a reinterpretation.
