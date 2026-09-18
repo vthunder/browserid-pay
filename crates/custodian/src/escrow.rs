@@ -1038,8 +1038,11 @@ mod tests {
     struct FakeChain(std::sync::Mutex<Vec<chain::ObjectView>>);
     impl FakeChain {
         fn put(&self, path: &str, id: &str, creator: &str, value: Value) {
-            self.0.lock().unwrap().push(chain::ObjectView {
-                path: path.into(), id: id.into(), creator: creator.into(), value, confirmed: true,
+            let mut objs = self.0.lock().unwrap();
+            // Increasing heights: chain order in tests is real, not incidental.
+            let block = objs.iter().filter_map(|o: &chain::ObjectView| o.block).max().unwrap_or(99) + 1;
+            objs.push(chain::ObjectView {
+                path: path.into(), id: id.into(), creator: creator.into(), value, confirmed: true, block: Some(block),
             });
         }
         /// The usual pair: alice proposed it, bob accepted it.
@@ -1053,6 +1056,9 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl chain::ChainReader for FakeChain {
+        async fn head_block(&self) -> anyhow::Result<u64> {
+            Ok(self.0.lock().unwrap().iter().filter_map(|o| o.block).max().unwrap_or(0) + 1)
+        }
         async fn get_object(&self, path: &str, id: &str) -> anyhow::Result<Option<chain::ObjectView>> {
             Ok(self.0.lock().unwrap().iter().find(|o| o.path == path && o.id == id).cloned())
         }

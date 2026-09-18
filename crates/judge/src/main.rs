@@ -630,6 +630,10 @@ pub(crate) mod tests {
         async fn list_prefix(&self, prefix: &str) -> anyhow::Result<Vec<chain::ObjectView>> {
             Ok(self.objects.lock().unwrap().values().filter(|o| o.path.starts_with(prefix)).cloned().collect())
         }
+        /// One past the newest object: "now" is just after the last write.
+        async fn head_block(&self) -> anyhow::Result<u64> {
+            Ok(self.objects.lock().unwrap().values().filter_map(|o| o.block).max().unwrap_or(0) + 1)
+        }
     }
     #[async_trait]
     impl ChainWriter for FakeChain {
@@ -697,9 +701,9 @@ pub(crate) mod tests {
             "parties": { "proposer": "a@x.test", "acceptor": "b@y.test" }, "roles": { "payer": "a@x.test", "payee": "b@y.test" },
             "adjudicator": "judge@dsp.fyi", "custodian": "https://pay.test", "expires": 0 });
         chain.objects.lock().unwrap().insert(("/agreements/agr_test/".into(), "proposal".into()),
-            chain::ObjectView { path: "/agreements/agr_test/".into(), id: "proposal".into(), creator: "a@x.test".into(), value: proposal, confirmed: true });
+            chain::ObjectView { path: "/agreements/agr_test/".into(), id: "proposal".into(), creator: "a@x.test".into(), value: proposal, confirmed: true, block: Some(100) });
         chain.objects.lock().unwrap().insert(("/agreements/agr_test/".into(), "acceptance".into()),
-            chain::ObjectView { path: "/agreements/agr_test/".into(), id: "acceptance".into(), creator: "b@y.test".into(), value: json!({ "v": 1 }), confirmed: true });
+            chain::ObjectView { path: "/agreements/agr_test/".into(), id: "acceptance".into(), creator: "b@y.test".into(), value: json!({ "v": 1 }), confirmed: true, block: Some(101) });
         let (app, seal) = app(&issuer_kp, chain.clone(), json!({ "outcome": "payer", "fee": "escrow", "reasoning": "nothing delivered" })).await;
         let sealed = seal::seal_to(&seal.public_b64(), &serde_json::to_vec(&t).unwrap()).unwrap();
 
@@ -810,8 +814,12 @@ mod tests_support {
     use std::sync::{Arc, Mutex};
 
     impl FakeChain {
+        /// Each `put` lands in a later block than the one before it, so tests
+        /// exercise real chain ordering rather than HashMap iteration order.
         pub fn put(&self, path: &str, id: &str, creator: &str, value: Value) {
-            self.objects.lock().unwrap().insert((path.into(), id.into()), chain::ObjectView { path: path.into(), id: id.into(), creator: creator.into(), value, confirmed: true });
+            let mut objs = self.objects.lock().unwrap();
+            let block = objs.values().filter_map(|o| o.block).max().unwrap_or(99) + 1;
+            objs.insert((path.into(), id.into()), chain::ObjectView { path: path.into(), id: id.into(), creator: creator.into(), value, confirmed: true, block: Some(block) });
         }
     }
 
