@@ -1,11 +1,11 @@
 ---
 # browserid-pay-e1ou
 title: Obligation timing derives from unverified payload timestamps
-status: todo
+status: completed
 type: bug
 priority: critical
 created_at: 2026-09-18T12:50:33Z
-updated_at: 2026-09-18T13:38:58Z
+updated_at: 2026-09-18T16:33:43Z
 blocking:
     - browserid-pay-b3gq
 ---
@@ -88,3 +88,25 @@ Full analysis and a component-by-component plan: **`docs/plans/2026-09-18-block-
 **Smallest useful step, worth doing even if the rest slips:** make the judge sort evidence by block and pass heights, and fix the prompt. That removes the adjudicator's exposure to the forged field without any format change.
 
 **Biggest risk, from the plan's open questions:** a height and a unix timestamp are both integers, so an un-migrated deadline **fails silently** — read as a height it is a number in the distant past and every obligation is instantly late. The change needs an explicit version discriminator, not a reinterpretation.
+
+## Summary of Changes
+
+Closed. Every timing decision in the system now rests on a block height, which the chain assigns and no party controls.
+
+| | |
+|---|---|
+| `browserid-pay-wl7v` | `ObjectView.block` + a head read; `head_block()` required, never defaulted |
+| `browserid-pay-dtjt` | judge orders evidence by block, response window becomes a height, prompt rewritten |
+| `browserid-pay-031y` | rename rather than version — `deadline_block`, `expires_block` |
+| `browserid-pay-1srw` | `deriveObligations` and the whole SDK; `at` deleted |
+| `browserid-pay-bh6u` | the custodian boundary: party-supplied times converted, custodian-observed ones not |
+| `browserid-pay-usj3` | the backstop bug the conversion exposed |
+| `browserid-pay-x9an` | do NOT add an HLC — heights removed the premise |
+
+**What the fix actually is.** `docs/specs/agreement-v1.md` always said *"`at` is writer-claimed; chain order is the truth"*. The implementation did the opposite. This restored the spec rather than inventing a new model.
+
+**What it found on the way.** Converting the units forced every time comparison to be looked at, and two of them were already broken independently of this bug: the abandonment backstop had been firing at its 1-day floor on every escrow because `latest_deadline` was never sent (`usj3`), and `max_duration` on standing consent was unenforced for the same reason. Neither had a failing test — `backstop_due` was correct and its unit test passed while nothing populated the field it read.
+
+**The rule that came out of it**, applied at every boundary: **rename, never reinterpret.** A height and a unix timestamp are both integers, so nothing fails loudly on its own. The rename was applied to struct fields, SQL columns, an env var, API fields and terms fields — and each one caught something a version flag would have missed.
+
+**Still open:** `demo/run-local.mjs` is updated and parses but needs a live daemon, so the end-to-end path is unverified. That is the main thing to run before trusting this.

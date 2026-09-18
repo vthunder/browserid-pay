@@ -1,11 +1,11 @@
 ---
 # browserid-pay-x9an
 title: 'Agreements carry no HLC: find out what the judge actually times against'
-status: todo
+status: completed
 type: task
 priority: high
 created_at: 2026-09-18T12:27:11Z
-updated_at: 2026-09-18T12:50:55Z
+updated_at: 2026-09-18T16:33:43Z
 blocking:
     - browserid-pay-b3gq
 blocked_by:
@@ -44,3 +44,17 @@ So the HLC question is settled, but as the *last* of four steps rather than the 
 **Yes, add an HLC to agreement writes** — it is self-asserted but bounded by `W` (5 min default), which is strictly better than an unbounded payload field, and it gives sub-block resolution. There is no reason not to.
 
 **But it is not the fix.** HLC constrains a claim; inclusion time is a fact no party controls. Deadline evaluation should use inclusion time, with HLC for ordering and resolution inside a block. Adding HLC while `deriveObligations` still reads payload `at` would change nothing.
+
+## Resolution (2026-09-18): do NOT add an HLC
+
+The earlier note here said "yes, add an HLC, as the last of four steps". **That is now wrong**, and the reason is worth keeping.
+
+HLC was attractive when the alternative was an unbounded payload timestamp: it is still self-asserted, but at least `W` bounds it. Moving the agreement clock to **block heights** removed the premise. There is no self-asserted time left in an agreement to bound — deadlines, expiry and windows are heights, and evidence is ordered by the block it landed in. Adding an HLC now would reintroduce exactly the thing that had to be removed: a number the writer chooses, sitting next to one the chain assigns, inviting some future reader to trust the wrong one.
+
+So agreements continue to carry no HLC, and that is the right configuration rather than an oversight. `check_hlc_bound` returning `Ok(())` for them is correct.
+
+The original question — *what does the judge actually time against?* — is answered: **the block each evidence object landed in**, sorted and passed to the adjudicator (`browserid-pay-dtjt`), with the prompt stating plainly that any time-looking payload field is a party's claim.
+
+## Summary of Changes
+
+No code. A decision reversed with its reasoning: heights made HLC unnecessary for agreements, and adding one would be a regression rather than an improvement. `sbo-xgyr` (persisting block TIME) is likewise demoted — it is wanted for display estimates and for the notary idea, not for anything money hangs on.
