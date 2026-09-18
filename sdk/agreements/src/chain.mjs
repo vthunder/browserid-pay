@@ -38,6 +38,23 @@ export class DaemonChain {
     return items.map(normalizeView);
   }
 
+  /**
+   * The chain's current head: the newest FINALIZED block the daemon has
+   * processed. This is "now" for everything measured in block heights.
+   *
+   * Deliberately throws rather than returning a fallback: a caller that cannot
+   * read the head must fail closed, not invent a deadline
+   * (browserid-pay-e1ou).
+   */
+  async head() {
+    const r = await this.http(`${this.daemon}/v1/state-root?${this.#q({})}`);
+    if (!r.ok) throw new Error(`daemon /v1/state-root ${r.status}`);
+    const j = await r.json();
+    const b = j?.block;
+    if (!Number.isFinite(b)) throw new Error("daemon /v1/state-root: no block");
+    return b;
+  }
+
   /** Submit signed wire bytes through the daemon. Returns the submission id. */
   async submit(wire) {
     const r = await this.http(`${this.daemon}/v1/submit?${this.#q({})}`, {
@@ -71,6 +88,7 @@ export function normalizeView(v) {
 
 /** In-memory chain for tests: ordered, first-write-wins per (path,id). */
 export class MemoryChain {
+  extraBlocks = 0;
   constructor() { this.objects = []; this.submissions = 0; }
   #key(path, id) { return `${path}${id}`; }
   async get(path, id) {
@@ -78,6 +96,14 @@ export class MemoryChain {
     return this.objects.find((o) => this.#key(o.path, o.id) === k) || null;
   }
   async list(prefix) { return this.objects.filter((o) => o.path.startsWith(prefix)); }
+  /** One past the newest object, plus any blocks a test has advanced through. */
+  async head() { return this.objects.reduce((m, o) => Math.max(m, o.block ?? 0), 0) + 1 + this.extraBlocks; }
+  /**
+   * Let `n` blocks pass without a write. Tests used to sleep to let a window
+   * lapse; with heights, sleeping does nothing — the chain has to move. This
+   * also makes those tests instant and deterministic instead of racing a timer.
+   */
+  advance(n = 1) { this.extraBlocks += n; return this; }
   async submit(wire) {
     const { headers, payload } = parseEnvelope(wire);
     const k = this.#key(headers.Path, headers.ID);

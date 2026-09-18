@@ -27,7 +27,7 @@ const TERMS = {
   title: "Summarize 10 papers",
   obligations: [
     { by: "alice@x.test", what: "the ten papers", kind: "input" },
-    { by: "bob@y.test", what: "deliver summaries", kind: "deliverable", depends_on: 0, deadline: 1_900_000_000 },
+    { by: "bob@y.test", what: "deliver summaries", kind: "deliverable", depends_on: 0, deadline_block: 1_900_000_000 },
   ],
   price: { amount: "50.00", currency: "USD" },
   evidence: "a delivery commitment plus the summaries sent off-chain",
@@ -271,7 +271,7 @@ test("next_step drives the response window from both sides", async () => {
   try {
     WINDOWS = { response: "PT1H" };
     const w = world(servers);
-    const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline_block: 1_900_000_000 }] };
     const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test" });
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);
@@ -280,7 +280,7 @@ test("next_step drives the response window from both sides", async () => {
     // Alice is on the clock and is told what her three options are.
     let s = await w.alice.nextStep();
     assert.equal(s.action, "settle");
-    assert.ok(s.response_due > 0, "with a deadline attached");
+    assert.ok(s.response_due_block > 0, "with a deadline attached");
     assert.match(s.then, /not_received/);
     // Bob has nothing to do while her window runs — he cannot claim a lapse yet.
     assert.equal((await w.bob.nextStep()).action, "none");
@@ -311,7 +311,7 @@ test("refusing a delivery does not release the escrow", async () => {
   try {
     WINDOWS = { response: "PT1H" };
     const w = world(servers);
-    const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const TERMS_D = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline_block: 1_900_000_000 }] };
     const p = await w.alice.propose(TERMS_D, { acceptor: "bob@y.test" });
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);
@@ -332,18 +332,20 @@ test("refusing a delivery does not release the escrow", async () => {
 test("an unanswered delivery sends the deliverer to the adjudicator, and the recipient can still answer", async () => {
   const servers = await fakeServers();
   try {
-    WINDOWS = { response: "PT1S" };
+    WINDOWS = { response: "PT1M" };
     const w = world(servers);
-    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline_block: 1_900_000_000 }] };
     const p = await w.alice.propose(T, { acceptor: "bob@y.test" });
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);
     await w.bob.deliver(p.id, { content: "the work" });
-    await new Promise((r) => setTimeout(r, 2500));
+    // The window lapses because the CHAIN moved, not because time passed.
+    // Sleeping would prove nothing now — a height only advances with blocks.
+    w.chain.advance(10);
 
     const obs = await w.bob.obligations(p.id);
     assert.equal(obs[0].state, "unanswered", "silence settles nothing");
-    assert.equal(obs[0].met_at, null);
+    assert.equal(obs[0].met_at_block, null);
 
     // Bob is not handed the money — he is pointed at the adjudicator.
     const b = await w.bob.nextStep();
@@ -370,7 +372,7 @@ test("a dispute the adjudicator never ruled on sends both parties to replace it"
   try {
     WINDOWS = {};
     const w = world(servers);
-    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline: 1_900_000_000 }] };
+    const T = { ...TERMS, obligations: [{ by: "bob@y.test", what: "the work", kind: "deliverable", deadline_block: 1_900_000_000 }] };
     const p = await w.alice.propose(T, { acceptor: "bob@y.test" });
     await w.bob.accept(p.id, p.terms);
     await w.alice.fund(p.id);

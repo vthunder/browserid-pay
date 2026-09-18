@@ -20,8 +20,8 @@ below. `<id>` is `agr_` + 16 base64url chars chosen by the proposer.
 ```json
 { "v": 1, "id": "agr_…", "salt": "<32 bytes base64url>",
   "title": "…", "description": "… (unverified prose)",
-  "obligations": [ { "by": "a@x", "what": "hand over the ten papers", "deadline": 1759000000, "kind": "input" },
-                   { "by": "b@y", "what": "deliver the summaries", "deadline": 1760000000, "kind": "deliverable", "depends_on": 0 } ],
+  "obligations": [ { "by": "a@x", "what": "hand over the ten papers", "deadline_block": 3891000, "kind": "input" },
+                   { "by": "b@y", "what": "deliver the summaries", "deadline_block": 3921000, "kind": "deliverable", "depends_on": 0 } ],
   "price": { "amount": "50.00", "currency": "USD" },
   "fees": { "custodian": "0.50", "adjudicator": "5.00" },
   "evidence": "what counts as delivered, in words",
@@ -62,7 +62,7 @@ and is verified by the counterparty and the custodian, never by the chain.
   "adjudicator": "judge@dsp.fyi",
   "custodian": "https://pay.dsp.fyi",
   "contribution": { "recipient": "fund@dsp.fyi", "percentage": 1.0 },   // clear field (chain may enforce a minimum)
-  "expires": 1760000000,                 // offer expiry
+  "expires_block": 3891000,              // offer expiry, a BLOCK HEIGHT
   "bundle": "<proposer's presentation for the contract audience>" }
 ```
 
@@ -120,6 +120,18 @@ landed) last. A `deadline` or any other time-looking field written into a
 payload is the writer's claim about itself and is validated by nothing; never
 decide lateness from one.
 
+**Timing is measured in blocks, not clocks.** Every contractually meaningful
+time — obligation deadlines, offer expiry, the delivery response window, the
+adjudicator's response window — is a **block height**. A height is assigned by
+the chain, so no party can move it and both derive the same view of it; a
+timestamp in a payload is the writer's claim about itself and is validated by
+nothing. Nominal block time is ~20s, but that is a *nominal* used to convert a
+duration into a count of blocks: Substrate skips slots rather than block
+numbers, so real elapsed time per block is never less than nominal, and a
+window derived this way gives a party at least the intended duration. A write
+still in the mempool has no height: it has not landed, and proves nothing about
+when.
+
 **Typed obligations** (`docs/specs/evidence-patterns.md`): each obligation
 MAY carry `kind` — `"input"` (something a party must hand over first, met by
 a receipt), `"deliverable"` (default, met by a delivery), `"payment"` (met by
@@ -130,10 +142,10 @@ missing `depends_on` = none.
 Two more evidence kinds serve the input handoff pattern:
 
 ```json
-{ "v": 1, "id": "agr_…", "kind": "handoff", "by": "a@x", "at": 1759000000,
+{ "v": 1, "id": "agr_…", "kind": "handoff", "by": "a@x",
   "commitment": "sha256:…", "manifest": { "count": 10, "items": [ { "name": "…", "size": 1234 } ] },
   "obligation": 0, "note": "… (unverified)" }
-{ "v": 1, "id": "agr_…", "kind": "receipt", "by": "b@y", "at": 1759000100,
+{ "v": 1, "id": "agr_…", "kind": "receipt", "by": "b@y",
   "handoff": "<evidence id of the handoff>", "ok": true, "obligation": 0 }
 ```
 `handoff`: the provider's commitment over the inputs it sent off-chain (plus
@@ -175,7 +187,12 @@ presentation) is debited and refunded, the payee's grantor (from
 
 The `contract:agreement` scope's `cap` bounds `price + fees + contribution`;
 `counterparties` (if present) must cover the other party; `max_duration`
-(if present) must cover the latest obligation deadline minus now.
+(if present) must cover the latest obligation deadline. That deadline is a
+BLOCK HEIGHT and the warrant expiry is wall-clock, so the conversion is
+**pessimistic**: estimate at ~20s a block and add margin. Blocks can only run
+slower than nominal, never faster, so the real deadline can only fall later
+than the estimate — rounding the other way produces a warrant that expires
+before the deadline it was meant to cover.
 
 ## Attestations (Attestation spec layout)
 

@@ -162,8 +162,10 @@ async function main() {
     title: "Summarize 10 papers",
     description: "Bob's agent summarizes ten papers alice's agent names; delivery is a commitment over the summaries sent off-chain.",
     obligations: [
-      { by: ALICE_AGENT, what: "hand over the ten papers", deadline: Math.floor(Date.now() / 1000) + 86400, kind: "input" },
-      { by: BOB_AGENT, what: "deliver ten summaries", deadline: Math.floor(Date.now() / 1000) + 7 * 86400, kind: "deliverable", depends_on: 0 },
+      // Deadlines are BLOCK HEIGHTS. Left unset so the SDK bounds them off the
+      // chain head — hardcoding one here would need a head read to be meaningful.
+      { by: ALICE_AGENT, what: "hand over the ten papers", kind: "input" },
+      { by: BOB_AGENT, what: "deliver ten summaries", kind: "deliverable", depends_on: 0 },
     ],
     price: { amount: "50.00", currency: "USD" },
     evidence: "a delivery commitment over the summaries",

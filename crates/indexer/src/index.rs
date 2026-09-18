@@ -42,7 +42,8 @@ pub struct Agreement {
     pub adjudicator: String,
     pub custodian: String,
     pub mode: String,
-    pub expires: Option<i64>,
+    /// The proposal's offer expiry, as a BLOCK HEIGHT.
+    pub expires_block: Option<i64>,
     pub proposal_block: u64,
     pub acceptance_block: Option<u64>,
     pub lock_block: Option<u64>,
@@ -119,7 +120,7 @@ impl Index {
              CREATE TABLE IF NOT EXISTS agreements (
                id TEXT PRIMARY KEY, state TEXT NOT NULL,
                proposer TEXT NOT NULL, acceptor TEXT NOT NULL, payer TEXT NOT NULL, payee TEXT NOT NULL,
-               adjudicator TEXT NOT NULL, custodian TEXT NOT NULL, mode TEXT NOT NULL, expires INTEGER,
+               adjudicator TEXT NOT NULL, custodian TEXT NOT NULL, mode TEXT NOT NULL, expires_block INTEGER,
                proposal_block INTEGER NOT NULL, acceptance_block INTEGER, lock_block INTEGER, ruling_block INTEGER,
                proposer_grantor TEXT, acceptor_grantor TEXT, ruling TEXT,
                evidence TEXT NOT NULL, refs TEXT NOT NULL
@@ -150,15 +151,18 @@ impl Index {
 
     /// Replace the whole index from one consistent set of chain reads.
     pub fn rebuild(&self, agreements: &[Obj], attestations: &[Obj], providers: &[Obj], contribution: Option<&Obj>, root: &StateRoot) -> Result<()> {
-        let derived = derive_agreements(agreements, attestations);
+        // The head this rebuild is consistent with: `expires_block` is a block
+        // height, so whether an offer has lapsed is decided by the chain, not
+        // by this process's clock (browserid-pay-e1ou).
+        let derived = derive_agreements(agreements, attestations, root.block);
         self.with(|c| {
             let tx = c.transaction()?;
             tx.execute_batch("DELETE FROM agreements; DELETE FROM attestations; DELETE FROM providers;")?;
             for a in &derived {
                 tx.execute(
-                    "INSERT INTO agreements(id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires,proposal_block,acceptance_block,lock_block,ruling_block,proposer_grantor,acceptor_grantor,ruling,evidence,refs)
+                    "INSERT INTO agreements(id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires_block,proposal_block,acceptance_block,lock_block,ruling_block,proposer_grantor,acceptor_grantor,ruling,evidence,refs)
                      VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
-                    params![a.id, a.state, a.proposer, a.acceptor, a.payer, a.payee, a.adjudicator, a.custodian, a.mode, a.expires,
+                    params![a.id, a.state, a.proposer, a.acceptor, a.payer, a.payee, a.adjudicator, a.custodian, a.mode, a.expires_block,
                             a.proposal_block as i64, a.acceptance_block.map(|b| b as i64), a.lock_block.map(|b| b as i64), a.ruling_block.map(|b| b as i64),
                             a.proposer_grantor, a.acceptor_grantor, a.ruling.as_ref().map(|r| r.to_string()),
                             serde_json::to_string(&a.evidence)?, serde_json::to_string(&a.references)?],
@@ -276,7 +280,7 @@ impl Index {
     }
 }
 
-const AG_COLS: &str = "id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires,proposal_block,acceptance_block,lock_block,ruling_block,evidence,refs,proposer_grantor,acceptor_grantor,ruling";
+const AG_COLS: &str = "id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires_block,proposal_block,acceptance_block,lock_block,ruling_block,evidence,refs,proposer_grantor,acceptor_grantor,ruling";
 
 fn ag_row(r: &rusqlite::Row) -> rusqlite::Result<Agreement> {
     Ok(Agreement {
@@ -289,7 +293,7 @@ fn ag_row(r: &rusqlite::Row) -> rusqlite::Result<Agreement> {
         adjudicator: r.get(6)?,
         custodian: r.get(7)?,
         mode: r.get(8)?,
-        expires: r.get(9)?,
+        expires_block: r.get(9)?,
         proposal_block: r.get::<_, i64>(10)? as u64,
         acceptance_block: r.get::<_, Option<i64>>(11)?.map(|b| b as u64),
         lock_block: r.get::<_, Option<i64>>(12)?.map(|b| b as u64),
@@ -361,7 +365,7 @@ pub fn parse_attestation(o: &Obj) -> Option<ParsedAttestation> {
 /// - `expired`   — no acceptance and the offer expiry has passed.
 /// - `proposed`  — otherwise.
 /// An acceptance with no preceding proposal is ignored (dangling paper).
-pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreement> {
+pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj], head: u64) -> Vec<Agreement> {
     use std::collections::BTreeMap;
     let mut by_id: BTreeMap<String, Vec<&Obj>> = BTreeMap::new();
     for o in agreements {
@@ -376,7 +380,6 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
         .filter(|a| a.typ == "agreement:settled")
         .filter_map(|a| a.value.get("contract").and_then(|c| c.as_str()).map(String::from))
         .collect();
-    let now = chrono::Utc::now().timestamp();
     let mut out = Vec::new();
     for (id, objs) in by_id {
         let base = format!("/agreements/{id}/");
@@ -418,7 +421,10 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
         let kind = |o: &Obj| o.json().get("kind").and_then(|k| k.as_str()).unwrap_or("").to_string();
         let acknowledged = evidence.iter().any(|o| kind(o) == "acknowledgement");
         let disputed = evidence.iter().any(|o| kind(o) == "dispute");
-        let expires = p.get("expires").and_then(|e| e.as_i64());
+        // A BLOCK HEIGHT, not a time (browserid-pay-e1ou). Renamed with the
+        // type: a height and a unix timestamp are both integers, so reading an
+        // old `expires` here would silently look like a block in the past.
+        let expires_block = p.get("expires_block").and_then(|e| e.as_i64());
         let state = if ruling.is_some() {
             "ruled"
         } else if acknowledged || settled_ids.contains(&id) {
@@ -429,7 +435,7 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
             "locked"
         } else if acceptance.is_some() {
             "accepted"
-        } else if expires.map_or(false, |e| e < now) {
+        } else if expires_block.map_or(false, |e| e < head as i64) {
             "expired"
         } else {
             "proposed"
@@ -474,7 +480,7 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
             adjudicator: s(&["adjudicator"]),
             custodian: p.get("custodian").and_then(|c| c.as_str()).unwrap_or("").to_string(),
             mode: p.get("mode").and_then(|m| m.as_str()).unwrap_or("commitment").to_string(),
-            expires,
+            expires_block,
             proposal_block: proposal.block,
             acceptance_block: acceptance.map(|a| a.block),
             lock_block: lock.map(|l| l.block),
@@ -491,6 +497,9 @@ pub fn derive_agreements(agreements: &[Obj], attestations: &[Obj]) -> Vec<Agreem
 
 #[cfg(test)]
 mod tests {
+    /// A chain head far past every fixture's blocks, so tests exercise state
+    /// transitions rather than expiry. Expiry has its own test.
+    const HEAD: u64 = 1_000;
     use super::*;
 
     fn obj(path: &str, id: &str, block: u64, v: Value) -> Obj {
@@ -526,36 +535,36 @@ mod tests {
         let p = proposal("agr_1", 10);
         let h = p.object_hash.clone();
         // proposed
-        assert_eq!(derive_agreements(&[p.clone()], &[])[0].state, "proposed");
+        assert_eq!(derive_agreements(&[p.clone()], &[], HEAD)[0].state, "proposed");
         // dangling acceptance (no proposal) is ignored
-        assert!(derive_agreements(&[acceptance("agr_9", 5, "zz")], &[]).is_empty());
+        assert!(derive_agreements(&[acceptance("agr_9", 5, "zz")], &[], HEAD).is_empty());
         // acceptance before the proposal's block does not count
-        assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 9, &h)], &[])[0].state, "proposed");
+        assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 9, &h)], &[], HEAD)[0].state, "proposed");
         // wrong hash does not count
-        assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 11, "nope")], &[])[0].state, "proposed");
+        assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 11, "nope")], &[], HEAD)[0].state, "proposed");
         let acc = acceptance("agr_1", 11, &h);
-        assert_eq!(derive_agreements(&[p.clone(), acc.clone()], &[])[0].state, "accepted");
+        assert_eq!(derive_agreements(&[p.clone(), acc.clone()], &[], HEAD)[0].state, "accepted");
         // …or the SDK's hash of the canonical payload (what the live chain carries).
         let jcs = { use sha2::Digest; sha2::Sha256::digest(crate::reputation::canonical(&p.json()).as_bytes()).iter().map(|x| format!("{x:02x}")).collect::<String>() };
-        assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 11, &jcs)], &[])[0].state, "accepted");
+        assert_eq!(derive_agreements(&[p.clone(), acceptance("agr_1", 11, &jcs)], &[], HEAD)[0].state, "accepted");
         let lock = obj("/agreements/agr_1/", "lock", 12, json!({ "v": 1, "id": "agr_1", "locked_at": 1 }));
-        assert_eq!(derive_agreements(&[p.clone(), acc.clone(), lock.clone()], &[])[0].state, "locked");
+        assert_eq!(derive_agreements(&[p.clone(), acc.clone(), lock.clone()], &[], HEAD)[0].state, "locked");
         let disp = evidence("agr_1", "e1", 13, "dispute");
-        assert_eq!(derive_agreements(&[p.clone(), acc.clone(), lock.clone(), disp.clone()], &[])[0].state, "disputed");
+        assert_eq!(derive_agreements(&[p.clone(), acc.clone(), lock.clone(), disp.clone()], &[], HEAD)[0].state, "disputed");
         let ack = evidence("agr_1", "e2", 14, "acknowledgement");
-        assert_eq!(derive_agreements(&[p.clone(), acc.clone(), lock.clone(), ack], &[])[0].state, "settled");
+        assert_eq!(derive_agreements(&[p.clone(), acc.clone(), lock.clone(), ack], &[], HEAD)[0].state, "settled");
         let ruling = obj("/agreements/agr_1/", "ruling", 15, json!({ "v": 1, "id": "agr_1", "outcome": "payee" }));
-        let a = &derive_agreements(&[p.clone(), acc.clone(), lock.clone(), disp, ruling], &[])[0];
+        let a = &derive_agreements(&[p.clone(), acc.clone(), lock.clone(), disp, ruling], &[], HEAD)[0];
         assert_eq!(a.state, "ruled");
         assert_eq!(a.references.len(), 5);
         assert_eq!(a.proposer, "alice@x.test", "domain part lowercased");
         // settled via the custodian's attestation
         let att = obj("/escrow@dsp.fyi/attestations/alice@x.test/", "agreement:settled", 16, json!({ "subject": "alice@x.test", "type": "agreement:settled", "value": { "contract": "agr_1" }, "issued_at": 1 }));
-        assert_eq!(derive_agreements(&[p.clone(), acc, lock], &[att])[0].state, "settled");
+        assert_eq!(derive_agreements(&[p.clone(), acc, lock], &[att], HEAD)[0].state, "settled");
         // expired offer
         let mut old = proposal("agr_2", 20);
-        old.value.as_mut().unwrap()["expires"] = json!(1);
-        assert_eq!(derive_agreements(&[old], &[])[0].state, "expired");
+        old.value.as_mut().unwrap()["expires_block"] = json!(1);
+        assert_eq!(derive_agreements(&[old], &[], HEAD)[0].state, "expired");
     }
 
     #[test]

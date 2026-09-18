@@ -48,6 +48,32 @@ export function windowSecs(iso) {
   return d * 86400 + h * 3600 + mi * 60 + sec;
 }
 
+/**
+ * Avail's nominal block time. ONE definition, shared by both sides: a window
+ * is only enforceable if the proposer and the acceptor derive the same height
+ * from the same terms (browserid-pay-b3gq).
+ *
+ * Nominal, not guaranteed. Substrate skips SLOTS, not block numbers, and
+ * blocks cannot be produced faster than the slot rate — so real elapsed time
+ * per block is >= this, never less. A window derived from it therefore gives a
+ * party AT LEAST the intended duration, never less. Anything converting the
+ * other way (a height back to a date, e.g. to check a warrant covers a
+ * deadline) must allow for blocks running slower.
+ */
+export const NOMINAL_BLOCK_SECS = 20;
+
+/**
+ * ISO-8601 duration → a number of blocks, rounded UP.
+ *
+ * Rounding up is deliberate: it can only lengthen a window, and a window that
+ * is slightly too long costs patience while one that is slightly too short
+ * costs someone their right to answer.
+ */
+export function windowBlocks(iso) {
+  const secs = windowSecs(iso);
+  return secs == null ? null : Math.ceil(secs / NOMINAL_BLOCK_SECS);
+}
+
 export const collectionAudience = (repo = DEFAULTS.repo) => `${repo.replace(/\/+$/, "")}/agreements`;
 export const agreementPath = (id) => `/agreements/${id}/`;
 const newId = () => "agr_" + randomBytes(12).toString("base64url");
@@ -352,10 +378,16 @@ export class Agreements {
     const contributionOut = normalizeContribution(contribution);
     // Everything needs a bound: an obligation with no deadline can never be
     // late, so nothing ever forces the question and the escrow just sits.
+    // Deadlines are BLOCK HEIGHTS (browserid-pay-e1ou): a height is assigned by
+    // the chain, so neither party can move it, and both derive the same view of
+    // it. The field is RENAMED rather than reinterpreted — a height and a unix
+    // timestamp are both integers, so an un-migrated `deadline` would be read
+    // as a block far in the past and silently make everything late.
+    const head = await this.chain.head();
     const bounded = (terms.obligations || []).map((ob) => (
-      ob.kind === "payment" || ob.deadline != null
+      ob.kind === "payment" || ob.deadline_block != null
         ? ob
-        : { ...ob, deadline: nowS() + windowSecs(DEFAULT_OBLIGATION_DEADLINE) }));
+        : { ...ob, deadline_block: head + windowBlocks(DEFAULT_OBLIGATION_DEADLINE) }));
     const full = { v: 1, id, salt, ...terms, obligations: bounded, fees, contribution: contributionOut };
     const com = commitment(full);
     const totalMinor = totalOf(full);
@@ -383,7 +415,7 @@ export class Agreements {
       // can only cap what it can read, and capping adjudication / escrow fees is
       // an ecosystem-health lever. This publishes fee pricing, never deal value.
       fees,
-      expires: o.expires || nowS() + windowSecs(DEFAULT_PROPOSAL_EXPIRY),
+      expires_block: o.expires_block || head + windowBlocks(DEFAULT_PROPOSAL_EXPIRY),
     };
     const { submission } = await this.post(agreementPath(id), "proposal", proposal, "agreement.proposal.v1");
     // Attach the goal that motivated this, so the pipeline advances instead of
@@ -402,7 +434,7 @@ export class Agreements {
     if (!obj) throw new AgreementError("no_proposal");
     const p = obj.payload;
     if (p.parties?.acceptor !== this.email) throw new AgreementError("not_acceptor", `proposal names ${p.parties?.acceptor}`);
-    if (p.expires && p.expires < nowS()) throw new AgreementError("expired");
+    if (p.expires_block && p.expires_block < (await this.chain.head())) throw new AgreementError("expired");
     const full = p.mode === "public" ? p.terms : terms;
     if (!full) throw new AgreementError("terms_required");
     if (p.mode !== "public" && commitment(full) !== p.commitment) throw new AgreementError("commitment_mismatch");
@@ -461,7 +493,11 @@ export class Agreements {
   // ---- deliver / settle / dispute ----------------------------------------------
 
   async #evidence(id, kind, extra = {}) {
-    const ev = { v: 1, id, kind, by: this.email, at: nowS(), ...extra };
+    // No `at`. A timestamp the writer chooses is not evidence of when anything
+    // happened, and while it was here both deriveObligations and the
+    // adjudicator treated it as fact (browserid-pay-e1ou). The block this
+    // object lands in is the record, and no party controls it.
+    const ev = { v: 1, id, kind, by: this.email, ...extra };
     const eid = "ev_" + randomBytes(8).toString("base64url");
     const { submission } = await this.post(`${agreementPath(id)}evidence/`, eid, ev, "agreement.evidence.v1");
     return { evidence: ev, evidence_id: eid, submission };
@@ -606,14 +642,14 @@ export class Agreements {
     if (!terms && p?.terms) terms = p.terms;
     if (!terms) throw new AgreementError("no_terms", "the private terms are not held locally and the proposal is not public");
     const path = agreementPath(id);
-    const [lock, evidence] = await Promise.all([this.chain.get(path, "lock"), this.chain.list(`${path}evidence/`)]);
+    const [lock, evidence, head] = await Promise.all([this.chain.get(path, "lock"), this.chain.list(`${path}evidence/`), this.chain.head()]);
     // The payload's own `id` is the AGREEMENT id; the evidence id is the object id.
     const evs = evidence.map((e) => ({ ...e.payload, agreement: e.payload?.id, id: e.id, block: e.block ?? null }));
     // Timings are fixed by the protocol, not negotiated: a window the proposer
     // chooses is a window an attacker tunes, and there are no policy-enforced
     // floors yet (browserid-pay-b3gq). `deriveObligations` still takes them as
     // arguments so the behaviour is testable without waiting days.
-    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, now: nowS(), parties: p.parties, roles: p.roles,
+    return deriveObligations(terms.obligations || [], { evidence: evs, lock: !!lock, head, parties: p.parties, roles: p.roles,
       responseWindow: this.windows.response });
   }
 
@@ -870,6 +906,11 @@ export class Agreements {
       // replacement is the ONLY exit from a disputed escrow — no clock releases
       // it and the abandonment backstop is suspended while it is disputed — so
       // an agent that is never told to do this waits for ever.
+      // STILL WALL-CLOCK, deliberately: `replace_adjudicator_from` is computed
+      // by the CUSTODIAN and compared here, so it is self-consistent — both
+      // ends are unix seconds. Converting one end alone would silently compare
+      // a height against a timestamp. The custodian's windows move to heights
+      // separately (browserid-pay-bh6u); do not "fix" this in isolation.
       const replaceFrom = st.escrow?.replace_adjudicator_from;
       if (replaceFrom && nowS() > replaceFrom) {
         const nominated = ev.some((e) => e.kind === "replace_adjudicator" && e.by === me);
@@ -898,11 +939,11 @@ export class Agreements {
           from: parties.proposer,
           title: terms.title ?? null,
           description: terms.description ?? null,
-          i_must: owed.map((o) => ({ what: o.what, kind: o.kind || "deliverable", deadline: o.deadline ?? null })),
+          i_must: owed.map((o) => ({ what: o.what, kind: o.kind || "deliverable", deadline_block: o.deadline_block ?? null })),
           i_am_paid: roles.payee === me ? terms.price : null,
           i_pay: roles.payer === me ? terms.price : null,
           adjudicator: p?.adjudicator ?? null,
-          expires: p?.expires ?? null,
+          expires_block: p?.expires_block ?? null,
         },
         then: "decide FIRST whether you can actually do what `i_must` asks; accept only then, and tell the proposer with send_message",
       };
@@ -942,7 +983,7 @@ export class Agreements {
           why: overdue
             ? `${awaiting.by} delivered "${awaiting.what}" and my window to answer has already passed`
             : `${awaiting.by} delivered "${awaiting.what}" and it is my turn to answer`,
-          response_due: awaiting.response_due ?? null,
+          response_due_block: awaiting.response_due_block ?? null,
           ...(overdue ? { overdue: true } : {}),
           then: 'check what actually arrived. Accept to release the escrow; if nothing arrived call settle with ok:false and reason "not_received" so they can send it again; if it arrived but is wrong, reason "not_met".'
             + (overdue ? " You can still answer, and answering is far cheaper than a ruling — but they may go to the adjudicator at any point now." : ""),
@@ -1143,16 +1184,25 @@ function other(me, parties = {}) {
   return [parties.proposer, parties.acceptor].filter(Boolean).find((x) => x !== me) || "the other party";
 }
 
-export function deriveObligations(obligations, { evidence = [], lock = false, now = nowS(), parties = {}, roles = {}, responseWindow = DEFAULT_RESPONSE_WINDOW } = {}) {
-  const respondSecs = windowSecs(responseWindow) ?? windowSecs(DEFAULT_RESPONSE_WINDOW);
+export function deriveObligations(obligations, { evidence = [], lock = false, head, parties = {}, roles = {}, responseWindow = DEFAULT_RESPONSE_WINDOW } = {}) {
+  // `head` is the chain's current block height and is REQUIRED — no default.
+  // It used to default to the wall clock, which is how a writer-supplied `at`
+  // came to decide lateness (browserid-pay-e1ou). A caller that cannot read
+  // the head must fail closed rather than have one invented for it.
+  if (!Number.isFinite(head)) throw new AgreementError("deriveObligations needs the chain head (a block height)");
+  const respondBlocks = windowBlocks(responseWindow) ?? windowBlocks(DEFAULT_RESPONSE_WINDOW);
   const ofObligation = (kind, i, by) => evidence.filter((e) => e.kind === kind && (e.obligation === undefined ? (by === undefined || e.by === by) : e.obligation === i));
-  const out = obligations.map((o, i) => ({ index: i, by: o.by, what: o.what, kind: o.kind || "deliverable", deadline: o.deadline ?? null, depends_on: o.depends_on ?? null }));
-  // First pass: when was each obligation met (writer-claimed `at`, else unknown).
+  const out = obligations.map((o, i) => ({ index: i, by: o.by, what: o.what, kind: o.kind || "deliverable", deadline_block: o.deadline_block ?? null, depends_on: o.depends_on ?? null }));
+  // First pass: at what BLOCK was each obligation met. An object that has not
+  // landed has no block and cannot have met anything — `null`, never a default.
   const metAt = (o) => {
     const inputs = ofObligation("handoff", o.index, o.by);
     if (o.kind === "input") {
       const receipts = evidence.filter((e) => e.kind === "receipt" && e.ok === true && inputs.some((h) => h.id === e.handoff));
-      if (receipts.length) return { met: true, at: Math.min(...receipts.map((r) => r.at ?? Infinity)) };
+      // Only CONFIRMED receipts count: one still in the mempool has not landed.
+      const landed = receipts.filter((r) => Number.isFinite(r.block));
+      if (landed.length) return { met: true, at: Math.min(...landed.map((r) => r.block)) };
+      if (receipts.length) return { met: false, handed_off: true, pending: true };
       if (inputs.length) return { met: false, handed_off: true, contested: evidence.some((e) => e.kind === "receipt" && e.ok === false && inputs.some((h) => h.id === e.handoff)) };
       return { met: false };
     }
@@ -1161,10 +1211,9 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     // response window. Silence past it is deemed acceptance; an explicit
     // refusal contests it; a later delivery is a cure and restarts the clock.
     // Only the LATEST delivery and any answer after it matter.
-    // Order by the LEDGER, not by wall clock: `at` is writer-claimed and has
-    // second resolution, so a re-delivery and the refusal it answers routinely
-    // share a timestamp. Position in the (chain-ordered) evidence list breaks
-    // ties, and block number leads when present.
+    // Order by the LEDGER. Block number leads; position in the (chain-ordered)
+    // evidence list breaks ties within a block. Nothing here consults a
+    // timestamp — a payload time is the writer's claim about itself.
     const rank = (e) => [e.block ?? Number.MAX_SAFE_INTEGER, e.seq];
     const ordered = evidence.map((e, seq) => ({ ...e, seq }))
       .sort((a, b) => { const [x1, y1] = rank(a), [x2, y2] = rank(b); return x1 !== x2 ? x1 - x2 : y1 - y2; });
@@ -1188,18 +1237,21 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
         if (e.ok === false && (e.reason || "not_met") === "not_met") pendingNotMet = true;
       }
     }
-    if (lastAnswer && lastAnswer.ok !== false) return { met: true, at: lastAnswer.at ?? anchor.at ?? Infinity };
+    if (lastAnswer && lastAnswer.ok !== false) return { met: true, at: lastAnswer.block ?? anchor.block ?? Infinity };
 
-    return { met: false, delivered: true, anchor_at: anchor.at ?? now, lastAnswer };
+    // An anchor with no block has not landed: the response window cannot start
+    // from a write nobody can see, so it starts no earlier than now.
+    return { met: false, delivered: true, anchor_at: anchor.block ?? head, lastAnswer };
   };
   const status = out.map(metAt);
   // Second pass: effective deadlines (slid by a dependency's lateness) and state.
   const effectiveDeadline = (o) => {
-    if (o.deadline == null) return null;
-    if (o.depends_on == null || !out[o.depends_on]) return o.deadline;
+    if (o.deadline_block == null) return null;
+    if (o.depends_on == null || !out[o.depends_on]) return o.deadline_block;
     const dep = out[o.depends_on], ds = status[o.depends_on];
-    if (!ds.met || dep.deadline == null || !Number.isFinite(ds.at)) return o.deadline;
-    return o.deadline + Math.max(0, ds.at - dep.deadline);
+    if (!ds.met || dep.deadline_block == null || !Number.isFinite(ds.at)) return o.deadline_block;
+    // Slide by the dependency's lateness, in blocks.
+    return o.deadline_block + Math.max(0, ds.at - dep.deadline_block);
   };
   const other = (who) => {
     const ps = [parties.proposer, parties.acceptor].filter(Boolean);
@@ -1212,7 +1264,7 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
     // own deadline, pulled IN by the response window when the delivery was
     // early. It can never push the deadline out — delivering half an hour
     // before it does not buy an extra hour.
-    const responseDeadline = st.delivered ? st.anchor_at + respondSecs : null;
+    const responseDeadline = st.delivered ? st.anchor_at + respondBlocks : null;
     const clock = st.delivered
       ? (deadline == null ? responseDeadline : Math.min(deadline, responseDeadline))
       : deadline;
@@ -1224,18 +1276,18 @@ export function deriveObligations(obligations, { evidence = [], lock = false, no
       if (st.lastAnswer?.ok === false) state = "contested";
       // Past the clock with no answer: nothing is settled and nothing is paid;
       // the only way on is a dispute.
-      else if (clock != null && now > clock) state = "unanswered";
+      else if (clock != null && head > clock) state = "unanswered";
       else state = "delivered";
     } else if (st.contested) state = "contested";
     else if (o.depends_on != null && !status[o.depends_on]?.met) state = "blocked";
     else if (st.handed_off) state = "handed_off";
-    else if (deadline != null && now > deadline) state = "late";
+    else if (deadline != null && head > deadline) state = "late";
     else state = "pending";
 
     const reason = st.lastAnswer?.ok === false ? (st.lastAnswer.reason || "not_met") : null;
-    return { ...o, effective_deadline: deadline, state,
-      met_at: st.met && Number.isFinite(st.at) ? st.at : null,
-      ...(st.delivered ? { response_due: clock } : {}),
+    return { ...o, effective_deadline_block: deadline, state,
+      met_at_block: st.met && Number.isFinite(st.at) ? st.at : null,
+      ...(st.delivered ? { response_due_block: clock } : {}),
       ...(reason ? { contest_reason: reason } : {}),
       // `unanswered` deliberately names nobody: silence is not yet anyone's
       // fault, and which way it goes is what the dispute is for. A `not_met`

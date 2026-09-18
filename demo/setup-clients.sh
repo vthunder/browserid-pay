@@ -100,10 +100,18 @@ ask rather than accepting.
 Evidence patterns (what counts in a dispute — a note proves nothing):
 - A delivery COMMITMENT is not a delivery. It starts the recipient\`s response
   window: accept (releasing escrow), refuse \`not_received\` if nothing arrived,
-  or refuse \`not_met\` if it did but is wrong. Saying nothing past \`response_due\`
-  leaves it \`unanswered\`: the escrow stays locked and the only way out becomes
-  the adjudicator. Answer in time — and if you delivered, actually SEND the
-  content. Nothing here pays anyone for the other side going quiet.
+  or refuse \`not_met\` if it did but is wrong. Saying nothing past
+  \`response_due_block\` leaves it \`unanswered\`: the escrow stays locked and the
+  only way out becomes the adjudicator. Answer in time — and if you delivered,
+  actually SEND the content. Nothing here pays anyone for the other side going
+  quiet.
+
+  All deadlines and windows are BLOCK HEIGHTS, not dates — \`deadline_block\`,
+  \`expires_block\`, \`response_due_block\`. Compare them against the chain head,
+  never against a clock, and never against a time written into someone\`s
+  payload. A block is about 20 seconds, so a date you are shown is an estimate.
+  A write that has not been confirmed has no height yet: it has not landed, and
+  until it does it counts for nothing.
 - Inputs you owe the other side: \`handoff\` (commits to them on the ledger)
   then send them; the receiver posts \`acknowledge_receipt\` with what it got.
 - Your deliverable: \`deliver\` (a commitment) and send it; keep the content —
