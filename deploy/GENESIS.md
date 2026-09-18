@@ -192,7 +192,8 @@ mingo as well as here. It is self-healing, but a backfill of ~12k blocks takes
 over an hour.
 
 Observed 2026-09-18: a comment scrub of `config.toml` and `entrypoint.sh`
-restarted the daemon mid-cutover and stalled confirmation on both chains. If
+restarted the daemon mid-cutover and stalled confirmation on every database it
+then followed (530 was still one of them; it has since been retired). If
 you only mean to change comments, batch it with work that genuinely needs a
 daemon deploy, or expect the outage.
 

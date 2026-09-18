@@ -78,7 +78,7 @@ Threading is NOT in here: mingo's `comment.v1` already carries a parent.
 
 ### Dependency
 
-Using this needs the sbo rev bump: browserid-pay pins `sbo-core` by git rev and the deployed daemon pins `SBO_REV` in mingo's Dockerfile. So it is push sbo → bump the rev here → redeploy the daemon, and a daemon redeploy restarts both chains. **Batch it with other sbo work rather than deploying for this alone.**
+Using this needs the sbo rev bump: browserid-pay pins `sbo-core` by git rev and the deployed daemon pins `SBO_REV` in mingo's Dockerfile. So it is push sbo → bump the rev here → redeploy the daemon, and a daemon redeploy restarts the chain and re-syncs it. **Batch it with other sbo work rather than deploying for this alone.**
 
 ### What must be verified before any of this counts for reputation
 
