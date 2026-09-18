@@ -1,9 +1,89 @@
 # browserid-pay genesis record — v1 (2026-09-15)
 
+> **SUPERSEDED IN DIRECTION (2026-09-18).** browserid-pay no longer has a chain
+> of its own. App **530 is being abandoned** and agreements move onto **app 506,
+> alongside mingo** (`browserid-pay-4v59`). Everything below documents the v1
+> standalone chain and stays accurate *as a record of what was built and why* —
+> the policy section in particular is the reference for what must now be applied
+> **on top of mingo**. Start with **"Layering on mingo"** below.
+
 The browserid-pay SBO database: agreements, provider listings, attestations
 (design: `docs/plans/2026-09-15-agreements-design-draft.md`, "The chain").
 Tooling: `crates/genesis` (`dsp-genesis`), Makefile `genesis-*` targets. Modelled
 on mingo's `deploy/GENESIS.md`; read that one for the war stories.
+
+---
+
+## Layering on mingo
+
+browserid-pay is now a **layer on mingo's chain**, not a chain. There is no
+browserid-pay genesis any more: there is a set of grants, restrictions and
+objects that must exist on top of whatever mingo last genesised.
+
+**The dependency runs both ways, and that is the whole point of this section.**
+mingo's `deploy/GENESIS.md` carries a matching warning, because a mingo
+regenesis silently destroys this layer — the grants below are not in
+`mingo-app/src/genesis.rs` and will not be reborn with the new chain.
+
+### What mingo must provide (do not let a regenesis drop these)
+
+| | why browserid-pay needs it |
+|---|---|
+| `owner: *` on `/u/$owner/**` | attestations live at `/u/<issuer>/attestations/<subject>/`. Note `$owner` is the **`Owner` header**, not the path — an absent Owner leaves the pattern unsubstituted and **fails closed**. `ChainIdentity::sign_write` sets it on every write |
+| `/sys/names/*` create + owner-update | identity name claims |
+| the DNSSEC self-auth fragment | keeps issuer evidence fresh on our own writes |
+| `browserid.me` as trust broker | attribution for `@sandmill.org` / `@dsp.fyi` identities |
+| admin `govern` on `/**` (sys key) | without it none of the below can be installed |
+
+### What browserid-pay adds, by governed update from the sys key
+
+No regenesis is needed for any of it — the sys key holds `govern` on `/**`.
+
+**Grants**
+```
+*   post     /providers/custodians/$user/**
+*   post     /providers/adjudicators/$user/**
+*   create   /agreements/**
+```
+
+**Restrictions**
+```
+/providers/**    require schema provider.v1, max_size 16384
+/agreements/**   require max_size 65536
+/agreements/*/  id=proposal  require fields:
+    /contribution/fn          eq   "max"
+    /contribution/amount      min  MIN_CONTRIBUTION_AMOUNT
+    /contribution/percentage  min  MIN_CONTRIBUTION_PERCENTAGE
+```
+
+**Objects**
+- `/sys/contribution` (what agents should offer + the floor actually enforced)
+- the custodian and adjudicator provider listings
+
+The exact shapes are in `crates/genesis/src/main.rs` — see **Policy** below,
+which remains the authoritative expression even though the crate no longer
+builds the chain that runs.
+
+### Order, and the one that bites
+
+1. **Verify the daemon first.** The contribution floor needs the `sbo-pu34`
+   object-id and payload-field conditions. **A daemon without them ignores both
+   fields silently**: the policy installs, looks right, and enforces nothing.
+   Check the deployed rev before publishing it, not after.
+2. Install grants and restrictions.
+3. Post `/sys/contribution` and the provider listings.
+4. Repoint the custodian, judge, indexer and SDK/MCP config at the repo.
+5. Reindex from genesis.
+6. Re-run `demo/run-local.mjs` end to end — it is the only thing that exercises
+   the whole path.
+
+### What does NOT carry over
+
+**Reputation resets.** Every attestation and scorecard is gone. Accepted
+deliberately (Dan, 2026-09-18) — it is test data — but say it out loud, because
+reputation is the part of this project that is shipped and credible.
+
+---
 
 **v1 canonical identity:** `avail:turing:530:3885219:sha256:6e36ddae51fcf93557d6be930cda3849ededbdf226241af08f6f7f07e7e86d51`
 
@@ -65,8 +145,10 @@ roles:  admin = { key: <sys pubkey> }          // the KEY, never a name (mingo-d
 grants:
   *       create            /sys/names/*         // first-come name claims
   owner   update, delete    /sys/names/*
-  *       post, delete      /$user/**            // every signer's own namespace:
-                                                 //   /<issuer>/attestations/<subject>/<type>
+  *       post, delete      /$user/**            // v1 only. On 506 this is mingo's
+                                                 // `owner: * on /u/$owner/**`, and
+                                                 // attestations moved with it to
+                                                 //   /u/<issuer>/attestations/<subject>/<type>
   *       post              /providers/custodians/$user/**   // exactly its own listing:
   *       post              /providers/adjudicators/$user/** //   /providers/<kind>/<identity>/listing
                                                  // (patterns match PATHS, not ids — v1 genesis had
@@ -200,6 +282,13 @@ the daemon reported mingo's own `/sys/dnssec/browserid.me` on 506 as
 **expired** (2026-09-02) — mingo's refresher, not ours, but worth telling Dan.
 
 ## Reproduce / regenesis
+
+> **This recipe builds the standalone v1 chain on app 530, which is being
+> abandoned.** Kept because it documents how the pieces fit and how the daemon
+> is told to follow a repo. For the current world, "regenesis" means *mingo*
+> regenesises and this layer is re-applied — see **"Layering on mingo"** at the
+> top, and `mingo/deploy/GENESIS.md`.
+
 
 ```sh
 # 0. secrets + key
