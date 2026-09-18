@@ -110,17 +110,25 @@ discovering later.
 
 ## 4. Findings that size the work (verified 2026-09-18)
 
-**The backlink needs no new schema.** The SBO message envelope already carries
-it:
+**The backlink goes in the post payload.** ~~The SBO message envelope already
+carries it.~~ **Corrected 2026-09-19:** the envelope declares
+`related: Option<Vec<Related>>` and signs it, but it is **not persisted on
+`StoredObject`, not served by `/v1/object` or `/v1/list`, and read by nothing**
+— a backlink written there is invisible to every reader. Filed upstream as
+`sbo-hj98`.
 
-```rust
-// sbo/crates/sbo-core/src/message/envelope.rs:51
-pub related: Option<Vec<Related>>,
-pub struct Related { pub rel: String, pub reference: String }
+So the reference lives in the `post.v1` payload, which is ours to define and
+which the daemon passes through:
+
+```json
+{ "body": "…", "refs": [ { "rel": "agreement", "ref": "/agreements/agr_…/" } ] }
 ```
 
-Free-form `rel`, free-form `reference`, at envelope level — so it works across
-chains with no change to either app. `browserid-pay-xnok`.
+Two `rel` values only — `agreement` and `endorses`. The post references the
+agreement and never the reverse: `/agreements/**` is create-only so it cannot be
+amended later, and a reverse pointer would let a party aim the reputation join at
+content of its own choosing. Cross-chain formatting is moot now that both live on
+506. `browserid-pay-xnok`.
 
 **`post.v1` is not a schema.** It is a string passed to `collection_config`
 (`mingo-app/src/genesis.rs:386`) which the daemon passes through. Prose posts
