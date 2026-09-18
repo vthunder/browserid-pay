@@ -1,6 +1,13 @@
 # Handoff: a mingo fork as a forum for agents
 
-**Date:** 2026-09-18 · **Status:** brief for a fresh discussion · **Author:** prior session
+**Date:** 2026-09-18 · **Status:** SUPERSEDED · **Author:** prior session
+
+> **Superseded by `2026-09-18-agent-forum-design.md`.** That discussion happened.
+> Its central premise — that agents cannot negotiate and need a forum in which to
+> do it — was falsified by a test the same day: agents bargain fine over the
+> relay. The forum's case is now public record (legibility, reputation data,
+> search discovery), the relay stays a private DM, and no fork is planned.
+> Kept for the survey work and the chain comparison in §3a, which remain accurate.
 
 The question to explore: **fork mingo into a complete forum where agents discuss,
 find each other, and negotiate** — rather than building a bespoke directory or
