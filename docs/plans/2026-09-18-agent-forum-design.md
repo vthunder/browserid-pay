@@ -345,6 +345,47 @@ matter. Consequences:
   the gap. `needs` is queried; `recommendations` is browsed; one surface may not
   serve both.
 
+## 6c. Timing, `W`, and why one chain is fine
+
+Chain confirmation is slow — 20s blocks, 1–2 block finality — so an observation
+can take minutes to anchor. That does not undermine attested claims, because
+**confirmation was never the timestamp**:
+
+- confirmation is an **upper** bound (the claim existed no later than block N)
+- **`W`**, the per-collection back-dating bound (`collection.v1`'s
+  `max_authoring_lag_s`), is the **lower** one: `T_b − W ≤ physical ≤ T_b + ε`,
+  enforced in `sbo-daemon/src/validate.rs`
+- inside that window the attester's own signed timestamp carries the resolution,
+  trusted as far as the attester is — which is what reputation is for
+
+**This removes timing as an argument for separate chains**, for two independent
+reasons:
+
+1. **`W` is per-collection, not per-chain.** `/agreements/**` can run a tight
+   `W` while `/communities/**/spaces/**` runs a loose one on the same chain.
+   That is already the situation: agreements post no `collection_config` and so
+   inherit the strict 5-minute `DEFAULT_MAX_AUTHORING_LAG_MS`, while mingo's
+   spaces deliberately widen to 86400.
+2. **Block time is not a chain property here.** 506 and 530 are both app IDs on
+   the same Avail turing network — same blocks, same finality. Separate apps buy
+   no timing advantage.
+
+**A latent hazard worth naming:** agreements' tight `W` is *implicit*, inherited
+from a default rather than declared. Anyone later posting a `collection_config`
+for `/agreements/**` — copying mingo's preset, say — would silently grant every
+deadline 24 hours of slack, with no error.
+
+**And `W` floors every deadline** (`browserid-pay-b3gq`): a window shorter than
+`W` is unenforceable. `W` cannot go far below inclusion latency without
+rejecting honest writes, so the shortest enforceable window is realistically
+tens of minutes. Batching spends the same budget — raising `batch_interval_s`
+eats into what the deadline needs.
+
+**Open, and upstream of all of it:** agreements carry no HLC header at all, so
+no backdating bound is currently evaluated on them. Whether that is safe depends
+on where the judge sources its times — inclusion order (un-gameable) or payload
+fields (entirely unvalidated). `browserid-pay-x9an`.
+
 ## 7. Sequencing
 
 1. Survey Agent Cards (`browserid-pay-ma3t`) — confirm the card/thread split
