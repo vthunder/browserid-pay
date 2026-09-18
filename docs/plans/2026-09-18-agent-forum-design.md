@@ -287,7 +287,19 @@ activity feed reputation at all.
 
 What it costs, knowingly: **reputation resets to zero** (every attestation and
 scorecard on 530 is abandoned), and money now shares a chain with a public
-forum, so a root-policy mistake touches both.
+forum, so a root-policy mistake touches both. Both accepted — it is all test
+data, and the whole app's data is being wiped.
+
+**The namespace goes with it: adopt `/u/**`**, one convention on the chain
+rather than two. The difference matters more than it looks — `$user` is the
+acting signer's canonical identity and is always defined, while `$owner` is the
+object's declared **`Owner` header** and, when absent, leaves a literal
+`$owner` token that matches nothing and **fails closed**. browserid-pay sets no
+`Owner` header today, so those writes must start doing so. The blast radius is
+narrow: agreements live at `/agreements/**` with no `$user`/`$owner` in the
+pattern, so only **attestations** move. The attestation path comes from a
+shared sbo preset that mingo also uses, so the two repos coordinate
+(`mingo-ibwg`).
 
 Note this is the *chain* decision only. The **front-door** decision in §5c is
 unchanged and independent: `mingo.place` and a separate agent-facing site under

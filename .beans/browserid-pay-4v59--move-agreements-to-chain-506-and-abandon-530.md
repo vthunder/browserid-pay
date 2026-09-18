@@ -30,14 +30,44 @@ Missing, from `crates/genesis/src/main.rs:314-368`:
 
 **Plus** the `/sys/contribution` object and the provider listings for the custodian and adjudicator, re-posted on 506.
 
-## The one real decision: the user namespace
+## The user namespace: adopt `/u/**` (decided, Dan 2026-09-18)
 
-530 grants `/$user/**`; 506 grants `/u/$owner/**`. Attestations live at `/<issuer>/attestations/<subject>/<type>`, and the path is built by a **shared sbo preset** (`sbo-core presets.rs: attestation()`) that mingo uses too.
+One convention on the chain, not two. Since all app data is being wiped there are no historical objects to move — this is a path change, not a migration, so do it as part of this epic rather than after.
 
-- **Cheap:** also grant `/$user/**` on 506. Then **nothing in browserid-pay changes but configuration** — no path changes in the custodian, judge, indexer or SDK. One line of policy.
-- **Tidy:** adopt `/u/*` for agreements too. Requires parameterising the shared attestation preset, and touches every reader of attestation paths.
+### What `$user` and `$owner` actually mean
 
-Recommend the cheap one, and note that two user-namespace conventions then coexist on one chain — slightly ugly, entirely harmless. Revisit only if it starts to bite.
+From `sbo-core/src/policy/path.rs:13-15`:
+
+- **`$user`** — the acting signer's canonical identity. Always defined for an attributed write.
+- **`$owner`** — the object's declared **`Owner` header** (`owner_ref` on update). *Not path-derived.*
+
+And an undefined variable leaves the literal `$owner` token in the pattern, which matches no real path segment — **the pattern fails closed**.
+
+| | 530 `{to: "*", on: "/$user/**"}` | 506 `{to: "owner", on: "/u/$owner/**"}` |
+|---|---|---|
+| Owner header | not needed | **required, or the write is rejected** |
+| who may write | any signer, under their own canonical id | the actor must be authorized as the declared owner |
+| ownership | implicit in the path | explicit in the object |
+
+### The concrete work
+
+**browserid-pay never sets an `Owner` header today.** `sdk/agreements/src/envelope.mjs:39` supports it (`if (m.owner) h.Owner = m.owner`) but `agreements.mjs` never passes one, and the custodian and judge write paths do not either — only `crates/chain/src/identity.rs:197`, for identity claims. Without one, every `/u/$owner/**` write fails closed.
+
+**The blast radius is narrow.** Agreements live at `/agreements/**`, granted `{to: "*", can: ["create"]}` with no `$user`/`$owner` in the pattern — **unaffected by this choice**. The only thing in the user namespace is attestations.
+
+- [ ] set `Owner` on every attestation write (custodian, judge)
+- [ ] attestation path `/<issuer>/attestations/…` → `/u/<issuer>/attestations/…`; the path comes from the shared `sbo-core presets.rs: attestation()`, so it needs parameterising — coordinate with mingo, which also uses it
+- [ ] update every reader of attestation paths: indexer (`index.rs`), the SDK, the judge's evidence reads
+- [ ] drop the `/$user/**` grant from browserid-pay's genesis policy — it is not needed on 506
+
+### Two properties worth keeping deliberately
+
+- **Attestations stay stored under the issuer**, not the subject, so a subject still cannot delete claims about themselves. Preserved by the move; do not lose it.
+- **An issuer *can* delete attestations it issued** — mingo's grant is `can: ["*"]` on `/u/$owner/**`. Not a regression (530 granted `post, delete` on `/$user/**`) and arguably correct as revocation, but it means the custodian could retract a scorecard. Deliberate, not inherited. `govern` is excluded from `*` by design, so policy itself is safe.
+
+### Sharing `/u/**` across both apps is a feature
+
+The issuers (`pay.dsp.fyi`, `judge.dsp.fyi`) are not mingo users, so there is little practical overlap. Where there *is* — an agent that both posts on the forum and has reputation — one identity having one namespace is exactly what makes the forum↔reputation link natural. That is what the single chain was for.
 
 ## Consequences to accept knowingly
 
@@ -54,7 +84,7 @@ Recommend the cheap one, and note that two user-namespace conventions then coexi
 
 - [ ] verify the deployed daemon enforces `sbo-pu34` field/id conditions **before** publishing the contribution floor
 - [ ] governed root-policy update on 506 adding the grants and restrictions above
-- [ ] decide the namespace question; recommend granting `/$user/**`
+- [ ] adopt `/u/**` (decided) — see the namespace section above for the work
 - [ ] re-post `/sys/contribution` and both provider listings
 - [ ] repoint custodian, judge, indexer and the SDK/MCP config at 506
 - [ ] reindex from 506 genesis
