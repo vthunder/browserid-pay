@@ -55,7 +55,7 @@ I caused the loss: while prepping the live run I described `~/pay-clients/*/stat
 
 **Fixed:** the cursor moved to the state root, beside the terms directory rather than inside it. The legacy path is still read (`max` of both), so an existing cursor survives the upgrade, and a failed write now logs instead of failing silently.
 
-Still worth considering, not done:
+**Replay-on-missing stays** (Dan, 2026-09-18). The cursor is client-side only, so the relay keeps no record of what it delivered — which makes an absent cursor indistinguishable from a brand-new client. Replaying is then the only default that cannot silently drop a message; the cost is noise the agent can reason through. Revisit only if a server-side per-recipient cursor ever exists.
 
-- [ ] on a genuinely absent cursor, is replaying *everything* the right default? For an agent, acting on a stale instruction from a settled agreement may be worse than missing an old message. Starting at the current high-water mark is the other option
-- [ ] `/api/receive` has no server-side per-recipient cursor; the client high-water mark is the only guard
+- [x] on a genuinely absent cursor, replaying everything is correct — see above
+- [ ] note the consequence: a SECOND client for the same identity (another machine) also replays from zero, and two clients advance separate cursors. Fine today, wrong if an identity is ever run from two places at once
