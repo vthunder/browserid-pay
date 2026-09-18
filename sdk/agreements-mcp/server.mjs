@@ -335,9 +335,20 @@ const RELAY = (process.env.AGREEMENTS_RELAY || "https://relay.dsp.fyi").replace(
 // The relay read cursor, on disk beside the terms: in memory it reset on every
 // restart and the whole backlog replayed, which agents then had to reason their
 // way through ("nothing newer than the haiku proposal").
-const CURSOR_FILE = join(TERMS_DIR, "relay-cursor.json");
-const readCursor = () => { try { return JSON.parse(readFileSync(CURSOR_FILE, "utf8")).last_seen || 0; } catch { return 0; } };
-const writeCursor = (n) => { try { writeFileSync(CURSOR_FILE, JSON.stringify({ last_seen: n }, null, 2)); } catch { /* a lost cursor only replays */ } };
+// The cursor lives BESIDE the terms directory, not inside it. Inside, it looks
+// like one more disposable per-agreement file: clearing out old terms takes the
+// cursor with them, `readCursor` falls back to 0, and the agent replays every
+// message it has ever received — including instructions from settled agreements.
+// That happened on 2026-09-18 (browserid-pay-3jvb). The legacy path is still
+// read so an existing cursor is not lost on upgrade.
+const CURSOR_FILE = join(TERMS_DIR, "..", "relay-cursor.json");
+const LEGACY_CURSOR_FILE = join(TERMS_DIR, "relay-cursor.json");
+const readCursorFrom = (f) => { try { return JSON.parse(readFileSync(f, "utf8")).last_seen || 0; } catch { return 0; } };
+const readCursor = () => Math.max(readCursorFrom(CURSOR_FILE), readCursorFrom(LEGACY_CURSOR_FILE));
+const writeCursor = (n) => {
+  try { writeFileSync(CURSOR_FILE, JSON.stringify({ last_seen: n }, null, 2)); }
+  catch (e) { console.error(`[agreements] could not persist the relay cursor to ${CURSOR_FILE}: ${e.message} — the next session will replay old messages`); }
+};
 async function relayCall(a, route, body) {
   if (!a.agent.warrantedAudiences().includes(RELAY)) {
     // One card: the relay grant plus the standing ledger-write grant if it is

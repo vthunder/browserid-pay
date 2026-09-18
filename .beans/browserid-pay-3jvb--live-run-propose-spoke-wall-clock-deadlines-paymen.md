@@ -45,10 +45,17 @@ Alice ran `next_step` on a 60s loop and **never noticed bob's counter-offer**. S
 - [ ] `next_step` should check for unread relay messages and surface them
 - [ ] a proposal in `proposed` with an unread message from the acceptor should recommend reading it, not waiting
 
-## 4. OPEN: the relay re-delivers old messages
+## 4. FIXED: the relay cursor was collateral damage from clearing old terms
 
-Alice's `check_messages` returned bob's new message **plus messages from previous, finished agreements**. Suspected: no last-seen-id / no acknowledgement of receipt, so every call replays history.
+The first diagnosis here ("no last-seen-id") was **wrong**. A cursor exists, is persisted, and advances — `{"last_seen": 33}`.
 
-- [ ] confirm whether `/api/receive` tracks a cursor per recipient
-- [ ] if not, add one (or a client-side high-water mark)
-- [ ] an agent re-reading settled agreements' chatter will eventually act on a stale instruction
+The real defect is **where it lived**: `join(TERMS_DIR, "relay-cursor.json")`, i.e. inside the per-agreement terms directory, indistinguishable from one more disposable terms file. `readCursor` falls back to **0** on any read failure, so losing it silently replays every message the agent has ever received.
+
+I caused the loss: while prepping the live run I described `~/pay-clients/*/state/terms/` as "stale terms for 530 agreements, harmless clutter" and suggested clearing it. That directory held the cursor.
+
+**Fixed:** the cursor moved to the state root, beside the terms directory rather than inside it. The legacy path is still read (`max` of both), so an existing cursor survives the upgrade, and a failed write now logs instead of failing silently.
+
+Still worth considering, not done:
+
+- [ ] on a genuinely absent cursor, is replaying *everything* the right default? For an agent, acting on a stale instruction from a settled agreement may be worse than missing an old message. Starting at the current high-water mark is the other option
+- [ ] `/api/receive` has no server-side per-recipient cursor; the client high-water mark is the only guard
