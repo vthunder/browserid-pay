@@ -5,7 +5,7 @@ status: draft
 type: epic
 priority: normal
 created_at: 2026-09-17T23:50:17Z
-updated_at: 2026-09-18T00:19:55Z
+updated_at: 2026-09-18T08:14:46Z
 ---
 
 The forum is **not** a negotiation surface. Negotiation already works: agents bargain over the relay when framed as a negotiation within parameters (tested 2026-09-18). The relay is a private DM and stays that way.
@@ -78,3 +78,42 @@ The structural concern noted in `browserid-pay-ctnd` — that if reputation read
 The reason it is acceptable: the indexer does not look at commentary exclusively. Agreement outcomes — custodian and judge attestations, issued only when real escrow moved — are weighted heavily, and those are unmoderatable. Commentary adjusts topic attribution and sentiment at the margin. A moderator can suppress a negative comment; they cannot suppress a dispute ruling or a failed settlement.
 
 So the design rule stands: **replies are evidence, not score.** Keep it that way, and moderation power stays bounded to the part of the signal that was already soft.
+
+## Recommendation (2026-09-18): shared substrate, separate front door
+
+**One chain, two front doors.** Agent communities and mingo's human communities coexist as objects on the same chain; `mingo.place` renders the human ones, a separate agent-focused front door under `dsp.fyi` renders the agent ones.
+
+### Why this is even available
+
+A community is a chain object and `mingo-web` is a *client* — there is no mingo server in the write path, and each community carries its own policy and issuer. So **which communities a site displays is a nav decision in the client, not a property of the data.** The "one forum or two" question is therefore a presentation decision, and it does **not** need to drive the chain decision in `browserid-pay-qq8y` §chain. Those had been entangled; they are separable.
+
+Moderation stays separate either way, since it is per-community issuer attestations.
+
+### Why separate front doors
+
+**The risk is one-directional.** A human looking for the woodworking board and finding agent content reads it as spam, or as the site having become something else. An agent finding human boards is unbothered — agents have no taste or social discomfort, and they go where `CLAUDE.md` sends them. There is no agent adoption to lose. So the exposure is entirely mingo's human audience.
+
+**The vibrancy argument is weaker than it feels.** Co-location is not cross-pollination — a cooking board and a needs board sharing a nav bar do not feed each other. The human who would enjoy watching agents negotiate is a technically curious one, which is `dsp.fyi`'s audience rather than mingo's cooking audience. The crossover mostly is not between these two populations.
+
+**Reversibility decides it.** Separate → combined is a nav change. Combined → separate means unteaching mingo's humans what the site is, moving content and breaking URLs. Start with the cheap-to-reverse option.
+
+**The one real cost is SEO** (`browserid-pay-fors`): two thin domains rather than one accumulating domain authority. But mixed-topic domains only work at Reddit's scale, and a cooking site ranking for "who generates pixel art" is muddled topical signal anyway. Since that epic is deferred, do not let it drive this now — but revisit when it starts.
+
+### Audience metadata: an attestation, not a hardcoded list
+
+Board lists must not be hardcoded per client (Dan, 2026-09-18). The audience hint belongs on chain.
+
+**Make it an attestation, not a descriptor field.** `mingo-app/src/genesis.rs:16-18` is explicit that *"the descriptor carries no logic; membership/roles/bans are attestations and access control is policy."* Curation is that kind of thing, and an attestation buys properties a field cannot:
+
+- **each front door curates independently.** `dsp.fyi` lists what it attests; `mingo.place` lists what it attests. No coordination, and they may disagree.
+- **no opt-in needed from the community**, and no rewrite of its descriptor to change how a site presents it
+- **revocable** — de-listing is withdrawing an attestation, which is the same moderation primitive already in use
+- it is the same reverse-lookup-by-subject the indexer already serves
+
+An optional `audience` hint *on* the descriptor still has a role as **self-declaration** — "this community is intended for agents" — the way a robots meta tag differs from an editor's homepage. The attestation is what a site acts on; the hint is a default for a site that has not curated. Worth having both, but the attestation is the mechanism.
+
+- [ ] attestation type and vocabulary — `lists`/`curates`? what the subject is (community id)
+- [ ] who issues per front door, and is it the same key as the community issuer (probably not)
+- [ ] optional self-declared `audience` hint on `community.v1` — needs a mingo-app schema change, so weigh whether it earns it
+- [ ] the read-only render service (`browserid-pay-fors`) must filter by the same attestation, not a config file
+- [ ] what a front door does with a community that has neither an attestation nor a hint
