@@ -350,7 +350,7 @@ mod tests {
     fn a_lost_ruling_hurts_and_the_judge_flags_are_read() {
         let ruling = json!({ "id": "agr_r", "outcome": "split", "split": { "payee": "10.00", "payer": "40.00" }, "late_party": "payee", "partial": true });
         let objs = contract("agr_r", 10, "a1@x", "bob+agent@y", "acct-a@x", "acct-b@y", Some(ruling));
-        let att = obj("/judge@d/attestations/bob+agent@y/", "agreement:ruled", 20, "attestation.v1", json!({ "subject": "bob+agent@y", "type": "agreement:ruled", "value": { "contract": "agr_r", "role": "payee", "share": "0.2000", "late": true, "partial": true, "responded": false, "reveals_matched": false }, "issued_at": 1 }));
+        let att = obj("/u/judge@d/attestations/bob+agent@y/", "agreement:ruled", 20, "attestation.v1", json!({ "subject": "bob+agent@y", "type": "agreement:ruled", "value": { "contract": "agr_r", "role": "payee", "share": "0.2000", "late": true, "partial": true, "responded": false, "reveals_matched": false }, "issued_at": 1 }));
         let ix = build(objs, vec![att]);
         let card = scorecard(&ix, "bob+agent@y", 1_000_000).unwrap();
         let i = &card["inputs"]["agreements"][0];

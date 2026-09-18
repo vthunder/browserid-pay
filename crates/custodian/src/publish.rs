@@ -37,7 +37,12 @@ impl ChainPublisher {
         });
         self.post(
             WriteSpec {
-                path: format!("/{me}/attestations/{subject}/"),
+                // `/u/<issuer>/…`: one user-namespace convention on the shared
+                // chain (browserid-pay-4v59). The Owner header is already set by
+                // `sign_write`, which is what `/u/$owner/**` matches on — an
+                // absent Owner would leave the pattern unsubstituted and fail
+                // closed.
+                path: format!("/u/{me}/attestations/{subject}/"),
                 id: kind.into(),
                 schema: "attestation.v1".into(),
                 payload: serde_json::to_vec(&payload).expect("attestation json"),
@@ -144,7 +149,7 @@ pub fn provision_spec(cfg: &Config) -> ProvisionSpec {
                 "action:post".into(),
                 "path:/agreements/**".into(),
                 "path:/providers/custodians/**".into(),
-                "path:/*/attestations/**".into(),
+                "path:/u/*/attestations/**".into(),
             ],
         }],
     }

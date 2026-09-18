@@ -23,7 +23,7 @@ shapes: `docs/specs/agreement-v1.md`.
 2. The ruling object is signed and posted to `/agreements/<id>/` (ID
    `ruling`, `agreement.ruling.v1`) as this identity.
 3. `agreement:ruled` attestations are posted on both parties under
-   `/<judge>/attestations/<party>/agreement:ruled`.
+   `/u/<judge>/attestations/<party>/agreement:ruled`.
 4. The ruling is delivered to the custodian named in the proposal:
    `POST <custodian>/api/escrow/<id>/ruling` `{ presentation (audience = the
    custodian origin), ruling }`.
@@ -41,7 +41,7 @@ warrants —
 
 - audience `sbo+raw://avail:turing:530/` with scopes `action:post`,
   `path:/agreements/**`, `path:/providers/adjudicators/**`,
-  `path:/*/attestations/**` (chain writes), and
+  `path:/u/*/attestations/**` (chain writes), and
 - one warrant per custodian in `JUDGE_CUSTODIANS` with scope `ruling`
   (delivery).
 

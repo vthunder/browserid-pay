@@ -259,7 +259,7 @@ async function main() {
   assert.equal(kase.ruling.outcome, "split");
   const rulingObj = daemon.get(`/agreements/${p2.id}/`, "ruling");
   assert.equal(rulingObj?.creator, JUDGE, "ruling object on chain, attributed to the judge");
-  assert.equal(daemon.get(`/${JUDGE}/attestations/${ALICE_AGENT}/`, "agreement:ruled")?.creator, JUDGE, "attestation on the agent that was a party");
+  assert.equal(daemon.get(`/u/${JUDGE}/attestations/${ALICE_AGENT}/`, "agreement:ruled")?.creator, JUDGE, "attestation on the agent that was a party");
   const e2 = await escrowOf(p2.id);
   assert.equal(e2.state, "settled");
   assert.equal(e2.outcome, "ruled:split");

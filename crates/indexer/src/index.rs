@@ -330,9 +330,13 @@ pub struct ParsedAttestation {
 /// payload's `subject`/`type` win when present.
 pub fn parse_attestation(o: &Obj) -> Option<ParsedAttestation> {
     let segs: Vec<&str> = o.path.trim_matches('/').split('/').collect();
+    // `/u/<issuer>/attestations/<subject>/` only. The pre-`/u/` shape is
+    // deliberately NOT accepted: silently reading `/foo/attestations/…` would
+    // attribute an attestation to whatever sat at the top level, and the chain
+    // those objects lived on is being abandoned anyway (browserid-pay-4v59).
     let (issuer, path_subject) = match segs.as_slice() {
-        [issuer, "attestations", subject] => (issuer.to_string(), Some(subject.to_string())),
-        [issuer, "attestations"] => (issuer.to_string(), None),
+        ["u", issuer, "attestations", subject] => (issuer.to_string(), Some(subject.to_string())),
+        ["u", issuer, "attestations"] => (issuer.to_string(), None),
         _ => return None,
     };
     let v = o.json();
@@ -500,6 +504,25 @@ mod tests {
     /// A chain head far past every fixture's blocks, so tests exercise state
     /// transitions rather than expiry. Expiry has its own test.
     const HEAD: u64 = 1_000;
+
+    /// The `/u/` prefix is load-bearing, not cosmetic: `issuer` comes only from
+    /// the path (the payload carries `subject`, never the issuer). Accepting a
+    /// bare `/<x>/attestations/…` would let anything written at the top level
+    /// be read as an issuer, so the old shape must be ignored outright rather
+    /// than tolerated (browserid-pay-4v59).
+    #[test]
+    fn only_the_u_namespace_is_read_as_an_attestation() {
+        let payload = json!({ "subject": "alice@x.test", "type": "agreement:settled", "value": {} });
+        let good = obj("/u/escrow@dsp.fyi/attestations/alice@x.test/", "agreement:settled", 1, payload.clone());
+        let parsed = parse_attestation(&good).expect("the /u/ shape parses");
+        assert_eq!(parsed.issuer, "escrow@dsp.fyi");
+        assert_eq!(parsed.subject, "alice@x.test");
+
+        let old = obj("/escrow@dsp.fyi/attestations/alice@x.test/", "agreement:settled", 1, payload);
+        assert!(parse_attestation(&old).is_none(), "the pre-/u/ shape is not read at all");
+    }
+
+
     use super::*;
 
     fn obj(path: &str, id: &str, block: u64, v: Value) -> Obj {
@@ -559,7 +582,7 @@ mod tests {
         assert_eq!(a.references.len(), 5);
         assert_eq!(a.proposer, "alice@x.test", "domain part lowercased");
         // settled via the custodian's attestation
-        let att = obj("/escrow@dsp.fyi/attestations/alice@x.test/", "agreement:settled", 16, json!({ "subject": "alice@x.test", "type": "agreement:settled", "value": { "contract": "agr_1" }, "issued_at": 1 }));
+        let att = obj("/u/escrow@dsp.fyi/attestations/alice@x.test/", "agreement:settled", 16, json!({ "subject": "alice@x.test", "type": "agreement:settled", "value": { "contract": "agr_1" }, "issued_at": 1 }));
         assert_eq!(derive_agreements(&[p.clone(), acc, lock], &[att], HEAD)[0].state, "settled");
         // expired offer
         let mut old = proposal("agr_2", 20);
@@ -573,8 +596,8 @@ mod tests {
         let p = proposal("agr_1", 10);
         let h = p.object_hash.clone();
         let acc = acceptance("agr_1", 11, &h);
-        let att1 = obj("/bob@y.test/attestations/alice@x.test/", "agreement:completed", 12, json!({ "subject": "alice@x.test", "type": "agreement:completed", "value": { "contract": "agr_1" }, "issued_at": 5 }));
-        let att2 = obj("/judge@dsp.fyi/attestations/alice@x.test/", "agreement:ruled", 13, json!({ "subject": "alice@X.test", "type": "agreement:ruled", "value": {}, "issued_at": 5, "expires": 1 }));
+        let att1 = obj("/u/bob@y.test/attestations/alice@x.test/", "agreement:completed", 12, json!({ "subject": "alice@x.test", "type": "agreement:completed", "value": { "contract": "agr_1" }, "issued_at": 5 }));
+        let att2 = obj("/u/judge@dsp.fyi/attestations/alice@x.test/", "agreement:ruled", 13, json!({ "subject": "alice@X.test", "type": "agreement:ruled", "value": {}, "issued_at": 5, "expires": 1 }));
         let prov = obj("/providers/adjudicators/judge@dsp.fyi/", "listing", 3, json!({ "identity": "judge@dsp.fyi", "price": { "amount": "5.00", "currency": "USD" } }));
         // The old flat layout (id = identity) is not a listing any more.
         let stale = obj("/providers/adjudicators/", "old@dsp.fyi", 3, json!({ "identity": "old@dsp.fyi" }));

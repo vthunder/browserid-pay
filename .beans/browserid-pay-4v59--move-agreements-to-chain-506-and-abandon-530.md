@@ -1,11 +1,11 @@
 ---
 # browserid-pay-4v59
 title: Move agreements to chain 506 and abandon 530
-status: todo
+status: in-progress
 type: epic
 priority: high
 created_at: 2026-09-18T15:07:43Z
-updated_at: 2026-09-18T15:07:43Z
+updated_at: 2026-09-18T17:13:35Z
 ---
 
 **Decision (Dan, 2026-09-18): abandon app 530 and run agreements on 506, alongside mingo.** One chain for the forum and for agreements. The agreements currently live on 530 do not need to keep working.
@@ -90,3 +90,26 @@ The issuers (`pay.dsp.fyi`, `judge.dsp.fyi`) are not mingo users, so there is li
 - [ ] reindex from 506 genesis
 - [ ] decide what happens to 530 — left as history, or torn down
 - [ ] update `GENESIS.md` and the design doc, which describe a two-chain world
+
+## `/u/**` adoption done in code (2026-09-18)
+
+The namespace half of this epic is implemented. **It was much smaller than estimated, because two assumptions were wrong:**
+
+1. **browserid-pay does NOT use the shared sbo attestation preset.** The custodian and judge build the path themselves (`publish.rs`, `judge/src/main.rs`), so `mingo-ibwg` — parameterising `sbo-core presets.rs: attestation()` — is **not a blocker for this repo**. It still matters for mingo's own attestations if mingo ever wants a different prefix.
+2. **The `Owner` header was already being set.** `ChainIdentity::sign_write` (`crates/chain/src/identity.rs`) passes `owner = agent.email()` on every write, and every Rust write goes through it. So `/u/$owner/**` already has the variable it needs — the earlier note in this bean that "browserid-pay never sets an Owner header today" was wrong, and the work it implied does not exist.
+
+The JS SDK still sets no `Owner`, which is fine: it only writes under `/agreements/**`, whose grant has no `$owner` in the pattern.
+
+**Changed:** attestation write paths (custodian, judge), the two warrant scopes `path:/*/attestations/**` → `path:/u/*/attestations/**`, the indexer's path parsing, the demo assertion, the spec and the judge README.
+
+**The indexer accepts ONLY the `/u/` shape.** `issuer` is taken from the path (the payload carries `subject`, never the issuer), so accepting a bare `/<x>/attestations/…` would let anything written at the top level be read as an issuer. Guarded by a test.
+
+## Still to do — operations, not code
+
+- [ ] verify the deployed daemon enforces `sbo-pu34` field/id conditions **before** publishing the contribution floor (an older validator ignores them silently, so the floor would look installed and not be)
+- [ ] governed root-policy update on 506: the two provider grants, `create` on `/agreements/**`, the providers/agreements size restrictions, and the contribution floor. 506 already has `/u/$owner/**`, `/sys/names/*`, the DNSSEC fragment and admin `govern` on `/**`, so nothing else is needed and there is no regenesis
+- [ ] re-post `/sys/contribution` and both provider listings on 506
+- [ ] repoint custodian, judge, indexer and the SDK/MCP repo config at 506
+- [ ] reindex
+- [ ] decide what happens to 530 — left as history, or torn down
+- [ ] `crates/genesis` builds a WHOLE chain and is no longer the thing that runs; its root policy is now the reference for the governed update instead. Decide whether to keep it as a reference, repurpose it to emit the update, or delete it

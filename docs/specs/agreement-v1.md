@@ -198,7 +198,7 @@ before the deadline it was meant to cover.
 
 ## Attestations (Attestation spec layout)
 
-After settlement each party MAY post `/<issuer>/attestations/<subject>/agreement:completed`
+After settlement each party MAY post `/u/<issuer>/attestations/<subject>/agreement:completed`
 (value `{ "contract": "agr_…" }`) and the custodian posts
 `agreement:settled`; on a ruling the adjudicator posts `agreement:ruled` on
 both parties and the custodian `agreement:disputed`.

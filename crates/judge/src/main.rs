@@ -139,7 +139,7 @@ fn provision_spec(cfg: &Config) -> ProvisionSpec {
             "action:post".into(),
             "path:/agreements/**".into(),
             "path:/providers/adjudicators/**".into(),
-            "path:/*/attestations/**".into(),
+            "path:/u/*/attestations/**".into(),
         ],
     }];
     for c in &cfg.custodians {
@@ -556,7 +556,7 @@ async fn rule_and_deliver(app: &App, id: &str) -> anyhow::Result<()> {
                 .identity
                 .sign_write(
                     &app.cfg.chain_audience,
-                    &WriteSpec { path: format!("/{me}/attestations/{p}/"), id: "agreement:ruled".into(), schema: "attestation.v1".into(), payload: serde_json::to_vec(&payload)? },
+                    &WriteSpec { path: format!("/u/{me}/attestations/{p}/"), id: "agreement:ruled".into(), schema: "attestation.v1".into(), payload: serde_json::to_vec(&payload)? },
                 )
                 .await?;
             if let Err(e) = app.writer.submit(w).await {
