@@ -187,7 +187,9 @@ presentation) is debited and refunded, the payee's grantor (from
 
 The `contract:agreement` scope's `cap` bounds `price + fees + contribution`;
 `counterparties` (if present) must cover the other party; `max_duration`
-(if present) must cover the latest obligation deadline. That deadline is a
+(if present) must cover the latest obligation deadline, which the SDK sends to
+the custodian at lock as `latest_deadline_block` alongside the height the lock
+landed at. Those two also size the abandonment backstop. That deadline is a
 BLOCK HEIGHT and the warrant expiry is wall-clock, so the conversion is
 **pessimistic**: estimate at ~20s a block and add margin. Blocks can only run
 slower than nominal, never faster, so the real deadline can only fall later

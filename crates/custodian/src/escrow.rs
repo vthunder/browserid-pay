@@ -79,7 +79,11 @@ pub struct Escrow {
     /// When the dispute was filed, if one was.
     pub disputed_at: Option<i64>,
     /// The latest deadline in the terms, as the payer reported it at lock.
-    pub latest_deadline: Option<i64>,
+    /// The latest obligation deadline, as a BLOCK HEIGHT.
+    pub latest_deadline_block: Option<i64>,
+    /// The chain head when this escrow was locked, so a duration in blocks can
+    /// be taken without mixing units against the wall-clock `locked_at`.
+    pub locked_block: Option<i64>,
     pub settled_at: Option<i64>,
     pub outcome: Option<String>,
     #[serde(skip)]
@@ -126,7 +130,9 @@ pub fn schema(c: &Connection) -> anyhow::Result<()> {
     let _ = c.execute("ALTER TABLE escrows ADD COLUMN disputed_at INTEGER", []);
     // The agreement's own latest deadline: the abandonment backstop scales with
     // it (browserid-pay-ov7g).
-    let _ = c.execute("ALTER TABLE escrows ADD COLUMN latest_deadline INTEGER", []);
+    // Renamed from `latest_deadline` (unix) when deadlines became block heights.
+    let _ = c.execute("ALTER TABLE escrows ADD COLUMN latest_deadline_block INTEGER", []);
+    let _ = c.execute("ALTER TABLE escrows ADD COLUMN locked_block INTEGER", []);
     Ok(())
 }
 
@@ -152,10 +158,11 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Escrow> {
         payee_account: r.get(17)?,
         reputation_seen: r.get(18)?,
         disputed_at: r.get(19)?,
-        latest_deadline: r.get(20)?,
+        latest_deadline_block: r.get(20)?,
+        locked_block: r.get(21)?,
     })
 }
-const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome, payer_account, payee_account, reputation_seen, disputed_at, latest_deadline";
+const COLS: &str = "id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, locked_at, settled_at, outcome, payer_account, payee_account, reputation_seen, disputed_at, latest_deadline_block, locked_block";
 
 pub fn get(c: &Connection, id: &str) -> anyhow::Result<Option<Escrow>> {
     Ok(c.query_row(&format!("SELECT {COLS} FROM escrows WHERE id=?1"), params![id], row).optional()?)
@@ -232,10 +239,13 @@ pub struct LockRequest {
     /// still parse.
     #[serde(default)]
     pub acceptance_bundle: Option<String>,
-    /// Latest obligation deadline (unix), so `max_duration` can be checked
-    /// without reading the sealed terms.
+    /// The latest obligation deadline, as a BLOCK HEIGHT, so `max_duration` can
+    /// be checked and the abandonment backstop sized without opening the sealed
+    /// terms. Renamed with the type change (browserid-pay-e1ou): a height and a
+    /// unix timestamp are both integers, so an old client's value would be read
+    /// as a block in the distant past and silently misjudged.
     #[serde(default)]
-    pub latest_deadline: Option<i64>,
+    pub latest_deadline_block: Option<i64>,
 }
 
 fn proposal_str<'a>(p: &'a Value, path: &[&str]) -> Result<&'a str, EscrowError> {
@@ -428,8 +438,17 @@ pub async fn lock(
     if price <= 0 {
         return Err(err("bad_request", "price must be positive"));
     }
-    if let (Some(max), Some(deadline)) = (grant.max_duration_secs, req.latest_deadline) {
-        if deadline - db::now() > max {
+    // The head this lock is measured against. Fail closed: a custodian that
+    // cannot read the chain must not guess how long the money is committed for.
+    let head = reader.head_block().await
+        .map_err(|e| err("chain_unavailable", format!("chain head: {e}")))? as i64;
+    if let (Some(max), Some(deadline_block)) = (grant.max_duration_secs, req.latest_deadline_block) {
+        // Blocks can only run SLOWER than nominal, so the real duration can only
+        // exceed this estimate. Inflate it before comparing: the grant is the
+        // payer's protection, and erring the other way would admit an agreement
+        // that ties their money up longer than they agreed to.
+        let estimate = chain::blocks_to_secs((deadline_block - head).max(0));
+        if estimate + estimate / 4 > max {
             return Err(err("duration_exceeded", "latest deadline is beyond max_duration"));
         }
     }
@@ -461,9 +480,9 @@ pub async fn lock(
                 return Ok(Err(EscrowError { error: "insufficient_funds", detail: None }));
             }
             tx.execute(
-                "INSERT INTO escrows(id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, warrant_key, locked_at, payer_account, payee_account, reputation_seen, latest_deadline)
-                 VALUES(?1,'locked',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-                params![id, payer, payee, adjudicator, price, custodian_fee, adjudicator_fee, contribution, contribution_recipient, deployment_currency, req.sealed_terms, p.to_string(), warrant_key, now, payer_account, payee_account, reputation_seen, req.latest_deadline],
+                "INSERT INTO escrows(id, state, payer, payee, adjudicator, price_minor, custodian_fee_minor, adjudicator_fee_minor, contribution_minor, contribution_recipient, currency, sealed_terms, proposal, warrant_key, locked_at, payer_account, payee_account, reputation_seen, latest_deadline_block, locked_block)
+                 VALUES(?1,'locked',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                params![id, payer, payee, adjudicator, price, custodian_fee, adjudicator_fee, contribution, contribution_recipient, deployment_currency, req.sealed_terms, p.to_string(), warrant_key, now, payer_account, payee_account, reputation_seen, req.latest_deadline_block, head],
             )?;
             Db::insert_receipt(
                 &tx,
@@ -561,7 +580,14 @@ pub fn backstop_due(e: &Escrow, clock_expired_at: i64) -> Option<i64> {
     if e.state != "locked" {
         return None;
     }
-    let agreement_secs = e.latest_deadline.map(|d| (d - e.locked_at).max(0)).unwrap_or(0);
+    // The agreement's own length, taken in BLOCKS (both ends are heights) and
+    // then converted to seconds. A safety net measured in days does not need
+    // block precision — but the subtraction does, or it would mix a height
+    // against the wall-clock `locked_at` (browserid-pay-usj3).
+    let agreement_secs = match (e.latest_deadline_block, e.locked_block) {
+        (Some(d), Some(l)) => chain::blocks_to_secs((d - l).max(0)),
+        _ => 0,
+    };
     let window = (2 * agreement_secs).clamp(BACKSTOP_FLOOR_SECS, BACKSTOP_CEILING_SECS);
     Some(clock_expired_at + window)
 }
@@ -834,7 +860,14 @@ pub async fn sweep_due(db: &Db, publisher: &dyn Publisher, now: i64) -> Vec<Stri
     let mut swept = Vec::new();
     for id in ids {
         let Ok(Some(e)) = db.with(|c| Ok(get(c, &id)?)) else { continue };
-        let expired_at = e.latest_deadline.unwrap_or(e.locked_at);
+        // When the agreement's own deadline fell, in wall-clock terms: the lock
+        // time plus the agreement's length. An estimate, which is right for a
+        // backstop — the contractual deadline itself is a height and is judged
+        // as one elsewhere.
+        let expired_at = match (e.latest_deadline_block, e.locked_block) {
+            (Some(d), Some(l)) => e.locked_at + chain::blocks_to_secs((d - l).max(0)),
+            _ => e.locked_at,
+        };
         let Some(due) = backstop_due(&e, expired_at) else { continue };
         if now <= due {
             continue;
@@ -1084,7 +1117,7 @@ mod tests {
             presentation: presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", &aud, vec![contract_scope(cap, counterparties)], 1),
             acceptance_bundle: Some(presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", &aud, vec![contract_scope("60.00", None)], 9)),
             proposal: proposal(id), price: json!("50.00"), fees: json!({ "custodian": "0.50", "adjudicator": "5.00" }),
-            contribution: json!({ "recipient": "fund@dsp.test", "percentage": 1.0 }), sealed_terms: Some("sealed".into()), latest_deadline: None,
+            contribution: json!({ "recipient": "fund@dsp.test", "percentage": 1.0 }), sealed_terms: Some("sealed".into()), latest_deadline_block: None,
         }
     }
 
@@ -1124,7 +1157,7 @@ mod tests {
             presentation: presentation(&s.issuer, "alice@x.test", "alice+agent@x.test", COLLECTION_AUDIENCE, vec![standing_scope(cap, window, None)], 1),
             acceptance_bundle: Some(presentation(&s.issuer, "bob@y.test", "bob+agent@y.test", COLLECTION_AUDIENCE, vec![standing_scope("500.00", window, None)], 9)),
             proposal: proposal(id), price: json!("50.00"), fees: json!({ "custodian": "0.50", "adjudicator": "5.00" }),
-            contribution: json!({ "recipient": "fund@dsp.test", "percentage": 1.0 }), sealed_terms: Some("sealed".into()), latest_deadline: None,
+            contribution: json!({ "recipient": "fund@dsp.test", "percentage": 1.0 }), sealed_terms: Some("sealed".into()), latest_deadline_block: None,
         }
     }
 
@@ -1319,30 +1352,69 @@ mod tests {
 
     #[test]
     fn the_backstop_scales_with_the_agreement_but_is_bounded_and_paused_by_a_dispute() {
-        let base = |state: &str, deadline: Option<i64>| Escrow {
+        // `span_blocks` is the agreement's length in BLOCKS (deadline height
+        // minus the height it locked at). Locked at block 0 keeps the arithmetic
+        // readable; `blocks(secs)` converts an intended duration.
+        let blocks = |secs: i64| secs / chain::NOMINAL_BLOCK_SECS;
+        let base = |state: &str, span_blocks: Option<i64>| Escrow {
             id: "x".into(), state: state.into(), payer: "p".into(), payee: "q".into(),
             payer_account: "pa".into(), payee_account: "qa".into(), reputation_seen: None,
             adjudicator: "j".into(), price_minor: 5_000, custodian_fee_minor: 50,
             adjudicator_fee_minor: 500, contribution_minor: 50, contribution_recipient: None,
-            currency: "USD".into(), locked_at: 0, disputed_at: None, latest_deadline: deadline,
+            currency: "USD".into(), locked_at: 0, disputed_at: None,
+            latest_deadline_block: span_blocks, locked_block: span_blocks.map(|_| 0),
             settled_at: None, outcome: None, sealed_terms: None, proposal: Value::Null,
         };
         // A six-hour agreement wants 12h, but the floor holds it at 24h — a
         // short job must not get a short backstop.
-        assert_eq!(backstop_due(&base("locked", Some(6 * 3600)), 1_000), Some(1_000 + 86_400));
+        assert_eq!(backstop_due(&base("locked", Some(blocks(6 * 3600))), 1_000), Some(1_000 + 86_400));
         // A 60-day agreement wants 120 days; the ceiling caps it at 30.
-        assert_eq!(backstop_due(&base("locked", Some(60 * 86_400)), 0), Some(30 * 86_400));
+        assert_eq!(backstop_due(&base("locked", Some(blocks(60 * 86_400))), 0), Some(30 * 86_400));
         // In between, it really does scale: 10 days -> 20. (The ceiling binds for
         // anything longer than 15 days, since 2x then exceeds 30.)
-        assert_eq!(backstop_due(&base("locked", Some(10 * 86_400)), 0), Some(20 * 86_400));
-        // No deadline recorded: the floor.
+        assert_eq!(backstop_due(&base("locked", Some(blocks(10 * 86_400))), 0), Some(20 * 86_400));
+        // No deadline recorded: the floor. This is the case that used to apply
+        // to EVERY escrow, because the deadline never reached the custodian
+        // (browserid-pay-usj3) — a seven-day job was swept after one day.
         assert_eq!(backstop_due(&base("locked", None), 0), Some(86_400));
 
         // THE SAFETY PROPERTY: a dispute suspends it entirely. Otherwise
         // attacking the adjudicator would be a way to run the clock out and
         // collect half of what you were going to lose.
-        assert_eq!(backstop_due(&base("disputed", Some(6 * 3600)), 1_000), None);
-        assert_eq!(backstop_due(&base("settled", Some(6 * 3600)), 1_000), None);
+        assert_eq!(backstop_due(&base("disputed", Some(blocks(6 * 3600))), 1_000), None);
+        assert_eq!(backstop_due(&base("settled", Some(blocks(6 * 3600))), 1_000), None);
+    }
+
+    /// The deadline must actually SURVIVE the lock. `backstop_due` was correct
+    /// all along and its unit test passed, but nothing ever sent
+    /// `latest_deadline_block`, so every real escrow fell through to the floor
+    /// and became sweepable one day after locking — however long the agreement
+    /// (browserid-pay-usj3). A unit test on the function could not catch that;
+    /// this one goes through `lock`.
+    #[tokio::test]
+    async fn a_long_agreement_gets_a_long_backstop_through_the_lock_path() {
+        let s = setup();
+        let rep = crate::reputation::Reputation::new(true);
+        s.db.with(|c| Db::adjust(c, "alice@x.test", "USD", 100_000, "credit", None)).unwrap();
+
+        // A ten-day agreement, expressed as a deadline ten days of blocks ahead
+        // of the head this chain reports.
+        let ch = FakeChain::agreement("agr_long");
+        let head = chain::ChainReader::head_block(&ch).await.unwrap() as i64;
+        let ten_days = 10 * 86_400 / chain::NOMINAL_BLOCK_SECS;
+        let mut req = lock_req(&s, "agr_long", "600.00", None);
+        req.latest_deadline_block = Some(head + ten_days);
+        register_payee(&s, "bob@y.test", "bob+agent@y.test").await;
+        let e = lock(&s.verify, &s.db, &Log, &rep, ORIGIN, "USD", &ch, req).await.unwrap();
+
+        assert_eq!(e.latest_deadline_block, Some(head + ten_days), "the deadline reached the custodian");
+        assert_eq!(e.locked_block, Some(head), "and so did the height it locked at");
+        // Ten days of agreement wants twice that, well clear of the 1-day floor.
+        assert_eq!(backstop_due(&e, 0), Some(20 * 86_400));
+
+        // Without it, the floor — which is what every escrow used to get.
+        let bare = lock_t(&s, &rep, lock_req(&s, "agr_bare", "600.00", None)).await.unwrap();
+        assert_eq!(backstop_due(&bare, 0), Some(86_400));
     }
 
     #[tokio::test]
@@ -1361,7 +1433,7 @@ mod tests {
         let ancient = db::now() - BACKSTOP_CEILING_SECS - 86_400;
         for id in ["agr_old", "agr_disputed"] {
             s.db.with(|c| {
-                c.execute("UPDATE escrows SET locked_at=?2, latest_deadline=?2 WHERE id=?1", params![id, ancient])?;
+                c.execute("UPDATE escrows SET locked_at=?2, locked_block=0, latest_deadline_block=0 WHERE id=?1", params![id, ancient])?;
                 Ok(())
             }).unwrap_or_else(|e: anyhow::Error| panic!("{e}"));
         }

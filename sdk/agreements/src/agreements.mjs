@@ -483,9 +483,15 @@ export class Agreements {
     const sealed_terms = adjudicator?.sealing_key ? seal(canonicalize(st.terms), adjudicator.sealing_key) : null;
     const presentation = await this.#contractAssertion(id);
     // The payee's bundle: its grantor is the account the price is released to.
+    // The latest obligation deadline, so the custodian can check `max_duration`
+    // and size the abandonment backstop without opening the sealed terms.
+    // WITHOUT this the backstop falls back to its floor and fires a day after
+    // the lock on every agreement, however long (browserid-pay-usj3).
+    const deadlines = (st.terms.obligations || []).map((o) => o.deadline_block).filter(Number.isFinite);
     const body = {
       presentation, proposal: p,
       price: st.terms.price, fees: st.terms.fees, contribution: p.contribution, sealed_terms,
+      ...(deadlines.length ? { latest_deadline_block: Math.max(...deadlines) } : {}),
     };
     return this.#custodian(p.custodian, "/api/escrow/lock", body);
   }

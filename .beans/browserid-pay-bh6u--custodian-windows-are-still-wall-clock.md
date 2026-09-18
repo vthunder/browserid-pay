@@ -1,11 +1,11 @@
 ---
 # browserid-pay-bh6u
 title: Custodian windows are still wall-clock
-status: todo
+status: in-progress
 type: task
 priority: high
 created_at: 2026-09-18T16:14:51Z
-updated_at: 2026-09-18T16:14:51Z
+updated_at: 2026-09-18T16:28:12Z
 ---
 
 The agreement clock moved to block heights (`browserid-pay-e1ou`): the judge's response window (`browserid-pay-dtjt`) and the SDK's obligation deadlines (`browserid-pay-1srw`) are heights now. **The custodian's windows are still wall-clock.**
