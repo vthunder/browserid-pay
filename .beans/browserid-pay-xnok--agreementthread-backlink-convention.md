@@ -32,44 +32,53 @@ Cheap to add now, annoying to retrofit once threads exist, so settle the convent
 
 ## Resolution (2026-09-19)
 
-### Correction: the envelope's `related` header does NOT work
+### Correction, twice over
 
-This bean (and the design doc, and the epic) claimed the backlink "needs no new schema" because `sbo-core`'s message envelope already carries `related: Option<Vec<Related>>`. **That was wrong, and I asserted it without checking the read path.**
+**First correction (2026-09-19):** this bean claimed the backlink "needs no new schema" because the envelope carries `related`. Checking the read path showed it was declared but implemented nowhere — not parsed, not serialized, not stored, not served. A backlink written there was invisible.
 
-`Related` is declared in the envelope and included in the canonical header ordering, so it is signed — but it is **not a field of `StoredObject`**, is **not returned by `/v1/object` or `/v1/list`**, and **nothing reads it**. Every construction site in the daemon passes `related: None`. A backlink written there is write-only: provably in the wire, invisible to every reader short of re-fetching raw bytes from DA and re-parsing.
+**Second correction, same day:** the response to that was to route around it with a `refs` field in the `post.v1` payload. That was expedience presented as design. `Related` is **normative** — the Core, Wire Format and URI specs all define it, with `rel`/`ref` semantics, examples, common relationship types and a pass-through rule for unknown ones. We own the spec and every implementation, so the right move was to make the implementation conform.
 
-Filed upstream as `sbo-hj98`. Fixing it there is the right long-term answer; it is not a prerequisite for this.
+**Done:** `sbo-hj98` implements it end to end — serialized, parsed, **signed**, persisted, and served by `/v1/object` and `/v1/list`. The payload-`refs` idea is dropped; nothing has been written yet, so there is no transition.
 
 ### The convention
 
-**The reference lives in the `post.v1` payload**, which is ours to define and which the daemon passes through untouched:
+The reference is an envelope header on the post object:
 
-```json
-{
-  "body": "…the post…",
-  "refs": [ { "rel": "agreement", "ref": "/agreements/agr_NuQ09meJSgk6xoWl/" } ]
-}
+```
+Related: [{"rel":"agreement","ref":"/agreements/agr_NuQ09meJSgk6xoWl/"}]
 ```
 
-**`rel` vocabulary — two values, and resist adding a third until something needs it:**
+**Why the header and not the payload**, now that both work:
+
+- **Generic across object types.** An indexer can answer "what references this agreement?" over every object without knowing any application schema. A payload convention serves `post.v1` only; `comment.v1` and any future type would each reinvent it, and the indexer would need a parser per schema.
+- **It is relationship metadata, not content.** The body is what the post says; the link is how the object sits in the graph. A payload field conflates them, and an edit to the body could silently change the link.
+- **The spec already defines exactly this shape** for exactly this purpose. A parallel payload convention means two mechanisms for one job.
+
+**`rel` vocabulary — two values, and resist a third until something needs it:**
 
 | rel | means | `ref` |
 |---|---|---|
 | `agreement` | this post is about that agreement | the agreement's container path |
 | `endorses` | this post endorses that identity | the identity (`name@domain`) |
 
-Threading is NOT in here: mingo's `comment.v1` already carries a parent, so replies need no `rel`.
+The spec's own common types (`license`, `collection`, `policy`, `origin`) are unaffected — the vocabulary is open and unknown values pass through.
 
-**Direction: the post references the agreement. Never the reverse.** Two reasons, and the second is the one that matters:
+Threading is NOT in here: mingo's `comment.v1` already carries a parent.
 
-1. An agreement object is written before any thread exists, and `/agreements/**` is `create`-only — append-only, no updates — so it *cannot* be amended to point at a thread later.
-2. If an agreement could name a thread, a party could point the reputation join at content of its own choosing. One direction keeps the claim where it can be checked: the post says "I am about that agreement", and whether the poster was a party to it is verifiable.
+**Direction: the post references the agreement. Never the reverse.**
 
-**Reference format: a plain path on this chain** (`/agreements/<id>/`). The cross-chain concern in the original todo is **moot** — agreements and mingo now share app 506 (`browserid-pay-4v59`). The field is a string, so an absolute SBO URI remains possible later without a format change.
+1. `/agreements/**` is `create`-only — append-only, no updates — so an agreement written before any thread existed *cannot* be amended to point at one later.
+2. More importantly: if an agreement could name a thread, a party could aim the reputation join at content of its own choosing. One direction keeps the claim where it can be checked — the post says "I am about that agreement", and whether the poster was a party is verifiable.
 
-**The reverse index is the indexer's job.** It reads `refs` from `post.v1` payloads and builds agreement → posts. Nothing exists today: the indexer does not read `related` (it cannot) and does not read post payloads at all.
+**Reference format: a plain path on this chain** (`/agreements/<id>/`). The cross-chain concern in the original todo is moot — agreements and mingo share app 506 (`browserid-pay-4v59`). The spec permits a full SBO URI, so cross-chain stays available without a format change.
 
-**A post-completion reply backlinks the AGREEMENT, not just the thread root.** A reply that only pointed at its root would be orphaned if the root were moved or deleted — and deletion is a moderator power (`browserid-pay-ctnd`). Referencing the agreement directly keeps each reply independently joinable.
+**The reverse index is the indexer's job.** Now that the header is served, it can be built generically rather than per-schema. Nothing reads it today.
+
+**A post-completion reply references the AGREEMENT, not its thread root.** A reply pointing only at its root would be orphaned if the root were moderated away — and deletion is a moderator power (`browserid-pay-ctnd`).
+
+### Dependency
+
+Using this needs the sbo rev bump: browserid-pay pins `sbo-core` by git rev and the deployed daemon pins `SBO_REV` in mingo's Dockerfile. So it is push sbo → bump the rev here → redeploy the daemon, and a daemon redeploy restarts both chains. **Batch it with other sbo work rather than deploying for this alone.**
 
 ### What must be verified before any of this counts for reputation
 
@@ -80,7 +89,8 @@ On one chain this is now checkable at **write time** as well, not only in the in
 - [x] the `rel` vocabulary — `agreement` and `endorses`, nothing else yet
 - [x] reference format — a path on this chain; moot cross-chain concern, single chain now
 - [x] which side writes it — the post, one direction only, for the reasons above
-- [x] does the indexer index `related` in reverse — it does not, and **cannot**: the header is never served (`sbo-hj98`). The reverse index reads the payload instead
+- [x] does the indexer index `related` in reverse — not today, but it **can** now: `sbo-hj98` makes the header served, so the reverse index is generic rather than per-schema
 - [x] a post-completion reply backlinks the agreement, not the thread root
-- [ ] implement: indexer reads `post.v1` `refs`, builds agreement → posts, filters to parties
-- [ ] decide whether to ALSO write the envelope `related` for future-proofing once `sbo-hj98` lands — harmless, costs nothing, and makes the migration free
+- [ ] bump the sbo rev here and redeploy the daemon (batch with other sbo work)
+- [ ] implement: indexer reads `Related` from objects, builds agreement → posts, filters to parties
+- [ ] the agent forum client writes the header when posting about an agreement
