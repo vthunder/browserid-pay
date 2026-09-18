@@ -66,10 +66,34 @@ builds the chain that runs.
 
 ### Who can perform it — read this first
 
-**The governed update on 506 must be signed by MINGO's sys key, not
-browserid-pay's.** mingo's root policy grants `govern` only to its own sys
-pubkey, so a policy write signed by `dsp-sys.key` is refused. The failure is
-safe but opaque.
+**Chain-level changes need the SHARED CHAIN's admin key**, which lives at
+`~/secure-backup/mingo-sys.key`. The file name and its `sys@mingo.place`
+identity are historical: since 506 became a shared base chain it is
+infrastructure, not mingo's application key. `dsp-sys.key` holds no `govern`
+there, so a policy write signed by it is refused — safe, but opaque.
+
+Practically, two keys with different jobs:
+
+| key | what it signs |
+|---|---|
+| `mingo-sys.key` (chain admin) | the root policy, and anything under `/sys/**` |
+| `dsp-sys.key` | nothing on 506 today. It remains browserid-pay's own identity and signed 530 |
+
+Everything else — agreements, provider listings, attestations — is written by
+the **service identities** under warrants, not by either sys key.
+
+**`/sys/contribution` needs the admin key.** It is browserid-pay's config living
+in the chain's `/sys/` namespace, and nothing grants an application write access
+there. Deliberately left as-is (Dan, 2026-09-18): it is read by path and no
+reader checks the creator, so the only cost is the key you sign with.
+
+```
+dsp-genesis contribution-update --repo sbo+raw://avail:turing:506/ \
+    --key-file ~/secure-backup/mingo-sys.key
+```
+
+**Later, not now:** the clean separation is three repos — base chain, mingo,
+browserid-pay — so the chain's own concerns stop living inside an application.
 
 And the update is a **merge, not a replace**. `/sys/policies/root` on 506 is
 mingo's policy; writing browserid-pay's over it would remove mingo's community
@@ -127,6 +151,23 @@ re-approved after a repoint, and the humans should be told.
 5. Reindex from genesis.
 6. Re-run `demo/run-local.mjs` end to end — it is the only thing that exercises
    the whole path.
+
+### Redeploying after a repoint — one consent each
+
+Changing the repo changes the **warrant audience**, and a stored credential for
+the old ledger still LOADS. Before this was handled, a redeployed service came
+up healthy and then failed every write, because an audience miss reads as "no
+matching grant" rather than "wrong ledger" — a silent outage on a service that
+holds money.
+
+Both services now compare the loaded credential's warranted audiences against
+`chain_audience` and re-provision when it does not hold
+(`Identity::has_audience`). So the repoint costs **one consent approval per
+service**, at the URL each prints on startup and exposes at `/api/setup`. That
+cannot be automated; it is the point of the consent card.
+
+Provider listings need no step: `ensure_listing` runs at startup and the
+`/providers/<kind>/$user/**` grants are in place.
 
 ### What does NOT carry over
 
