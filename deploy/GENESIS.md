@@ -178,6 +178,24 @@ re-approved after a repoint, and the humans should be told.
 6. Re-run `demo/run-local.mjs` end to end — it is the only thing that exercises
    the whole path.
 
+### Editing mingo's `deploy/sbo-daemon/` restarts the daemon — for BOTH chains
+
+mingo's `Deploy sbo-daemon` workflow triggers on any change under
+`deploy/sbo-daemon/`, **including comment-only edits**. The redeploy restarts
+the node, which then re-processes from its stored head — and because the sync
+loop starts from the MINIMUM head across the repos it follows, a lag on one
+database replays blocks for all of them.
+
+While it catches up, `/v1/state-root` keeps reporting the pre-restart head and
+**newly submitted writes are accepted into the mempool but never confirm** — on
+mingo as well as here. It is self-healing, but a backfill of ~12k blocks takes
+over an hour.
+
+Observed 2026-09-18: a comment scrub of `config.toml` and `entrypoint.sh`
+restarted the daemon mid-cutover and stalled confirmation on both chains. If
+you only mean to change comments, batch it with work that genuinely needs a
+daemon deploy, or expect the outage.
+
 ### Redeploying after a repoint — one consent each
 
 Changing the repo changes the **warrant audience**, and a stored credential for
