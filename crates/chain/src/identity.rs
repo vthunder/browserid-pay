@@ -93,6 +93,19 @@ impl Identity {
         Ok(true)
     }
 
+    /// Does the loaded credential hold a warrant for `audience`?
+    ///
+    /// A stored credential loads happily even when it was issued for a
+    /// DIFFERENT chain, and then every write fails on an audience miss — which
+    /// looks like "no grant" rather than "wrong ledger". That is not
+    /// hypothetical: moving from app 530 to 506 (browserid-pay-4v59) changes
+    /// this string, so a service redeployed with the old credential would come
+    /// up healthy and silently write nothing. Startup checks this and
+    /// re-provisions instead.
+    pub async fn has_audience(&self, audience: &str) -> bool {
+        self.state.lock().await.audiences.iter().any(|a| a == audience)
+    }
+
     pub async fn email(&self) -> Option<String> {
         self.state.lock().await.identity.clone()
     }

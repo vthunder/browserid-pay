@@ -83,7 +83,20 @@ async fn main() -> anyhow::Result<()> {
     // Identity: load, or provision in the background (prints the approval URL).
     let boot = app.clone();
     tokio::spawn(async move {
-        match boot.identity.load().await {
+        let loaded = boot.identity.load().await;
+        // A stored credential for the OLD ledger loads fine and then writes
+        // nothing; re-provision rather than come up healthy and silent.
+        let loaded = match loaded {
+            Ok(true) if !boot.identity.has_audience(&boot.cfg.chain_audience).await => {
+                tracing::warn!(
+                    audience = %boot.cfg.chain_audience,
+                    "stored credential holds no warrant for this ledger — re-provisioning"
+                );
+                Ok(false)
+            }
+            other => other,
+        };
+        match loaded {
             Ok(true) => {}
             Ok(false) => {
                 if let Err(e) = boot.identity.provision(&boot.cfg.broker, &provision_spec(&boot.cfg)).await {

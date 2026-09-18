@@ -98,7 +98,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tokio::spawn(async move {
-        match identity.load().await {
+        // `Ok(true)` only means a credential was found — not that it is for the
+        // ledger we are configured to write to. Re-provision when it is not.
+        let loaded = identity.load().await;
+        let loaded = match loaded {
+            Ok(true) if !identity.has_audience(&boot_cfg.chain_audience).await => {
+                tracing::warn!(
+                    audience = %boot_cfg.chain_audience,
+                    "stored credential holds no warrant for this ledger — re-provisioning"
+                );
+                Ok(false)
+            }
+            other => other,
+        };
+        match loaded {
             Ok(true) => {}
             Ok(false) if boot_cfg.dev && std::env::var("PAY_PROVISION").is_err() => {
                 tracing::warn!("PAY_DEV without a credential: chain writes are dropped (set PAY_PROVISION=1 to provision)");

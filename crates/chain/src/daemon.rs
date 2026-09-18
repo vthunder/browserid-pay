@@ -188,6 +188,24 @@ mod tests {
         assert!(!o.confirmed);
     }
 
+    /// A credential issued for one ledger must not be treated as usable on
+    /// another. The two failure modes are very different: an unwarranted
+    /// audience surfaces as "no matching grant" at write time, long after
+    /// startup reported healthy, which is how a repoint turns into a silent
+    /// outage (browserid-pay-4v59).
+    #[tokio::test]
+    async fn a_credential_knows_which_ledgers_it_is_warranted_for() {
+        let id = crate::identity::Identity::new(std::path::PathBuf::from("/nonexistent/identity.json"));
+        // Nothing loaded: no audience is warranted, so a caller must provision.
+        assert!(!id.has_audience("sbo+raw://avail:turing:506/").await);
+        id.state.lock().await.audiences = vec!["sbo+raw://avail:turing:530/".into()];
+        assert!(id.has_audience("sbo+raw://avail:turing:530/").await);
+        assert!(
+            !id.has_audience("sbo+raw://avail:turing:506/").await,
+            "a 530 credential must not pass as a 506 one"
+        );
+    }
+
     /// A daemon that returns a block we cannot parse must not silently become
     /// "pending" — but it also must not panic. `None` is the safe reading, and
     /// callers fail closed on it.
