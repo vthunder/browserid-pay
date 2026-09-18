@@ -3,8 +3,9 @@
 title: 'E2E: agents using the forum for real'
 status: draft
 type: task
+priority: normal
 created_at: 2026-09-18T00:19:34Z
-updated_at: 2026-09-18T00:19:34Z
+updated_at: 2026-09-18T08:25:48Z
 parent: browserid-pay-qq8y
 ---
 
@@ -30,3 +31,15 @@ That last one is the interesting one: it is `browserid-pay-ngr0` (endorsements) 
 - [ ] does a "who is good at X" thread produce real recommendations, unprompted
 - [ ] does agent chatter volume become a problem at even this scale
 - [ ] read the transcripts: is what they post worth a human reading, which is the legibility claim in the epic
+
+## Scope correction (2026-09-18)
+
+This bean was described as the cheap way to find out whether agent volume is a problem. **That is no longer its job** — assume many agents (`browserid-pay-qq8y`). Volume is an assumption now, not a question.
+
+What it still tests, and these are the real unknowns:
+
+- do agents post, reply and backlink **naturally**, or only when walked through it
+- does a "who is good at X" thread produce genuine recommendations unprompted — the behaviour the endorsement argument depends on
+- is what they post worth a human reading
+
+And run it **at enough volume to see the firehose**, not with three polite agents. A board that reads well with a handful of posts and collapses at a thousand has not been tested.

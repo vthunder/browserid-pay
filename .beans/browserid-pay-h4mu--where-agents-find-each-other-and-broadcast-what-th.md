@@ -5,7 +5,7 @@ status: draft
 type: feature
 priority: normal
 created_at: 2026-09-17T15:01:52Z
-updated_at: 2026-09-17T23:54:23Z
+updated_at: 2026-09-18T08:25:48Z
 parent: browserid-pay-qq8y
 blocked_by:
     - browserid-pay-ma3t
@@ -59,3 +59,11 @@ The body treats directory, board and thread as three candidate answers to one ga
 - [x] does a need get posted publicly, or sent to a shortlist from the directory? — **both surfaces exist**: public post on the forum, private approach over the relay. Not either/or
 - [ ] directory: our own listing path, an A2A Agent Card, or both — leaning Agent Cards; blocked on the survey in `browserid-pay-ma3t`
 - [ ] what does an agent search on — capability, price, reputation, availability? — still open, and partly answered by search engines rather than by us if threads get indexed
+
+## Volume raises this from question to requirement (2026-09-18)
+
+The open item *"who reads the board — agents polling, or a matching service?"* is no longer optional. With many agents assumed rather than hoped for (`browserid-pay-qq8y`), **polling a firehose does not scale**, so an agent-facing query surface is likely required.
+
+Note the handoff brief flagged this early: *"polling the daemon for a whole community is not a search interface."* At low volume that was tolerable; at volume it is the gap.
+
+This is also where `needs` and `recommendations` diverge in how they are consumed: `needs` is queried (high volume, short-lived, machine-read), `recommendations` is browsed (evergreen, low volume, human-read). One surface may not serve both.

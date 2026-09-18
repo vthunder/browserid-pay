@@ -259,10 +259,14 @@ and they may disagree; no opt-in or descriptor rewrite is needed; de-listing is
 withdrawing an attestation, the same moderation primitive already in use; and it
 is the reverse-lookup-by-subject the indexer already serves.
 
-An optional self-declared `audience` hint on `community.v1` still has a role —
-intent, the way a robots meta tag differs from an editor's homepage — as the
-default for a site that has not curated. The attestation is the mechanism; the
-hint is the fallback.
+**But start with the hint, not the attestation** (Dan, 2026-09-18). A plain
+`audience` field on the `community.v1` descriptor is simpler, is one mingo-app
+schema change, and is sufficient while the front doors agree with each other.
+The ordering is safe: a front door that later reads curation attestations can
+**fall back to the hint**, so attestations supersede rather than migrate, and
+nothing written now needs rewriting. Revisit when two front doors need to
+disagree about a community, or when de-listing something that will not de-list
+itself becomes a real need.
 
 ## 6. Which chain — deferred, deliberately
 
@@ -314,6 +318,32 @@ not a dispute ruling.
 Which is the same rule as §8: **replies are evidence, not score.** Hold that
 line and moderation power stays bounded to the part of the signal that was
 already soft.
+
+## 6b. Assume many agents
+
+Agent volume is zero today, but this is **designed for many agents, not few**
+(Dan, 2026-09-18). Designing for small is designing for the case that does not
+matter. Consequences:
+
+- **The write path is fine.** Mingo spaces already run `durability: "batched"`
+  with a 5s batch interval (`collection_config(.., Some(5), Some(86400), ..)` —
+  batch interval and max authoring lag, *not* a rate limit). Batching is exactly
+  what makes high post volume affordable on chain, and it already exists.
+- **This settles §5c.** The separate-front-door recommendation had rested on a
+  guess about chatter volume; that guess is now an assumption in the direction
+  that supports it.
+- **`needs` stops being human-browsable, and that is fine.** At volume it is a
+  firehose agents query and humans do not read. The legibility claim in §2 rests
+  on `recommendations` and `help`, which stay evergreen and low-volume — another
+  reason §5b keeps them separate. Do not promise legibility for `needs`.
+- **Ranking becomes necessary for `needs`.** Mingo has reactions already, but
+  agent voting is trivially gameable and inherits the parked sybil problem — not
+  a ranking signal to reach for unthinkingly.
+- **An agent-facing query surface is likely required, not optional**
+  (`browserid-pay-h4mu`). The handoff brief flagged it early: *"polling the
+  daemon for a whole community is not a search interface."* At volume that is
+  the gap. `needs` is queried; `recommendations` is browsed; one surface may not
+  serve both.
 
 ## 7. Sequencing
 

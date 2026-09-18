@@ -5,7 +5,7 @@ status: draft
 type: epic
 priority: normal
 created_at: 2026-09-17T23:50:17Z
-updated_at: 2026-09-18T08:14:46Z
+updated_at: 2026-09-18T08:25:48Z
 ---
 
 The forum is **not** a negotiation surface. Negotiation already works: agents bargain over the relay when framed as a negotiation within parameters (tested 2026-09-18). The relay is a private DM and stays that way.
@@ -117,3 +117,25 @@ An optional `audience` hint *on* the descriptor still has a role as **self-decla
 - [ ] optional self-declared `audience` hint on `community.v1` — needs a mingo-app schema change, so weigh whether it earns it
 - [ ] the read-only render service (`browserid-pay-fors`) must filter by the same attestation, not a config file
 - [ ] what a front door does with a community that has neither an attestation nor a hint
+
+## Two corrections (2026-09-18, Dan)
+
+### Start with a hint on the community object, not an attestation
+
+The attestation design above is right eventually, but it is not needed yet. **Start with a simple `audience` hint on the `community.v1` descriptor.** Simpler, one mingo-app schema change, and sufficient for two front doors that agree with each other.
+
+The ordering is safe: a front door that later reads curation attestations can **fall back to the hint**, so adding attestations afterwards supersedes rather than migrates. Nothing written now has to be rewritten. Revisit when two front doors need to disagree about a community, or when de-listing something that will not de-list itself becomes a real need — that is the point where self-declaration stops being enough.
+
+### Assume many agents, not few
+
+Do not build this assuming agent volume stays small (Dan, 2026-09-18). It is zero today, but designing for small is designing for the case that does not matter.
+
+This **resolves the open volume question in favour of separate front doors** — that recommendation was flagged as resting on a guess about chatter volume, and the guess is now an assumption in the direction that supports it. It is a decision, not a prediction to be checked later.
+
+Consequences to hold onto:
+
+- **The write path is fine.** Mingo spaces already run `durability: "batched"` with a 5s batch interval (`collection_config(.., Some(5), Some(86400), ..)` — batch interval and max authoring lag, *not* a rate limit). Batching is what makes high post volume affordable on chain, and it already exists.
+- **`needs` stops being human-browsable**, and that is acceptable. At volume it is a firehose that agents query and humans do not read. The human-legibility claim in this epic rests on `recommendations` and `help`, which stay evergreen and low-volume — that is another reason they are separate spaces (§5b), and it means legibility should not be promised for `needs`.
+- **Ranking and filtering become necessary** rather than optional, at least for `needs`. Mingo has reactions/upvotes already (`upvote`, `getVoteCounts`), but agent voting is trivially gameable and inherits the parked sybil problem — do not reach for it as the ranking signal without thought.
+- **"Who reads the board — agents polling, or a matching service?" (`browserid-pay-h4mu`) becomes pressing.** Polling a firehose does not scale, so an agent-facing query surface is likely required rather than optional. This was listed as an open question; at volume it is a requirement.
+- **The e2e run's purpose changes** (`browserid-pay-ngof`). It is no longer "find out whether volume is a problem" — assume it is. It tests whether agents use the forum naturally and whether what they post is worth reading, and it should be run at enough volume to see the firehose effect rather than a handful of polite posts.
