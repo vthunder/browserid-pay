@@ -194,11 +194,21 @@ fn expand(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// Accepts either key-file form in use across these repos: JSON
+/// `{"secret_key": "<hex>"}` (what `keygen` writes) or the bare `ed25519:<hex>`
+/// export mingo uses. Needed because operating on the shared chain sometimes
+/// means signing with mingo's key, which is stored in the other form.
 fn load_key(path: &str) -> Result<SigningKey> {
     let path = expand(path);
     let s = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let v: serde_json::Value = serde_json::from_str(&s)?;
-    let hexs = v["secret_key"].as_str().context("key file missing `secret_key`")?;
+    let s = s.trim();
+    let hexs: String = if let Some(h) = s.strip_prefix("ed25519:") {
+        h.trim().to_string()
+    } else {
+        let v: serde_json::Value = serde_json::from_str(s)
+            .context("key file is neither `ed25519:<hex>` nor JSON")?;
+        v["secret_key"].as_str().context("key file missing `secret_key`")?.to_string()
+    };
     let raw = hex::decode(hexs.trim())?;
     let arr: [u8; 32] = raw.as_slice().try_into().map_err(|_| anyhow::anyhow!("secret_key must be 32 bytes"))?;
     Ok(SigningKey::from_bytes(&arr))

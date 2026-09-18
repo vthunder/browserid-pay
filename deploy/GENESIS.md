@@ -86,6 +86,35 @@ dsp-genesis policy-layer        # prints just browserid-pay's grants + restricti
 Merge that fragment into 506's root policy and re-sign the whole thing with
 mingo's sys key.
 
+### Strings that must move together (a regenesis hazard)
+
+If a regenesis ever changes the repo URI — a new app id, or a different URI
+form — these must all change with it. They are compared against each other and
+**a mismatch is silent**:
+
+| | |
+|---|---|
+| `chain::DEFAULT_REPO` (`crates/chain/src/lib.rs`) | the one definition every service defaults to |
+| `COLLECTION_AUDIENCE` (`crates/custodian/src/escrow.rs`) | `<repo>agreements` — the **standing-consent warrant audience** |
+| `collectionAudience()` / `DEFAULTS.repo` (`sdk/agreements`) | the SDK's computed form of the same string |
+| the daemon's `repos.json` entry | `mingo/deploy/sbo-daemon/entrypoint.sh` |
+
+**Why it is silent:** a standing grant is *issued* for the SDK's audience and
+*checked* against the custodian's const. If they differ by one character, no
+grant ever matches and **every standing lock is refused** — with no error that
+says why, because an audience miss is indistinguishable from "no such grant".
+This is deliberately not a revocation path, so nothing logs it as unusual.
+
+Guarded by `escrow::tests::the_collection_audience_tracks_the_repo`, which
+asserts the const equals `format!("{}agreements", chain::DEFAULT_REPO)`. The
+SDK side has no such test — it computes the string, so it cannot drift on its
+own, but its `DEFAULTS.repo` still has to be edited by hand.
+
+Also note the repo string **is the warrant audience**, so changing it
+invalidates consent already granted. That is correct — a human consented to
+spending on a specific ledger — but it means every standing grant must be
+re-approved after a repoint, and the humans should be told.
+
 ### Order, and the one that bites
 
 1. **Verify the daemon first.** The contribution floor needs the `sbo-pu34`
