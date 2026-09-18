@@ -178,17 +178,17 @@ exactly what `b3gq` forbids.
    obligation is instantly late. **This is the single most dangerous part of the
    change.**
 
-   **Recommendation: rename the field rather than version it.** `deadline_block`
+   **Decided (Dan, 2026-09-18): rename the field rather than version it.** `deadline_block`
    and `expires_block`, distinct from `deadline` and `expires`. A version
    integer only protects readers that check it; a renamed field fails loudly in
    **both** directions — an old client reading a new agreement finds no
    `deadline` and hits the existing "everything needs a bound" error, and a new
    client seeing `deadline` knows immediately it is looking at the old units.
-   No silent misreading is possible. *Needs sign-off.*
+   No silent misreading is possible.
 2. **Warrant coverage across domains** (spec `:172`). A wall-clock `exp` must
    cover a height deadline.
 
-   **Recommendation: convert pessimistically.** Blocks can only run *slower*
+   **Decided (Dan, 2026-09-18): convert pessimistically.** Blocks can only run *slower*
    than nominal, never faster, so the real-world deadline can only land later
    than the estimate. Convert `deadline_block` to a date using the nominal rate
    **plus a margin**, and require `exp` to cover that. Erring the other way
@@ -203,11 +203,11 @@ exactly what `b3gq` forbids.
    must agree. Old and new cannot interoperate, so this is a coordinated cutover
    — the demo agents, the judge and the indexer all move together.
 
-   **Open, and the one thing genuinely blocking a start:** do the agreements
-   currently live on 530 need to keep working, or were they demo runs that can
-   be left as history? If they can be abandoned, this is a hard cutover with no
-   interop code. If they must keep running, the renamed-field approach above
-   supports both formats coexisting, at the cost of dual evaluation paths.
+   **Settled (Dan, 2026-09-18): hard cutover, no interop code.** The agreements
+   on 530 do not need to keep working — in fact 530 is being abandoned entirely
+   in favour of running agreements on 506 alongside mingo (`browserid-pay-4v59`).
+   So there is no dual evaluation path to build: the new units are the only
+   units, and the renamed fields exist purely as a guard against a stale client.
 6. ~~**Does `block` mean the same number everywhere?**~~ **Settled: yes, it is
    the Avail block number, global across apps.** The sync loop iterates Avail
    block numbers (`sync.rs:1316`, `process_block(block_num)`) and reads

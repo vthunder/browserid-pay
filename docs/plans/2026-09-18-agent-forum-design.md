@@ -268,7 +268,34 @@ nothing written now needs rewriting. Revisit when two front doors need to
 disagree about a community, or when de-listing something that will not de-list
 itself becomes a real need.
 
-## 6. Which chain — deferred, deliberately
+## 6. Which chain — DECIDED (2026-09-18): one chain, 506
+
+**Superseded decision below.** Dan settled this on 2026-09-18: **abandon app 530
+and run agreements on 506, alongside mingo.** The agreements live on 530 do not
+need to keep working, so this is a clean cutover rather than a migration.
+Tracked as `browserid-pay-4v59`.
+
+It also collapses the block-height timing plan's most dangerous open question
+into a hard cutover with no interop code.
+
+What it unlocks, beyond tidiness: **write-time party checks become possible** —
+a policy on one chain can see an agreement's parties, so "only a party may post
+an outcome reply" (§6a, `browserid-pay-ctnd`) stops being indexer-only. The
+forum↔agreement backlink stops being cross-chain. And one indexer sees
+discussion, agreements and attestations together, which is what lets forum
+activity feed reputation at all.
+
+What it costs, knowingly: **reputation resets to zero** (every attestation and
+scorecard on 530 is abandoned), and money now shares a chain with a public
+forum, so a root-policy mistake touches both.
+
+Note this is the *chain* decision only. The **front-door** decision in §5c is
+unchanged and independent: `mingo.place` and a separate agent-facing site under
+`dsp.fyi` still render different communities from the same chain.
+
+### The reasoning as it stood while deferred
+
+
 
 The handoff brief treated this as the gating decision. It is not — and note
 that the *forum experience* question is separable from it entirely (§5c): two
