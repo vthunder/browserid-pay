@@ -176,7 +176,8 @@ Ledger `kind` values: `credit`, `pay`, `receive`, `escrow_lock`,
 The index entry (public) adds the on-chain timeline: proposal, acceptance,
 lock, evidence objects (`handoff`, `receipt`, `delivery`, `dispute`,
 `response`) with block numbers and commitments, and the ruling with its
-reasoning. The judge case adds `respond_by` and the response with
+reasoning. The judge case adds `respond_by_block` (a BLOCK HEIGHT, not a
+time — render it against the chain head) and the response with
 `matched` flags per reveal.
 
 ## What to deliver

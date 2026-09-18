@@ -26,8 +26,15 @@ pub struct Case {
     pub error: Option<String>,
     pub opened_at: i64,
     pub updated_at: i64,
-    /// End of the counterparty's response window (unix seconds).
-    pub respond_by: i64,
+    /// End of the counterparty's response window, as a BLOCK HEIGHT — not a
+    /// wall-clock time. This decides whether a party forfeited their chance to
+    /// answer, so it must not rest on anyone's clock (browserid-pay-e1ou).
+    ///
+    /// The column is deliberately renamed alongside the type change: a height
+    /// and a unix timestamp are both integers, so an old database would be
+    /// silently misread (every `respond_by` far in the "future", cases never
+    /// becoming due). A missing column errors loudly instead.
+    pub respond_by_block: i64,
     /// The counterparty's response, once filed: `{ by, note, reveals: [{ evidence_id, matched, content? }], at }`.
     pub response: Option<serde_json::Value>,
 }
@@ -59,7 +66,14 @@ impl Cases {
              );",
         )?;
         // Response phase (2026-09-16): added after the first live cases existed.
-        for col in ["respond_by INTEGER NOT NULL DEFAULT 0", "response TEXT"] {
+        //
+        // `respond_by_block` defaults to i64::MAX, NOT 0. This column replaced a
+        // wall-clock `respond_by` (2026-09-18, browserid-pay-e1ou), and a row
+        // carried over from that schema has no height to offer. A default of 0
+        // would make every such case instantly "due" and rule it unanswered —
+        // moving money on a window that never ran. i64::MAX fails the other way:
+        // the case simply never becomes due, which is visible and harmless.
+        for col in ["respond_by_block INTEGER NOT NULL DEFAULT 9223372036854775807", "response TEXT"] {
             let _ = c.execute(&format!("ALTER TABLE cases ADD COLUMN {col}"), []);
         }
         Ok(Self(Arc::new(Mutex::new(c))))
@@ -68,13 +82,13 @@ impl Cases {
     pub fn insert(&self, case: &Case) -> Result<()> {
         let c = self.0.lock().unwrap();
         c.execute(
-            "INSERT INTO cases(contract_id, state, disputed_by, dispute_note, custodian, parties, terms, proposal, evidence, ruling, submission, error, opened_at, updated_at, respond_by, response)
+            "INSERT INTO cases(contract_id, state, disputed_by, dispute_note, custodian, parties, terms, proposal, evidence, ruling, submission, error, opened_at, updated_at, respond_by_block, response)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 case.contract_id, case.state, case.disputed_by, case.dispute_note, case.custodian,
                 serde_json::to_string(&case.parties)?, case.terms.to_string(), case.proposal.to_string(), case.evidence.to_string(),
                 case.ruling.as_ref().map(|r| r.to_string()), case.submission, case.error, case.opened_at, case.updated_at,
-                case.respond_by, case.response.as_ref().map(|r| r.to_string())
+                case.respond_by_block, case.response.as_ref().map(|r| r.to_string())
             ],
         )?;
         Ok(())
@@ -99,7 +113,7 @@ impl Cases {
         Ok(())
     }
 
-    const COLS: &'static str = "contract_id, state, disputed_by, dispute_note, custodian, parties, terms, proposal, evidence, ruling, submission, error, opened_at, updated_at, respond_by, response";
+    const COLS: &'static str = "contract_id, state, disputed_by, dispute_note, custodian, parties, terms, proposal, evidence, ruling, submission, error, opened_at, updated_at, respond_by_block, response";
 
     fn row(r: &rusqlite::Row) -> rusqlite::Result<Case> {
         let j = |i: usize| -> rusqlite::Result<serde_json::Value> {
@@ -123,7 +137,7 @@ impl Cases {
             error: r.get(11)?,
             opened_at: r.get(12)?,
             updated_at: r.get(13)?,
-            respond_by: r.get(14)?,
+            respond_by_block: r.get(14)?,
             response: response.and_then(|s| serde_json::from_str(&s).ok()),
         })
     }
@@ -134,10 +148,11 @@ impl Cases {
     }
 
     /// Open cases whose response window has passed: due for a ruling.
-    pub fn due(&self, now: i64) -> Result<Vec<Case>> {
+    /// `head` is the chain's current block height, not a wall-clock time.
+    pub fn due(&self, head: u64) -> Result<Vec<Case>> {
         let c = self.0.lock().unwrap();
-        let mut st = c.prepare(&format!("SELECT {} FROM cases WHERE state='open' AND respond_by<=?1", Self::COLS))?;
-        let v = st.query_map(params![now], Self::row)?.collect::<Result<Vec<_>, _>>()?;
+        let mut st = c.prepare(&format!("SELECT {} FROM cases WHERE state='open' AND respond_by_block<=?1", Self::COLS))?;
+        let v = st.query_map(params![head as i64], Self::row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(v)
     }
 

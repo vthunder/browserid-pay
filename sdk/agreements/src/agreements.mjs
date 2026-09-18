@@ -862,7 +862,7 @@ export class Agreements {
       const iResponded = ev.some((e) => e.kind === "response" && e.by === me);
       const mustRespond = st.dispute?.you_must_respond ?? (disputedBy != null && disputedBy !== me && !iResponded);
       if (mustRespond) {
-        const by = st.dispute?.respond_by ? ` by ${st.dispute.respond_by}` : "";
+        const by = st.dispute?.respond_by_block ? ` by block ${st.dispute.respond_by_block}` : "";
         return { action: "respond", why: `disputed by ${disputedBy}; I must respond${by}`,
                  then: "reveal the delivered content so the judge can check it against my commitment" };
       }
@@ -999,7 +999,7 @@ export class Agreements {
           const c = await this.http(`${adj.origin.replace(/\/+$/, "")}/api/cases/${id}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
           if (c) {
             const disputedAgainst = (proposal.payload.parties ? [proposal.payload.parties.proposer, proposal.payload.parties.acceptor] : []).find((x) => x !== c.disputed_by) || null;
-            dispute = { state: c.state, disputed_by: c.disputed_by, against: disputedAgainst, respond_by: c.respond_by, responded: !!c.response, you_must_respond: disputedAgainst === this.email && c.state === "open" };
+            dispute = { state: c.state, disputed_by: c.disputed_by, against: disputedAgainst, respond_by_block: c.respond_by_block, responded: !!c.response, you_must_respond: disputedAgainst === this.email && c.state === "open" };
           }
         }
       } catch {}

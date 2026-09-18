@@ -30,7 +30,12 @@ pub struct Config {
     pub trust_issuers: Vec<(String, String)>,
     /// How long the counterparty has to respond to a dispute before the judge
     /// rules on the record as it stands (seconds). Default a day; 60s in dev.
-    pub response_window_secs: i64,
+    /// The disputed party's response window, in BLOCKS (~20s each). Blocks,
+    /// not seconds, because this window decides whether a party forfeited
+    /// their chance to answer (browserid-pay-e1ou). The env var is renamed
+    /// with it: an operator's old `JUDGE_RESPONSE_WINDOW=3600` read as blocks
+    /// would be a 20-hour window, silently.
+    pub response_window_blocks: i64,
 }
 
 impl Config {
@@ -56,7 +61,7 @@ impl Config {
             anthropic_api_key: get("ANTHROPIC_API_KEY", ""),
             anthropic_model: get("JUDGE_MODEL", "claude-fable-5-1"),
             dev,
-            response_window_secs: get("JUDGE_RESPONSE_WINDOW", if dev { "60" } else { "3600" }).parse().expect("JUDGE_RESPONSE_WINDOW"),
+            response_window_blocks: get("JUDGE_RESPONSE_WINDOW_BLOCKS", if dev { "3" } else { "180" }).parse().expect("JUDGE_RESPONSE_WINDOW_BLOCKS"),
             trust_issuers: get("JUDGE_TRUST_ISSUER", "")
                 .split(',')
                 .filter_map(|s| s.trim().split_once('=').map(|(a, b)| (a.to_string(), b.to_string())))

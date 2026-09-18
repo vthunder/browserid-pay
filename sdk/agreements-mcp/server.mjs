@@ -290,7 +290,7 @@ server.registerTool("next_step", {
 
 server.registerTool("agreement_status", {
   title: "Agreement status",
-  description: "Stage (proposed/binding/active/delivered/settled/disputed/ruled) with the on-chain objects, the custodian's escrow view and, while disputed, the judge's case: respond_by and whether you must respond.",
+  description: "Stage (proposed/binding/active/delivered/settled/disputed/ruled) with the on-chain objects, the custodian's escrow view and, while disputed, the judge's case: respond_by_block (a BLOCK HEIGHT, not a time) and whether you must respond.",
   inputSchema: { id: z.string() },
 }, ({ id }) => run((a) => a.status(id)));
 

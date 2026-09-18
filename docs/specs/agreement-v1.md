@@ -100,7 +100,9 @@ the adjudicator off chain; the chain records that they were opened).
 ### Dispute response phase
 
 Filing a dispute opens a case at the adjudicator in state `open` with a
-**response window** (`respond_by`, adjudicator-configured; 24h reference).
+**response window** (`respond_by_block`, adjudicator-configured, in BLOCKS —
+not seconds; ~20s a block). A window that decides whether a party forfeited
+their right to answer must not rest on anyone's clock.
 The other party may answer once within it: `POST <adjudicator>/api/cases/<id>/respond
 { presentation (adjudicator audience), note?, reveals: [{ evidence_id, content }] }`
 — the adjudicator checks each reveal's `sha256(content)` (string as-is, JSON
@@ -111,8 +113,12 @@ window and whether a response exists; `GET /api/cases?party=<identity>`
 lists a party's cases. A commitment opened in a matching reveal is judged
 as delivered content; a mismatching reveal counts against the revealer; an
 unanswered window counts against the non-responder only where the terms
-obliged them. Every evidence object also carries `at` (writer-claimed
-unix time; chain order is the truth).
+obliged them. Chain order is the truth: every object carries the `block` it landed in, and
+that is the only time in the record no party chose. Evidence reaches the
+adjudicator sorted by it, with unconfirmed writes (no block — they have not
+landed) last. A `deadline` or any other time-looking field written into a
+payload is the writer's claim about itself and is validated by nothing; never
+decide lateness from one.
 
 **Typed obligations** (`docs/specs/evidence-patterns.md`): each obligation
 MAY carry `kind` — `"input"` (something a party must hand over first, met by

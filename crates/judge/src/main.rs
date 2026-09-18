@@ -257,13 +257,30 @@ async fn api_dispute(State(app): State<App>, Json(body): Json<DisputeBody>) -> R
             return err(StatusCode::BAD_REQUEST, format!("terms do not match the proposal commitment ({got} != {c})"));
         }
     }
+    // Evidence in CHAIN ORDER, which is what the adjudicator is told to read it
+    // in — and until now was never given (browserid-pay-e1ou). `block` is the
+    // only time in this record no party controls; anything time-like inside
+    // `object` is the writer's own claim and nothing validates it. Unconfirmed
+    // writes have no block: they have not landed, so they have no place in the
+    // order and go last, flagged, rather than being silently interleaved.
     let evidence: Vec<Value> = match app.reader.list_prefix(&format!("{path}evidence/")).await {
-        Ok(v) => v
-            .into_iter()
-            .filter(|o| parties.contains(&o.creator))
-            .map(|o| json!({ "id": o.id, "by": o.creator, "confirmed": o.confirmed, "object": o.value }))
-            .collect(),
+        Ok(v) => {
+            let mut v: Vec<_> = v.into_iter().filter(|o| parties.contains(&o.creator)).collect();
+            v.sort_by_key(|o| (o.block.is_none(), o.block, o.id.clone()));
+            v.into_iter()
+                .map(|o| json!({ "id": o.id, "by": o.creator, "confirmed": o.confirmed,
+                                 "block": o.block, "object": o.value }))
+                .collect()
+        }
         Err(e) => return err(StatusCode::BAD_GATEWAY, format!("chain read: {e}")),
+    };
+    // The response window is measured in BLOCKS, not seconds: it decides whether
+    // a party forfeited their chance to answer, so it must not rest on anyone's
+    // clock. Fail closed — a judge that cannot read the head must not invent a
+    // deadline.
+    let head = match app.reader.head_block().await {
+        Ok(h) => h,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, format!("chain head: {e}")),
     };
     let custodian = proposal.value["custodian"].as_str().unwrap_or("").to_string();
     let case = Case {
@@ -281,14 +298,14 @@ async fn api_dispute(State(app): State<App>, Json(body): Json<DisputeBody>) -> R
         error: None,
         opened_at: cases::now(),
         updated_at: cases::now(),
-        respond_by: cases::now() + app.cfg.response_window_secs,
+        respond_by_block: head as i64 + app.cfg.response_window_blocks,
         response: None,
     };
-    let respond_by = case.respond_by;
+    let respond_by_block = case.respond_by_block;
     if let Err(e) = app.cases.insert(&case) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
     }
-    (StatusCode::ACCEPTED, Json(json!({ "contract_id": id, "state": "open", "respond_by": respond_by }))).into_response()
+    (StatusCode::ACCEPTED, Json(json!({ "contract_id": id, "state": "open", "respond_by_block": respond_by_block }))).into_response()
 }
 
 #[derive(Deserialize)]
@@ -385,7 +402,16 @@ fn spawn_ruling(app: &App, id: &str) {
 
 /// Rule on every open case whose response window has passed.
 pub async fn rule_due_cases(app: &App) {
-    let due = match app.cases.due(cases::now()) {
+    // The sweep still WAKES on a wall clock — that is only when we look. What
+    // is actually due is decided by the chain head.
+    let head = match app.reader.head_block().await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!("sweep: cannot read chain head, skipping: {e}");
+            return;
+        }
+    };
+    let due = match app.cases.due(head) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("sweep: {e}");
@@ -411,7 +437,7 @@ async fn api_cases_list(State(app): State<App>, axum::extract::Query(q): axum::e
     match app.cases.for_party(party) {
         Ok(v) => Json(json!({ "cases": v.iter().map(|c| json!({
             "contract_id": c.contract_id, "state": c.state, "disputed_by": c.disputed_by,
-            "respond_by": c.respond_by, "responded": c.response.is_some(), "opened_at": c.opened_at,
+            "respond_by_block": c.respond_by_block, "responded": c.response.is_some(), "opened_at": c.opened_at,
         })).collect::<Vec<_>>() })).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
@@ -570,7 +596,7 @@ async fn api_case(State(app): State<App>, Path(id): Path<String>) -> Response {
         Ok(Some(c)) => Json(json!({
             "contract_id": c.contract_id, "state": c.state, "disputed_by": c.disputed_by, "dispute_note": c.dispute_note,
             "custodian": c.custodian, "parties": c.parties, "ruling": c.ruling,
-            "respond_by": c.respond_by, "response": c.response.as_ref().map(|r| json!({
+            "respond_by_block": c.respond_by_block, "response": c.response.as_ref().map(|r| json!({
                 "by": r["by"], "note": r["note"], "at": r["at"],
                 "reveals": r["reveals"].as_array().map(|a| a.iter().map(|x| json!({ "evidence_id": x["evidence_id"], "matched": x["matched"] })).collect::<Vec<_>>()),
             })),
@@ -674,7 +700,7 @@ pub(crate) mod tests {
             custodians: vec!["https://pay.test".into()], accepted_fallbacks: vec![ISSUER.into()],
             price_amount: "5.00".into(), price_currency: "USD".into(), anthropic_api_key: String::new(),
             anthropic_model: "m".into(), dev: true, trust_issuers: vec![(ISSUER.into(), issuer_kp.public_key().to_base64())],
-            response_window_secs: 3600,
+            response_window_blocks: 180,
         };
         let seal = seal::SealKey::from_secret([3u8; 32]);
         let identity = Arc::new(Identity::new(dir.join("cred.json")));
@@ -722,7 +748,10 @@ pub(crate) mod tests {
         let c = app.cases.get("agr_test").unwrap().unwrap();
         assert_eq!(c.state, "open");
         assert!(c.ruling.is_none(), "no ruling before the response window");
-        assert!(c.respond_by > cases::now() + 3000);
+        // The window is a height ahead of the chain head, not a wall-clock time.
+        let head = app.reader.head_block().await.unwrap() as i64;
+        assert!(c.respond_by_block > head, "window must be ahead of the head");
+        assert_eq!(c.respond_by_block, head + app.cfg.response_window_blocks);
         // Filing twice conflicts.
         let r = api_dispute(State(app.clone()), Json(DisputeBody { presentation: login_presentation(&issuer_kp, "b@y.test"), contract_id: "agr_test".into(), sealed_terms: sealed, note: None })).await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
@@ -792,8 +821,8 @@ mod response_tests {
         // Nothing due yet.
         rule_due_cases(&app).await;
         assert!(app.cases.get("agr_test").unwrap().unwrap().ruling.is_none());
-        // Backdate the window, sweep, ruled.
-        app.cases.with_conn(|c| c.execute("UPDATE cases SET respond_by=?1 WHERE contract_id='agr_test'", rusqlite::params![cases::now() - 1]).map(|_| ()));
+        // Put the window behind the chain head, sweep, ruled.
+        app.cases.with_conn(|c| c.execute("UPDATE cases SET respond_by_block=?1 WHERE contract_id='agr_test'", rusqlite::params![0i64]).map(|_| ()));
         rule_due_cases(&app).await;
         let c = app.cases.get("agr_test").unwrap().unwrap();
         assert_eq!(c.ruling.as_ref().unwrap()["outcome"], "payer");
@@ -801,6 +830,43 @@ mod response_tests {
         // The party listing shows it.
         let r = api_cases_list(State(app.clone()), axum::extract::Query([("party".to_string(), "b@y.test".to_string())].into_iter().collect())).await;
         assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    /// Evidence reaches the adjudicator in CHAIN order, carrying the block it
+    /// landed in — the prompt has always told the model to read it that way and
+    /// until now it was handed an unsorted list with no chain time at all
+    /// (browserid-pay-e1ou). A pending write has no block: it has not landed, so
+    /// it sorts last rather than being interleaved on a number it does not have.
+    #[tokio::test]
+    async fn evidence_reaches_the_judge_in_chain_order_with_blocks() {
+        let (issuer_kp, chain, app, seal) = tests_support::open_case(json!({ "outcome": "payer", "fee": "escrow", "reasoning": "x" })).await;
+        // Deliberately not in id order, so passing cannot be an accident of sorting by id.
+        chain.put("/agreements/agr_test/evidence/", "ev_c", "b@y.test", json!({ "kind": "delivery", "at": 1 }));
+        chain.put("/agreements/agr_test/evidence/", "ev_a", "a@x.test", json!({ "kind": "acknowledgement", "at": 2 }));
+        chain.put("/agreements/agr_test/evidence/", "ev_b", "b@y.test", json!({ "kind": "delivery", "at": 3 }));
+        // One still in the mempool.
+        chain.objects.lock().unwrap().insert(
+            ("/agreements/agr_test/evidence/".into(), "ev_pending".into()),
+            chain::ObjectView { path: "/agreements/agr_test/evidence/".into(), id: "ev_pending".into(),
+                creator: "b@y.test".into(), value: json!({ "kind": "delivery" }), confirmed: false, block: None });
+
+        // Re-open so the case picks up the new evidence.
+        app.cases.with_conn(|c| c.execute("DELETE FROM cases", []).map(|_| ()));
+        let t = tests::terms();
+        let sealed = seal::seal_to(&seal.public_b64(), &serde_json::to_vec(&t).unwrap()).unwrap();
+        let r = api_dispute(State(app.clone()), Json(DisputeBody {
+            presentation: tests_support::login_presentation(&issuer_kp, "a@x.test"),
+            contract_id: "agr_test".into(), sealed_terms: sealed, note: None })).await;
+        assert_eq!(r.status(), StatusCode::ACCEPTED);
+
+        let c = app.cases.get("agr_test").unwrap().unwrap();
+        let ev = c.evidence.as_array().unwrap();
+        let ids: Vec<&str> = ev.iter().map(|e| e["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["ev_c", "ev_a", "ev_b", "ev_pending"], "chain order, pending last");
+
+        let blocks: Vec<Option<u64>> = ev.iter().map(|e| e["block"].as_u64()).collect();
+        assert!(blocks[..3].windows(2).all(|w| w[0] < w[1]), "confirmed blocks ascend: {blocks:?}");
+        assert_eq!(blocks[3], None, "a pending write carries no block");
     }
 }
 
