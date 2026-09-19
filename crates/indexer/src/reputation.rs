@@ -288,7 +288,7 @@ mod tests {
     use serde_json::json;
 
     fn obj(path: &str, id: &str, block: u64, schema: &str, v: Value) -> Obj {
-        Obj { path: path.into(), id: id.into(), creator: "e".into(), content_schema: Some(schema.into()), block, object_hash: format!("h-{path}{id}"), value: Some(v), payload_text: String::new(), confirmed: true }
+        Obj { path: path.into(), id: id.into(), creator: "e".into(), content_schema: Some(schema.into()), block, object_hash: format!("h-{path}{id}"), value: Some(v), payload_text: String::new(), confirmed: true, related: vec![] }
     }
     /// A fake presentation bundle whose warrant payload carries `grantor`.
     fn bundle(grantor: &str) -> String {

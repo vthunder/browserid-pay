@@ -16,7 +16,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use chain::{Chain, Daemon, StateRoot};
+use chain::{Chain, Daemon, Obj, StateRoot};
 use index::Index;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/attestations", get(attestations))
         .route("/v1/providers/:kind", get(providers))
         .route("/v1/contribution", get(contribution))
+        .route("/v1/referencing", get(referencing))
         .route("/v1/reputation", get(reputation))
         .route("/v1/reputation/key", get(reputation_key))
         .with_state(app)
@@ -88,8 +89,16 @@ pub async fn poll_once(chain: &dyn Chain, index: &Index) -> anyhow::Result<State
     let attestations = chain.list_schema("attestation.v1").await?;
     let sys = chain.list_prefix("/sys/").await?;
     let contribution = sys.iter().find(|o| o.path == "/sys/" && o.id == "contribution");
-    index.rebuild(&agreements, &attestations, &providers, contribution, &root)?;
-    tracing::info!(block = root.block, agreements = agreements.len(), attestations = attestations.len(), providers = providers.len(), "indexed");
+    // Everything carrying a `Related` header, for the reverse index. Read by
+    // SCHEMA rather than path so this is not tied to the forum: posts are the
+    // first things to reference agreements, not the only possible ones.
+    let mut referencing: Vec<Obj> = Vec::new();
+    for schema in ["post.v1", "comment.v1"] {
+        referencing.extend(chain.list_schema(schema).await?.into_iter().filter(|o| !o.related.is_empty()));
+    }
+    index.rebuild_with_refs(&agreements, &attestations, &providers, contribution, &referencing, &root)?;
+    tracing::info!(block = root.block, agreements = agreements.len(), attestations = attestations.len(),
+        providers = providers.len(), refs = referencing.len(), "indexed");
     Ok(root)
 }
 
@@ -141,9 +150,38 @@ async fn agreement(State(app): State<App>, Path(id): Path<String>) -> Response {
     match app.index.agreement(&id) {
         Ok(Some(a)) => {
             let refs = json!(a.references);
-            Json(envelope(&app, json!(a), refs)).into_response()
+            // Threads that reference this agreement. Shown whether or not the
+            // author was a party — `verified` says which — because "someone
+            // uninvolved is talking about this" is worth seeing, just never
+            // worth counting.
+            let discussion = app
+                .index
+                .referencing(&format!("/agreements/{}/", a.id), None, false)
+                .unwrap_or_default();
+            let mut body = json!(a);
+            body["discussion"] = json!(discussion);
+            Json(envelope(&app, body, refs)).into_response()
         }
         Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found" }))).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct RefQ {
+    /// What to look for references TO: an agreement container path
+    /// (`/agreements/<id>/`) or an identity.
+    r#ref: String,
+    rel: Option<String>,
+    /// Only references whose author is a party to the agreement they point at.
+    /// Anything that feeds reputation must pass this.
+    verified: Option<bool>,
+}
+
+/// The reverse of the `Related` header: everything pointing AT something.
+async fn referencing(State(app): State<App>, Query(q): Query<RefQ>) -> Response {
+    match app.index.referencing(&q.r#ref, q.rel.as_deref(), q.verified.unwrap_or(false)) {
+        Ok(v) => Json(envelope(&app, json!({ "ref": q.r#ref, "referencing": v }), json!([]))).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -247,7 +285,7 @@ mod tests {
     }
 
     fn obj(path: &str, id: &str, block: u64, schema: Option<&str>, v: Value) -> Obj {
-        Obj { path: path.into(), id: id.into(), creator: "e".into(), content_schema: schema.map(String::from), block, object_hash: format!("h{block}"), value: Some(v), payload_text: String::new(), confirmed: true }
+        Obj { path: path.into(), id: id.into(), creator: "e".into(), content_schema: schema.map(String::from), block, object_hash: format!("h{block}"), value: Some(v), payload_text: String::new(), confirmed: true, related: vec![] }
     }
 
     #[tokio::test]

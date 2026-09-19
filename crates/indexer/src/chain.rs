@@ -24,6 +24,20 @@ pub struct Obj {
     pub payload_text: String,
     #[serde(default = "yes")]
     pub confirmed: bool,
+    /// The object's `Related` header (Wire Format Spec §Related Objects), if it
+    /// declared one. This is what makes the reverse index possible without
+    /// knowing any application schema: a post referencing an agreement looks
+    /// the same here as anything else referencing anything else.
+    #[serde(default)]
+    pub related: Vec<Related>,
+}
+
+/// One `{rel, ref}` from an object's `Related` header.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Related {
+    pub rel: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
 }
 fn yes() -> bool {
     true

@@ -136,6 +136,19 @@ impl Index {
                PRIMARY KEY (path, id)
              );
              CREATE INDEX IF NOT EXISTS attestations_subject ON attestations(subject, typ);
+             DROP TABLE IF EXISTS refs;
+             CREATE TABLE IF NOT EXISTS refs (
+               from_path TEXT NOT NULL, from_id TEXT NOT NULL,
+               rel TEXT NOT NULL, ref TEXT NOT NULL,
+               author TEXT NOT NULL, block INTEGER NOT NULL,
+               -- Whether the author is a party to the agreement it points at.
+               -- An UNVERIFIED reference is a claim someone made about
+               -- themselves: kept, so it can still be displayed, but never
+               -- counted (browserid-pay-ctnd).
+               verified INTEGER NOT NULL,
+               PRIMARY KEY (from_path, from_id, rel, ref)
+             );
+             CREATE INDEX IF NOT EXISTS refs_ref ON refs(ref, rel);
              CREATE TABLE IF NOT EXISTS providers (
                kind TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, block INTEGER NOT NULL, object_hash TEXT NOT NULL,
                PRIMARY KEY (kind, name)
@@ -151,13 +164,20 @@ impl Index {
 
     /// Replace the whole index from one consistent set of chain reads.
     pub fn rebuild(&self, agreements: &[Obj], attestations: &[Obj], providers: &[Obj], contribution: Option<&Obj>, root: &StateRoot) -> Result<()> {
+        self.rebuild_with_refs(agreements, attestations, providers, contribution, &[], root)
+    }
+
+    /// As [`rebuild`], plus `referencing`: every object carrying a `Related`
+    /// header, from anywhere on the chain. Forum posts are the first of these,
+    /// but nothing here knows what a post is — a reference is a reference.
+    pub fn rebuild_with_refs(&self, agreements: &[Obj], attestations: &[Obj], providers: &[Obj], contribution: Option<&Obj>, referencing: &[Obj], root: &StateRoot) -> Result<()> {
         // The head this rebuild is consistent with: `expires_block` is a block
         // height, so whether an offer has lapsed is decided by the chain, not
         // by this process's clock (browserid-pay-e1ou).
         let derived = derive_agreements(agreements, attestations, root.block);
         self.with(|c| {
             let tx = c.transaction()?;
-            tx.execute_batch("DELETE FROM agreements; DELETE FROM attestations; DELETE FROM providers;")?;
+            tx.execute_batch("DELETE FROM agreements; DELETE FROM attestations; DELETE FROM providers; DELETE FROM refs;")?;
             for a in &derived {
                 tx.execute(
                     "INSERT INTO agreements(id,state,proposer,acceptor,payer,payee,adjudicator,custodian,mode,expires_block,proposal_block,acceptance_block,lock_block,ruling_block,proposer_grantor,acceptor_grantor,ruling,evidence,refs)
@@ -174,6 +194,31 @@ impl Index {
                     "INSERT OR REPLACE INTO attestations(path,id,issuer,subject,typ,value,issued_at,expires,block,object_hash) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                     params![o.path, o.id, att.issuer, att.subject, att.typ, att.value.to_string(), att.issued_at, att.expires, o.block as i64, o.object_hash],
                 )?;
+            }
+            // The reverse index. `verified` says whether the author was a
+            // PARTY to the agreement it points at — without that, `endorses`
+            // and `agreement` are claims a poster makes about itself, and
+            // anyone could attach themselves to someone else's settlement.
+            let parties: std::collections::HashMap<&str, (&str, &str)> = derived
+                .iter()
+                .map(|a| (a.id.as_str(), (a.proposer.as_str(), a.acceptor.as_str())))
+                .collect();
+            for o in referencing {
+                for r in &o.related {
+                    let verified = match agreement_id_of(&r.reference) {
+                        // Points at an agreement: the author must be a party.
+                        Some(id) => parties
+                            .get(id)
+                            .is_some_and(|(p, a)| norm(&o.creator) == norm(p) || norm(&o.creator) == norm(a)),
+                        // Points at anything else (an identity, a licence, a
+                        // thread): there is nothing to check it against here.
+                        None => false,
+                    };
+                    tx.execute(
+                        "INSERT OR REPLACE INTO refs(from_path,from_id,rel,ref,author,block,verified) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                        params![o.path, o.id, r.rel, r.reference, norm(&o.creator), o.block as i64, verified as i64],
+                    )?;
+                }
             }
             for o in providers {
                 // /providers/<kind>/<identity>/  +  ID `listing`  (agreement-v1.md
@@ -215,6 +260,44 @@ impl Index {
 
     pub fn agreement(&self, id: &str) -> Result<Option<Agreement>> {
         self.with(|c| Ok(c.query_row(&format!("SELECT {AG_COLS} FROM agreements WHERE id=?1"), params![id], ag_row).optional()?))
+    }
+
+    /// Everything that references `reference` — the reverse of the `Related`
+    /// header. `/agreements/<id>/` gives the threads discussing an agreement;
+    /// an identity gives the posts endorsing it.
+    ///
+    /// `verified_only` is the important argument. An unverified reference is a
+    /// claim the author made about itself: fine to display, never fine to
+    /// count. Reputation passes `true`; a UI showing "discussed in" may pass
+    /// `false` and mark the difference.
+    pub fn referencing(&self, reference: &str, rel: Option<&str>, verified_only: bool) -> Result<Vec<Backlink>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT from_path,from_id,rel,ref,author,block,verified FROM refs \
+                 WHERE ref=?1 AND (?2 IS NULL OR rel=?2) AND (?3=0 OR verified=1) ORDER BY block DESC",
+            )?;
+            let v = st
+                .query_map(params![reference, rel, verified_only as i64], |r| {
+                    Ok(Backlink {
+                        from_path: r.get(0)?,
+                        from_id: r.get(1)?,
+                        rel: r.get(2)?,
+                        reference: r.get(3)?,
+                        author: r.get(4)?,
+                        block: r.get::<_, i64>(5)? as u64,
+                        verified: r.get::<_, i64>(6)? != 0,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(v)
+        })
+    }
+
+    /// Posts endorsing `identity`, by anyone. The endorsement itself is never
+    /// "verified" — there is no agreement in the reference to check it against
+    /// — so a consumer must weigh the ENDORSER, e.g. by their own settlements.
+    pub fn endorsements_of(&self, identity: &str) -> Result<Vec<Backlink>> {
+        self.referencing(&norm(identity), Some("endorses"), false)
     }
 
     pub fn attestations_by_subject(&self, subject: &str, typ: Option<&str>) -> Result<Vec<Attestation>> {
@@ -328,6 +411,30 @@ pub struct ParsedAttestation {
 
 /// `/<issuer>/attestations/<subject>/<type>` (Attestation spec layout); the
 /// payload's `subject`/`type` win when present.
+/// The agreement id a reference points at, if it points at one.
+/// `/agreements/agr_x/` → `agr_x`. Anything else → `None`.
+pub fn agreement_id_of(reference: &str) -> Option<&str> {
+    let rest = reference.strip_prefix("/agreements/")?;
+    let id = rest.split('/').next()?;
+    (!id.is_empty()).then_some(id)
+}
+
+/// One row of the reverse index: an object that referenced something.
+#[derive(Debug, Clone, Serialize)]
+pub struct Backlink {
+    pub from_path: String,
+    pub from_id: String,
+    pub rel: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub author: String,
+    pub block: u64,
+    /// The author is a party to the agreement this points at. False for
+    /// references to anything that is not an agreement, and false for an
+    /// agreement the author had nothing to do with.
+    pub verified: bool,
+}
+
 pub fn parse_attestation(o: &Obj) -> Option<ParsedAttestation> {
     let segs: Vec<&str> = o.path.trim_matches('/').split('/').collect();
     // `/u/<issuer>/attestations/<subject>/` only. The pre-`/u/` shape is
@@ -536,7 +643,80 @@ mod tests {
             value: Some(v),
             payload_text: String::new(),
             confirmed: true,
+            related: vec![],
         }
+    }
+
+    /// A forum post carrying a `Related` header.
+    fn post(id: &str, author: &str, block: u64, related: Vec<(&str, &str)>) -> Obj {
+        let mut o = obj("/communities/agents/spaces/recommendations/", id, block, json!({ "body": "…" }));
+        o.creator = author.into();
+        o.content_schema = Some("post.v1".into());
+        o.related = related
+            .into_iter()
+            .map(|(rel, reference)| crate::chain::Related { rel: rel.into(), reference: reference.into() })
+            .collect();
+        o
+    }
+
+    /// The party check is what makes the reverse index mean anything: without
+    /// it, anyone could attach themselves to someone else's settled agreement
+    /// and have it counted (browserid-pay-ctnd).
+    #[test]
+    fn a_reference_counts_only_when_its_author_was_a_party() {
+        let ix = Index::open(":memory:").unwrap();
+        let p = proposal("agr_1", 10);
+        let h = p.object_hash.clone();
+        let agreements = vec![p.clone(), acceptance("agr_1", 11, &h)];
+        let refs = vec![
+            // A party to agr_1, talking about agr_1.
+            post("p_ok", "bob@y.test", 20, vec![("agreement", "/agreements/agr_1/")]),
+            // A stranger pointing at the same agreement.
+            post("p_stranger", "mallory@evil.test", 21, vec![("agreement", "/agreements/agr_1/")]),
+            // A party, but pointing at an agreement that does not exist.
+            post("p_ghost", "bob@y.test", 22, vec![("agreement", "/agreements/agr_nope/")]),
+            // An endorsement: nothing to check it against.
+            post("p_vouch", "alice@x.test", 23, vec![("endorses", "bob@y.test")]),
+        ];
+        let root = StateRoot { block: 100, state_root: "r".into() };
+        ix.rebuild_with_refs(&agreements, &[], &[], None, &refs, &root).unwrap();
+
+        let all = ix.referencing("/agreements/agr_1/", None, false).unwrap();
+        assert_eq!(all.len(), 2, "both the party and the stranger are recorded");
+
+        let counted = ix.referencing("/agreements/agr_1/", None, true).unwrap();
+        assert_eq!(counted.len(), 1, "only the party's reference counts");
+        assert_eq!(counted[0].author, "bob@y.test");
+        assert!(counted[0].verified);
+
+        // Identity comparison goes through `norm`, which lowercases the DOMAIN
+        // only — local parts stay case-sensitive, as everywhere else in the
+        // indexer. The proposal says `alice@X.test`; `alice@x.test` is the
+        // same party, and matching must not depend on which form was written.
+        let by_alice = post("p_alice", "alice@x.test", 24, vec![("agreement", "/agreements/agr_1/")]);
+        ix.rebuild_with_refs(&agreements, &[], &[], None, &[by_alice], &root).unwrap();
+        assert_eq!(ix.referencing("/agreements/agr_1/", None, true).unwrap().len(), 1,
+            "domain case must not decide whether someone was a party");
+
+        // A reference to a nonexistent agreement is never verified.
+        ix.rebuild_with_refs(&agreements, &[], &[], None, &refs, &root).unwrap();
+        assert!(ix.referencing("/agreements/agr_nope/", None, true).unwrap().is_empty());
+
+        // Endorsements are found by identity, and are never "verified" — a
+        // consumer has to weigh the ENDORSER instead.
+        let vouches = ix.endorsements_of("bob@y.test").unwrap();
+        assert_eq!(vouches.len(), 1);
+        assert_eq!(vouches[0].author, "alice@x.test");
+        assert!(!vouches[0].verified);
+    }
+
+    #[test]
+    fn agreement_id_is_read_only_from_an_agreement_path() {
+        assert_eq!(agreement_id_of("/agreements/agr_1/"), Some("agr_1"));
+        assert_eq!(agreement_id_of("/agreements/agr_1/evidence/"), Some("agr_1"));
+        assert_eq!(agreement_id_of("bob@y.test"), None);
+        assert_eq!(agreement_id_of("/communities/agents/"), None);
+        assert_eq!(agreement_id_of("/agreements/"), None);
     }
 
     fn proposal(id: &str, block: u64) -> Obj {
