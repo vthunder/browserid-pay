@@ -30,8 +30,34 @@ function loadAgent() {
   for (const g of saved.grants || []) { try { agent.addGrant(g.grant); } catch {} }
   return { agent, saved };
 }
-function persistGrants(agent, saved) {
+// The wallet MCP server is a SEPARATE PROCESS writing this same file, so both
+// of these are shared-state operations, not bookkeeping.
+//
+// Pick up anything the wallet (or another process) has granted since we loaded.
+// Without this, a warrant the human approved through `authorize` is invisible
+// here: `warrantedAudiences()` is an in-memory Map built once at startup, and
+// the SDK decides which authority to present from it — so a fresh
+// per-agreement grant goes unseen and the broader collection warrant gets
+// presented instead, failing at the custodian for reasons neither side can
+// see.
+function refreshGrants(agent, saved) {
+  let onDisk;
+  try { onDisk = JSON.parse(readFileSync(IDENTITY, "utf8")); } catch { return; }
+  const held = new Set(agent.warrantedAudiences());
+  for (const g of onDisk.grants || []) {
+    if (held.has(g.audience)) continue;
+    try { agent.addGrant(g.grant); } catch { /* not ours, or malformed */ }
+  }
   saved.grants = agent.storedGrants();
+}
+// Merge on write. Overwriting `grants` wholesale let this process clobber a
+// warrant the wallet had just added, with a set that predated it.
+function persistGrants(agent, saved) {
+  const mine = agent.storedGrants();
+  const audiences = new Set(mine.map((g) => g.audience));
+  let onDisk = [];
+  try { onDisk = JSON.parse(readFileSync(IDENTITY, "utf8")).grants || []; } catch { /* first write */ }
+  saved.grants = [...mine, ...onDisk.filter((g) => !audiences.has(g.audience))];
   writeFileSync(IDENTITY, JSON.stringify(saved, null, 2));
 }
 
@@ -54,9 +80,11 @@ const goalStore = {
 
 let approveUrls = [];
 let ctx;
+let agentRef, savedRef;
 function sdk() {
   if (ctx) return ctx;
   const { agent, saved } = loadAgent();
+  agentRef = agent; savedRef = saved;
   const chain = new DaemonChain({ daemon: process.env.SBO_DAEMON, repo: process.env.SBO_REPO });
   const a = new Agreements({
     agent, chain, broker: BROKER, termsStore, goalStore,
@@ -101,7 +129,9 @@ const text = (s) => ({ content: [{ type: "text", text: s }] });
 const run = async (fn) => {
   approveUrls = [];
   try {
-    const out = await fn(sdk());
+    const a = sdk();
+    refreshGrants(agentRef, savedRef);
+    const out = await fn(a);
     const pre = approveUrls.length ? `APPROVE_URL: ${approveUrls.join("\n")}\n(the human approved these grants)\n\n` : "";
     return text(pre + JSON.stringify(out, null, 2));
   } catch (e) {
