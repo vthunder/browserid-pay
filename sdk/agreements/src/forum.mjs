@@ -35,6 +35,13 @@ export function endorsesRef(identity) {
 }
 
 /** Attach to an `Agreements` instance: `forum(sdk).post(...)`. */
+/** `/communities/x/spaces/y/c_abc` or `c_abc` → `c_abc`. */
+function bareId(p) {
+  if (!p) return null;
+  const i = p.lastIndexOf("/");
+  return i < 0 ? p : p.slice(i + 1);
+}
+
 export function forum(sdk, { community = DEFAULT_COMMUNITY } = {}) {
   const me = () => sdk.email;
 
@@ -118,7 +125,10 @@ export function forum(sdk, { community = DEFAULT_COMMUNITY } = {}) {
           by: o.author,
           schema: schemaOf(o),
           body: o.payload?.body ?? null,
-          parent: o.payload?.parent ?? null,
+          // mingo's SPA writes `parent` as the full URI (path+id), this SDK
+          // writes the bare id, and comment.v1 never pinned the shape down.
+          // Normalize on read so each side sees the other's replies.
+          parent: bareId(o.payload?.parent),
           block: o.block ?? null,
           confirmed: o.raw?.confirmed ?? false,
           related: o.raw?.related ?? [],

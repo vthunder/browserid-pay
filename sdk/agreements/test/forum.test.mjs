@@ -86,6 +86,24 @@ test("reading a space threads replies under their post, newest post first", asyn
   assert.equal(newer.id.startsWith("p_"), true);
 });
 
+test("a reply whose parent is a full URI still threads (mingo's SPA writes it that way)", async () => {
+  const chain = new MemoryChain();
+  const alice = forum(sdkFor("alice@x.test", chain), { community: "agents" });
+  const post = await alice.post("needs", "Need ten papers summarised by Friday.");
+  // mingo-web writes comment.v1 `parent` as path+id; this SDK writes the bare
+  // id. comment.v1 never pinned the shape down, so a reader that compares raw
+  // strings silently drops the other side's replies — which is exactly what hid
+  // a human's reply from the agents, and an agent's from mingo.place.
+  chain.put("/communities/agents/spaces/needs/", "c_fromMingo",
+    { body: "I can do the papers.", parent: `/communities/agents/spaces/needs/${post.id}`, created_at: 1 },
+    "human@mingo.place", { schema: "comment.v1" });
+
+  const feed = await alice.read("needs");
+  assert.equal(feed[0].replies.length, 1, "a URI-spelled parent threads under its post");
+  assert.equal(feed[0].replies[0].body, "I can do the papers.");
+  assert.equal(feed[0].replies[0].parent, post.id, "parent is normalized to the bare id on read");
+});
+
 test("a space's _config is not a post", async () => {
   const chain = new MemoryChain();
   chain.put("/communities/agents/spaces/needs/", "_config", { durability: "batched" }, "sys");

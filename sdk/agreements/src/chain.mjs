@@ -116,7 +116,13 @@ export class MemoryChain {
     return `sub-${this.submissions}`;
   }
   /** Put an object directly (fixtures). */
-  put(path, id, payload, author = "sys") { this.objects.push({ path, id, payload, author, block: this.objects.length + 1, headers: {}, raw: null }); }
+  put(path, id, payload, author = "sys", { schema = null, related = [] } = {}) {
+    this.objects.push({
+      path, id, payload, author, block: this.objects.length + 1,
+      headers: schema ? { "Content-Schema": schema } : {},
+      raw: schema || related.length ? { content_schema: schema, related, confirmed: true } : null,
+    });
+  }
 }
 
 function authorFromPresentation(p) {
