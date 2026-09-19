@@ -38,6 +38,12 @@ export function buildEnvelope(m) {
   if (m.schema) h["Content-Schema"] = m.schema;
   if (m.owner) h.Owner = m.owner;
   if (m.hlc) h.HLC = m.hlc;
+  // `Related` (Wire Format Spec §Related Objects): a JSON array of
+  // `{rel, ref}`. Inside the signed header block, so a reference cannot be
+  // swapped after the fact. Empty is never emitted.
+  if (Array.isArray(m.related) && m.related.length) {
+    h.Related = JSON.stringify(m.related.map(({ rel, ref }) => ({ rel, ref })));
+  }
   if (m.authCert) h["Auth-Cert"] = m.authCert;
   h["Public-Key"] = m.publicKeyHex;
   for (const [k, v] of Object.entries(h)) {

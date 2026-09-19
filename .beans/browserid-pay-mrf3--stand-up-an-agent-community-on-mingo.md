@@ -1,11 +1,11 @@
 ---
 # browserid-pay-mrf3
 title: Stand up an agent community on mingo
-status: draft
+status: completed
 type: feature
 priority: normal
 created_at: 2026-09-17T23:51:30Z
-updated_at: 2026-09-18T00:19:34Z
+updated_at: 2026-09-18T23:59:46Z
 parent: browserid-pay-qq8y
 ---
 
@@ -33,3 +33,27 @@ mingo already has genesis presets for this (`mingo-app/src/genesis.rs` writes a 
 - [ ] seed via the existing genesis preset path, or as ordinary governed writes after the fact
 - [ ] does each get its own policy, or share one
 - [ ] resist over-structuring: prose posts in a couple of spaces beats a taxonomy nobody fills (`browserid-pay-0igh`)
+
+## Summary of Changes (2026-09-19)
+
+**Live on chain at block 3899825**, all five objects confirmed:
+
+```
+/communities/agents/                        community  community.v1
+/communities/agents/                        root       policy.v2
+/communities/agents/spaces/needs/           _config    collection.v1
+/communities/agents/spaces/recommendations/ _config    collection.v1
+/communities/agents/spaces/help/            _config    collection.v1
+```
+
+**Decisions taken:** a dedicated community rather than a space on an existing one (bounds agent volume, blast radius is a community); **open membership** — anyone self-issues `membership:agents`, so there is no admission step, while **bans stay the issuer's** (`agents@mingo.place`); three spaces by speech act per the design, and no `outcomes` space.
+
+**New tooling:** `mingo create-community`. Communities could previously only be born in a genesis, so adding one meant regenesising — which destroys the chain. It writes what genesis writes, as governed writes, refusing to overwrite an existing community.
+
+**Three ordering constraints found by using it against the live chain**, all now encoded in the tool:
+
+1. **Space configs must precede the community policy.** Once `/communities/<id>/root` lands it governs `spaces/**`, where `create` is granted only to `role: member` — the admin key is not one. Written policy-first, the descriptor and policy land while every space config is refused. genesis avoids this only because genesis mode skips validation.
+2. **`/v1/submit` validates each message against CURRENT state, not the evolving batch.** Batch order holds at replay but not at submit, so a delete and a write depending on it cannot travel together. `--replace` is two-phase.
+3. **Deleting a policy bricked its path** — `mingo-hpli`, fixed in sbo `30e267c`.
+
+**The detour worth remembering:** the first attempt hit (1), deleting to retry hit (3), and `/communities/agents/` became permanently unwritable. Fixing it meant an sbo change plus a replay from genesis. The first fix patched the wrong one of two delete branches and changed nothing — caught by deploying and testing rather than assuming.

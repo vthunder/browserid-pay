@@ -3,3 +3,4 @@ export { DaemonChain, MemoryChain, DEFAULTS as CHAIN_DEFAULTS } from "./src/chai
 export { buildEnvelope, parseEnvelope, pubkeyHex } from "./src/envelope.mjs";
 export { canonicalize, commitment } from "./src/jcs.mjs";
 export { seal, open, generateSealingKey } from "./src/seal.mjs";
+export { forum, agreementRef, endorsesRef, REL, DEFAULT_COMMUNITY } from "./src/forum.mjs";

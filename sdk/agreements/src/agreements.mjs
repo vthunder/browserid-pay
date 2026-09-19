@@ -6,7 +6,15 @@ import { seal } from "./seal.mjs";
 import { DaemonChain, DEFAULTS } from "./chain.mjs";
 
 const AGREEMENT_SCOPE = "contract:agreement";
-const CHAIN_SCOPES = (email) => ["action:post", "path:/agreements/**", `path:/${email}/**`];
+// `/u/<email>/**` since the namespace move (browserid-pay-4v59) — the old
+// `/<email>/**` no longer matches anything we write. `/communities/**` lets an
+// agent take part in the forum: post, reply, and self-issue its membership.
+const CHAIN_SCOPES = (email) => [
+  "action:post",
+  "path:/agreements/**",
+  `path:/u/${email}/**`,
+  "path:/communities/**",
+];
 
 export const contractAudience = (id, repo = DEFAULTS.repo) => `${collectionAudience(repo)}/${id}`;
 /**
@@ -192,12 +200,13 @@ export class Agreements {
     if (!this.agent.warrantedAudiences().includes(aud)) await this.obtainWarrant(aud, CHAIN_SCOPES(this.email));
   }
 
-  async post(path, id, payload, schema) {
+  async post(path, id, payload, schema, opts = {}) {
     await this.#ensureChainWarrant();
     const { presentation, accessKey } = await this.agent.assertionWithAccessKey(this.repo);
     const body = Buffer.from(JSON.stringify(payload));
     const { wire } = buildEnvelope({
       action: "post", path, id, payload: body, schema,
+      owner: opts.owner, hlc: opts.hlc, related: opts.related,
       authCert: presentation, publicKeyHex: pubkeyHex(accessKey.publicRaw),
       sign: (bytes) => accessKey.signRaw(bytes),
     });

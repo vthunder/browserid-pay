@@ -45,7 +45,17 @@ test("propose → accept → fund → deliver → settle", async () => {
     assert.equal(asks.length, 3);
     assert.deepEqual(asks.slice(0, 2).map((a) => a.audience), [contractAudience(p.id, REPO), REPO]);
     assert.deepEqual(asks[0].scopes, [{ scope: "contract:agreement", cap: { amount: "56.00", currency: "USD" }, counterparties: ["bob@y.test"] }]);
-    assert.deepEqual(asks[1].scopes, ["action:post", "path:/agreements/**", "path:/alice@x.test/**"]);
+    // The ledger-write warrant. `/u/<email>/**` since the namespace move
+    // (browserid-pay-4v59) — `/<email>/**` no longer matches what we write —
+    // and `/communities/**` so the agent can take part in the forum. These are
+    // what the HUMAN sees on the consent card, so pin them: widening this
+    // silently is exactly what the card exists to prevent.
+    assert.deepEqual(asks[1].scopes, [
+      "action:post",
+      "path:/agreements/**",
+      "path:/u/alice@x.test/**",
+      "path:/communities/**",
+    ]);
     assert.deepEqual(asks[2].scopes, ["dispute"]);
     // On chain: the proposal object under /agreements/<id>/.
     const onChain = await w.chain.get(`/agreements/${p.id}/`, "proposal");
