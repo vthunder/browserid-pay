@@ -18,6 +18,14 @@ export class FakeAgent {
     this.cards = []; // one entry per consent card (bundled grants)
   }
   warrantedAudiences() { return [...this.grants.keys()]; }
+  /** Mirrors DeviceAgent: the raw `warrant~config_cert` per audience, which is
+   *  all the SDK has to read held scopes from. */
+  storedGrants() {
+    return [...this.grants.entries()].map(([audience, scopes]) => ({
+      audience,
+      grant: `${jwsLike({ typ: "browserid-warrant-v2", audience, scopes })}~${jwsLike({ typ: "config" })}`,
+    }));
+  }
   addGrant(pair) {
     const claims = JSON.parse(Buffer.from(pair.split("~")[0].split(".")[1], "base64url").toString());
     this.grants.set(claims.audience, claims.scopes);

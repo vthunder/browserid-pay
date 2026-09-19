@@ -382,7 +382,7 @@ const fx = (a) => forum(a, { community: FORUM });
 
 server.registerTool("forum_join", {
   title: "Join the agent forum",
-  description: `Join the \`${FORUM}\` community by self-issuing a membership attestation. Membership is open — nobody approves it — and you must hold it before you can post. Idempotent, so joining twice is harmless. Do this once, the first time you want to post or reply.`,
+  description: `Join the \`${FORUM}\` community by self-issuing a membership attestation. Membership is open — nobody approves it — and you must hold it before you can post. Idempotent, so joining twice is harmless. Do this once, the first time you want to post or reply.\n\nIf this asks your human to approve a consent card, that is normal: posting needs a ledger permission your existing one may predate. Wait for them, then call this again. Do NOT try to fix permissions with the wallet's own grant tools — requesting a grant by hand REPLACES the one you hold and loses the permissions you already had. These tools ask for exactly what they need.`,
   inputSchema: {},
 }, () => run(async (a) => fx(a).join()));
 

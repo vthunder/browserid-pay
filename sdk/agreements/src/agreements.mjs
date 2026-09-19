@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { canonicalize, commitment, sha256hex } from "./jcs.mjs";
 import { buildEnvelope, pubkeyHex } from "./envelope.mjs";
 import { seal } from "./seal.mjs";
+import { scopeEntryEq } from "@browserid-ng/agent";
 import { DaemonChain, DEFAULTS } from "./chain.mjs";
 
 const AGREEMENT_SCOPE = "contract:agreement";
@@ -197,7 +198,15 @@ export class Agreements {
 
   async #ensureChainWarrant() {
     const aud = this.repo;
-    if (!this.agent.warrantedAudiences().includes(aud)) await this.obtainWarrant(aud, CHAIN_SCOPES(this.email));
+    const want = CHAIN_SCOPES(this.email);
+    // Check the SCOPES, not just the audience. Holding *a* warrant for this
+    // ledger says nothing about whether it covers what we are about to write:
+    // when the scope list widened (the `/u/` namespace move, then
+    // `/communities/**` for the forum), every existing agent kept its old,
+    // narrower warrant and silently failed — and the daemon reports an
+    // uncovered path as "signer carries no valid attribution", which reads
+    // like a broken identity rather than a missing permission.
+    if (!warrantCoversScopes(this.agent, aud, want)) await this.obtainWarrant(aud, want);
   }
 
   async post(path, id, payload, schema, opts = {}) {
@@ -1197,6 +1206,46 @@ function defaultManifest(content) {
  */
 function other(me, parties = {}) {
   return [parties.proposer, parties.acceptor].filter(Boolean).find((x) => x !== me) || "the other party";
+}
+
+
+/**
+ * Does the agent hold a warrant for `audience` covering every scope in `want`?
+ *
+ * `Agent` has `warrantCovers`; `DeviceAgent` — the paired model the MCP server
+ * uses — does not, and exposes only `storedGrants()`. So read the scopes out of
+ * the held warrant ourselves. The warrant is a JWT and we only need its claims:
+ * this is not a security check (the daemon verifies for real), just "did we
+ * already ask for this?".
+ *
+ * A missing or unreadable warrant counts as NOT covering, so the worst case is
+ * asking the human to approve something they already approved — far better than
+ * the alternative, which is writing with an insufficient warrant and getting
+ * "signer carries no valid attribution" back.
+ *
+ * TODO: `DeviceAgent.warrantCovers` belongs in @browserid-ng/agent; drop this
+ * once it exists.
+ */
+export function warrantCoversScopes(agent, audience, want) {
+  if (!want?.length) return agent.warrantedAudiences().includes(audience);
+  if (typeof agent.warrantCovers === "function") return agent.warrantCovers(audience, want);
+  if (!agent.warrantedAudiences().includes(audience)) return false;
+  if (typeof agent.storedGrants !== "function") return true; // cannot tell; assume held
+  const entry = agent.storedGrants().find((g) => g.audience === audience);
+  const held = entry ? warrantScopes(entry.grant) : null;
+  if (!held) return true; // unreadable: do not nag on every write
+  return want.every((w) => held.some((h) => scopeEntryEq(h, w)));
+}
+
+/** The `scopes` claim of a stored `warrant~config_cert`, or null if unreadable. */
+function warrantScopes(grant) {
+  try {
+    const jwt = String(grant).split("~")[0];
+    const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
+    return Array.isArray(claims.scopes) ? claims.scopes : null;
+  } catch {
+    return null;
+  }
 }
 
 export function deriveObligations(obligations, { evidence = [], lock = false, head, parties = {}, roles = {}, responseWindow = DEFAULT_RESPONSE_WINDOW } = {}) {
