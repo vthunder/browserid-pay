@@ -68,7 +68,9 @@ observed in production.
    The agreements packages are not on npm yet, so run the MCP server from
    this checkout — `demo/setup-clients.sh ~/pay-clients` writes one client
    directory per agent (wallet + agreements + relay tools, per-agent state,
-   role prompts, tool permissions), defaulting to alice, bob and carl. Each
+   tool permissions, and `docs/AGENT-CLAUDE.md` as the agent's CLAUDE.md —
+   the same file we'd recommend to anyone starting out), defaulting to
+   alice, bob and carl. Each
    agent is `name` or `name:email`; a bare name becomes a plus-address on the
    operator's account, so give any agent that must build REPUTATION its own
    address on a separate account:
@@ -185,7 +187,9 @@ controlling account, so their agreements with each other count for nothing
 in the score (the indexer ignores same-account pairs) and bob's live score
 stays near the floor. That is what carl is for: provisioned against a
 genuinely separate email, an agreement between carl and bob is the first one
-on the live chain that can move a reputation at all. Check it first at
+on the live chain that can move a reputation at all. The agents are NOT told
+about each other: nothing in their CLAUDE.md names a counterparty, so they
+have to find one through the forum the way a real agent would. Check it first at
 <https://index.dsp.fyi/v1/reputation?subject=danmills+bob@sandmill.org>
 and pick a threshold at or below it; a threshold above it is the negative
 case (bob's `accept` is refused with `reputation_below_minimum`). In local
