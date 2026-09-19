@@ -1,47 +1,46 @@
 #!/bin/bash
 # Create a Claude Code client directory per agent for the live run.
-#
-#   demo/setup-clients.sh [target-dir] [agent ...]
-#
-#   demo/setup-clients.sh                          # alice bob carl
-#   demo/setup-clients.sh dave erin                # into demo/clients
-#   demo/setup-clients.sh ~/pay-clients alice bob carl dave
-#
-# Add as many agents as you like. The first argument is the target directory
-# only if it looks like a path; otherwise it is an agent name. An agent is
-# just a directory name — its IDENTITY comes from provisioning, when a human
-# approves it against whichever email they sign in with, and nothing here
-# needs to know that address in advance.
-#
-# Which email you approve each one against does matter for REPUTATION, though:
-# the indexer scores agreements between agents delegated by the same human at
-# nothing. alice and bob on plus-addresses of one account exercise the
-# mechanics; an agent approved against a genuinely separate account is the
-# only way to move a score.
-#
-# Each directory gets a .mcp.json wiring the browserid wallet and the
-# agreements MCP server (run from THIS checkout) with per-agent state under
-# <dir>/state, and a CLAUDE.md with the agent's role. Then, one terminal each:
-#
-#   cd <target>/alice && claude
-#   cd <target>/bob   && claude
-#   cd <target>/carl  && claude
-#
-# Re-running is safe: it rewrites .mcp.json / CLAUDE.md / settings.json and
-# leaves <dir>/state alone, so an already-provisioned agent keeps its identity.
+# Run with no arguments for usage.
 #
 # Prerequisites on the machine running this: node 18+, `claude`, and
 # `npm install` done in sdk/agreements and sdk/agreements-mcp.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The first argument is the target directory only when it LOOKS like a path.
-# Otherwise every argument is an agent name — `setup-clients.sh alice bob` used
-# to create a directory called `alice` and put bob inside it, without complaint.
-DEST="$ROOT/demo/clients"
-case "${1-}" in
-  */*|.|..|~*) DEST="$1"; shift ;;
-esac
+usage() {
+  cat <<USAGE
+Create a Claude Code client directory per agent.
+
+  demo/setup-clients.sh <target-dir> [agent ...]
+
+  <target-dir>   where the client directories go; created if missing
+  [agent ...]    one directory name per agent (default: alice bob carl)
+
+Examples:
+  demo/setup-clients.sh ~/pay-clients
+  demo/setup-clients.sh ~/pay-clients alice bob carl dave
+
+Each directory gets a .mcp.json (browserid wallet + agreements server from
+this checkout), per-agent state, tool permissions, and docs/AGENT-CLAUDE.md
+as its CLAUDE.md. Then, one terminal each:
+
+  cd <target-dir>/alice && claude
+
+An agent is just a directory name. Its IDENTITY comes from provisioning, when
+a human approves it against whichever email they sign in with — nothing here
+needs to know that address in advance. Which email you approve each one
+against does matter for REPUTATION: the indexer scores agreements between
+agents delegated by the same human at nothing, so an agent that must build a
+track record needs its own account.
+
+Re-running is safe: it rewrites .mcp.json / CLAUDE.md / settings.json and
+leaves <dir>/state alone, so an already-provisioned agent keeps its identity.
+USAGE
+}
+[ $# -gt 0 ] || { usage; exit 0; }
+case "$1" in -h|--help) usage; exit 0 ;; esac
+
+DEST="$1"; shift
 AGENTS=("$@"); [ ${#AGENTS[@]} -gt 0 ] || AGENTS=(alice bob carl)
 for who in "${AGENTS[@]}"; do
   case "$who" in
