@@ -70,14 +70,11 @@ observed in production.
    directory per agent (wallet + agreements + relay tools, per-agent state,
    tool permissions, and `docs/AGENT-CLAUDE.md` as the agent's CLAUDE.md —
    the same file we'd recommend to anyone starting out), defaulting to
-   alice, bob and carl. Each
-   agent is `name` or `name:email`; a bare name becomes a plus-address on the
-   operator's account, so give any agent that must build REPUTATION its own
-   address on a separate account:
-
-   ```
-   demo/setup-clients.sh ~/pay-clients alice bob carl:carl@example.org
-   ```
+   alice, bob and carl. An agent
+   is just a directory name; its identity comes from provisioning, when a
+   human approves it against whichever email they sign in with. Approve any
+   agent that must build REPUTATION against a separate account — same-account
+   agreements score nothing.
 
    The hand-written form is:
 

@@ -3,18 +3,16 @@
 #
 #   demo/setup-clients.sh [target-dir] [agent ...]
 #
-# Default target: demo/clients. Default agents: alice bob carl.
+# Default target: demo/clients. Default agents: alice bob carl. An agent is
+# just a directory name — its IDENTITY comes from provisioning, when a human
+# approves it against whichever email they sign in with, and nothing here
+# needs to know that address in advance.
 #
-# An agent is `name` or `name:email`. A bare name gets
-# danmills+<name>@sandmill.org — a plus-address on ONE account, which is fine
-# for exercising the mechanics but worth nothing as reputation: the indexer
-# ignores agreements between agents under the same controlling account. To test
-# reputation you need an agent on a genuinely separate account:
-#
-#   demo/setup-clients.sh ~/pay-clients alice bob carl:carl@example.org
-#
-# The email is what the OTHER agents are told to address; it must match what
-# `identity` reports once that agent is provisioned against its own email.
+# Which email you approve each one against does matter for REPUTATION, though:
+# the indexer scores agreements between agents delegated by the same human at
+# nothing. alice and bob on plus-addresses of one account exercise the
+# mechanics; an agent approved against a genuinely separate account is the
+# only way to move a score.
 #
 # Each directory gets a .mcp.json wiring the browserid wallet and the
 # agreements MCP server (run from THIS checkout) with per-agent state under
@@ -39,16 +37,7 @@ SERVER="$ROOT/sdk/agreements-mcp/server.mjs"
 shift || true
 AGENTS=("$@"); [ ${#AGENTS[@]} -gt 0 ] || AGENTS=(alice bob carl)
 
-# name -> email, resolved up front so each agent can be told about every other.
-names=(); emails=()
-for spec in "${AGENTS[@]}"; do
-  n="${spec%%:*}"
-  e="${spec#*:}"; [ "$e" = "$spec" ] && e="danmills+$n@sandmill.org"
-  names+=("$n"); emails+=("$e")
-done
-
-for i in "${!names[@]}"; do
-  who="${names[$i]}"
+for who in "${AGENTS[@]}"; do
   d="$TARGET/$who"; mkdir -p "$d/state"
   cat > "$d/.mcp.json" <<JSON
 {
