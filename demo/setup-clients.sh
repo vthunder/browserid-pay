@@ -1,14 +1,31 @@
 #!/bin/bash
-# Create two Claude Code client directories (alice, bob) for the live run.
+# Create a Claude Code client directory per agent for the live run.
 #
-#   demo/setup-clients.sh [target-dir]      (default: demo/clients)
+#   demo/setup-clients.sh [target-dir] [agent ...]
+#
+# Default target: demo/clients. Default agents: alice bob carl.
+#
+# An agent is `name` or `name:email`. A bare name gets
+# danmills+<name>@sandmill.org — a plus-address on ONE account, which is fine
+# for exercising the mechanics but worth nothing as reputation: the indexer
+# ignores agreements between agents under the same controlling account. To test
+# reputation you need an agent on a genuinely separate account:
+#
+#   demo/setup-clients.sh ~/pay-clients alice bob carl:carl@example.org
+#
+# The email is what the OTHER agents are told to address; it must match what
+# `identity` reports once that agent is provisioned against its own email.
 #
 # Each directory gets a .mcp.json wiring the browserid wallet and the
 # agreements MCP server (run from THIS checkout) with per-agent state under
-# <dir>/state, and a CLAUDE.md with the agent's role. Then, in two terminals:
+# <dir>/state, and a CLAUDE.md with the agent's role. Then, one terminal each:
 #
 #   cd <target>/alice && claude
 #   cd <target>/bob   && claude
+#   cd <target>/carl  && claude
+#
+# Re-running is safe: it rewrites .mcp.json / CLAUDE.md / settings.json and
+# leaves <dir>/state alone, so an already-provisioned agent keeps its identity.
 #
 # Prerequisites on the machine running this: node 18+, `claude`, and
 # `npm install` done in sdk/agreements and sdk/agreements-mcp.
@@ -19,7 +36,19 @@ SERVER="$ROOT/sdk/agreements-mcp/server.mjs"
 [ -f "$ROOT/sdk/agreements-mcp/node_modules/.package-lock.json" ] || (cd "$ROOT/sdk/agreements-mcp" && npm install --silent)
 [ -f "$ROOT/sdk/agreements/node_modules/.package-lock.json" ] || (cd "$ROOT/sdk/agreements" && npm install --silent)
 
-for who in alice bob; do
+shift || true
+AGENTS=("$@"); [ ${#AGENTS[@]} -gt 0 ] || AGENTS=(alice bob carl)
+
+# name -> email, resolved up front so each agent can be told about every other.
+names=(); emails=()
+for spec in "${AGENTS[@]}"; do
+  n="${spec%%:*}"
+  e="${spec#*:}"; [ "$e" = "$spec" ] && e="danmills+$n@sandmill.org"
+  names+=("$n"); emails+=("$e")
+done
+
+for i in "${!names[@]}"; do
+  who="${names[$i]}"
   d="$TARGET/$who"; mkdir -p "$d/state"
   cat > "$d/.mcp.json" <<JSON
 {
@@ -42,7 +71,12 @@ JSON
   cat > "$d/.claude/settings.json" <<JSON
 { "permissions": { "allow": ["mcp__agreements__*", "mcp__browserid__*"] } }
 JSON
-  other=$([ "$who" = alice ] && echo bob || echo alice)
+  # Every other agent, as a markdown list for the peers section.
+  peers=""
+  for j in "${!names[@]}"; do
+    [ "$j" = "$i" ] && continue
+    peers+="  - ${names[$j]}'s agent: \`${emails[$j]}\`"$'\n'
+  done
   cat > "$d/CLAUDE.md" <<MD
 # You are ${who}'s agent
 
@@ -84,7 +118,7 @@ human you have set it up. Never poll a few times and stop — set the loop.
 
 **Ask for standing consent once, instead of a card per agreement.** If the
 human describes ongoing or repeated dealings ("monitor for proposals", "any
-agreement with ${other}", "up to \$200 a month"), call
+agreement with a named agent", "up to \$200 a month"), call
 \`request_standing_consent\` BEFORE the first proposal or acceptance. One card
 then covers every agreement that fits and the rest need no approval at all.
 Say plainly how broad it is before they approve. A single deal the standing
@@ -125,12 +159,18 @@ Rules:
   approval link, code and fingerprint; wait until it reports approved.
 - Whenever a tool returns an APPROVE_URL, show it to the human verbatim and
   wait for them to say it is approved before continuing.
-- The other party is ${other}'s agent, reachable at
-  danmills+${other}@sandmill.org (adjust if \`identity\` shows a different
-  domain). Talk to it directly: \`send_message\` to hand over an agreement id
-  and the terms JSON or to negotiate, and \`check_messages\` when
-  \`next_step\` tells you to. Waiting is the loop’s job, not a burst of polls.
-  Messages are not evidence; only ledger objects are.
+- The other agents you can deal with:
+${peers}  Addresses come from this setup, so check \`identity\` if one bounces.
+  Talk to them directly: \`send_message\` to hand over an agreement id and the
+  terms JSON or to negotiate, and \`check_messages\` when \`next_step\` tells
+  you to. Waiting is the loop’s job, not a burst of polls. Messages are not
+  evidence; only ledger objects are.
+- Some of these agents act for the SAME human as you (plus-addresses on one
+  account); others act for a different human entirely. Agreements between
+  agents of the same account are real agreements, but the indexer scores them
+  at nothing — only a counterparty on a separate account builds reputation.
+  This changes who is worth dealing with, never how you deal with them:
+  the same care, evidence and honesty apply to every counterparty.
 - If \`agreement_status\` shows a dispute against you (\`dispute.you_must_respond\`),
   call \`respond\` with reveal=true right away, before \`dispute.respond_by_block\` (a BLOCK HEIGHT, not a clock time):
   it opens your delivery commitments so the judge sees the actual content.

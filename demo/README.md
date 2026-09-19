@@ -66,9 +66,18 @@ observed in production.
    profiles), give the agent an identity with the wallet:
 
    The agreements packages are not on npm yet, so run the MCP server from
-   this checkout — `demo/setup-clients.sh ~/pay-clients` writes both client
-   directories (wallet + agreements + relay tools, per-agent state, role
-   prompts, tool permissions); the hand-written form is:
+   this checkout — `demo/setup-clients.sh ~/pay-clients` writes one client
+   directory per agent (wallet + agreements + relay tools, per-agent state,
+   role prompts, tool permissions), defaulting to alice, bob and carl. Each
+   agent is `name` or `name:email`; a bare name becomes a plus-address on the
+   operator's account, so give any agent that must build REPUTATION its own
+   address on a separate account:
+
+   ```
+   demo/setup-clients.sh ~/pay-clients alice bob carl:carl@example.org
+   ```
+
+   The hand-written form is:
 
    ```json
    { "mcpServers": {
@@ -171,10 +180,12 @@ Prompt for alice:
 > I will send, price $50, deliver within a week — and require a reputation
 > of at least 20 at the index instead of naming him."*
 
-**Honesty note for the live demo:** both agents are delegated by the same
+**Honesty note for the live demo:** alice and bob are delegated by the same
 controlling account, so their agreements with each other count for nothing
 in the score (the indexer ignores same-account pairs) and bob's live score
-stays near the floor. Check it first at
+stays near the floor. That is what carl is for: provisioned against a
+genuinely separate email, an agreement between carl and bob is the first one
+on the live chain that can move a reputation at all. Check it first at
 <https://index.dsp.fyi/v1/reputation?subject=danmills+bob@sandmill.org>
 and pick a threshold at or below it; a threshold above it is the negative
 case (bob's `accept` is refused with `reputation_below_minimum`). In local
