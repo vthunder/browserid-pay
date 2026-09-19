@@ -528,8 +528,11 @@ export class Agreements {
   }
 
   /** Post a delivery: `{ content }` (hashed, or included when `public`) and/or `{ commitment }`, plus `note`. */
-  async deliver(id, { content, commitment: com, note, public: pub } = {}) {
+  async deliver(id, { content, commitment: com, note, public: pub, obligation } = {}) {
     const extra = { note };
+    // Which deliverable this is for. Untagged is fine when the party owes one;
+    // with several it must say, or only the first is answered.
+    if (obligation !== undefined) extra.obligation = obligation;
     if (content !== undefined) {
       extra.commitment = "sha256:" + sha256hex(Buffer.from(typeof content === "string" ? content : canonicalize(content)));
       if (pub) extra.content = content;
@@ -1281,7 +1284,19 @@ export function deriveObligations(obligations, { evidence = [], lock = false, he
     const rank = (e) => [e.block ?? Number.MAX_SAFE_INTEGER, e.seq];
     const ordered = evidence.map((e, seq) => ({ ...e, seq }))
       .sort((a, b) => { const [x1, y1] = rank(a), [x2, y2] = rank(b); return x1 !== x2 ? x1 - x2 : y1 - y2; });
-    const mine = (e) => e.kind === "delivery" && (o.by === undefined || e.by === o.by);
+    // WHICH obligation a delivery is for. A delivery may tag itself
+    // (`obligation: i`), exactly as a handoff does. An UNTAGGED delivery used
+    // to count for every deliverable the same party owed — so one delivery
+    // against a two-milestone agreement marked both met, including the final
+    // one, and the payer's only ways out were to pay for work not yet done or
+    // to post a `not_met` that was not true (browserid-pay-07w7). An untagged
+    // delivery now counts for the party's FIRST deliverable only; later
+    // milestones need their own, and a re-delivery still re-anchors the one it
+    // belongs to.
+    const firstDeliverableOf = (by) =>
+      obligations.findIndex((x) => (x.kind || "deliverable") === "deliverable" && (by === undefined || x.by === by));
+    const mine = (e) => e.kind === "delivery" && (o.by === undefined || e.by === o.by)
+      && (e.obligation !== undefined ? e.obligation === o.index : o.index === firstDeliverableOf(o.by));
     const answers = (e) => e.kind === "acknowledgement" && e.by !== o.by;
     if (!ordered.some(mine)) return { met: false };
 

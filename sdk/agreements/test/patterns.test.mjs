@@ -222,3 +222,35 @@ test("an unconfirmed write has not landed and meets nothing", () => {
   assert.notEqual(s[0].state, "met", "a receipt that has not landed does not meet the obligation");
   assert.equal(s[0].met_at_block, null);
 });
+
+test("one delivery answers ONE milestone, not every deliverable the party owes", () => {
+  // Carl's live case: two deliverables, one delivery. It used to mark BOTH met
+  // — including the final one — leaving the payer a choice between paying for
+  // work not yet done and posting a `not_met` that was not true.
+  const obligations = [
+    { by: "carl", what: "three concepts", deadline_block: 2000, kind: "deliverable" },
+    { by: "carl", what: "final mark", deadline_block: 4000, kind: "deliverable" },
+  ];
+  const parties = { proposer: "alice", acceptor: "carl" };
+  const first = [{ id: "d1", kind: "delivery", by: "carl", block: 1900, commitment: "sha256:a" }];
+
+  let s = deriveObligations(obligations, { evidence: first, lock: true, head: 1950, parties });
+  assert.equal(s[0].state, "delivered", "the first milestone is answered");
+  assert.equal(s[1].state, "pending", "the final mark is NOT delivered by someone else's commitment");
+
+  // Accepting milestone 1 must not carry milestone 2 with it.
+  const acked = [...first, { id: "e1", kind: "acknowledgement", by: "alice", block: 1960, ok: true }];
+  s = deriveObligations(obligations, { evidence: acked, lock: true, head: 1970, parties });
+  assert.equal(s[0].state, "met");
+  assert.equal(s[1].state, "pending", "the final mark is still owed after the first is accepted");
+
+  // Tagging is what the ledger reads; the note is prose.
+  const tagged = [...acked, { id: "d2", kind: "delivery", by: "carl", block: 3900, obligation: 1, commitment: "sha256:b" }];
+  s = deriveObligations(obligations, { evidence: tagged, lock: true, head: 3950, parties });
+  assert.deepEqual(s.map((o) => o.state), ["met", "delivered"]);
+
+  // A single-deliverable agreement is untouched: no tag needed, no change.
+  const one = [{ by: "carl", what: "the logo", deadline_block: 2000, kind: "deliverable" }];
+  s = deriveObligations(one, { evidence: first, lock: true, head: 1950, parties });
+  assert.equal(s[0].state, "delivered");
+});

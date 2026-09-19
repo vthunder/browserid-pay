@@ -238,8 +238,8 @@ server.registerTool("fund", {
 
 server.registerTool("deliver", {
   title: "Record a delivery",
-  description: "Post a delivery commitment (hash of `content`) as evidence; send the content itself to the counterparty off-chain unless `public`.",
-  inputSchema: { id: z.string(), content: z.any().optional(), commitment: z.string().optional(), note: z.string().optional(), public: z.boolean().optional() },
+  description: "Post a delivery commitment (hash of `content`) as evidence; send the content itself to the counterparty off-chain unless `public`. If you owe SEVERAL deliverables (milestones), pass `obligation` — the index in the terms — or only the first one is answered and the rest stay pending. Saying \"milestone 1 of 2\" in the note does not count: the note is prose, `obligation` is what the ledger reads.",
+  inputSchema: { id: z.string(), content: z.any().optional(), commitment: z.string().optional(), note: z.string().optional(), public: z.boolean().optional(), obligation: z.number().optional().describe("index of the deliverable obligation in the terms this delivery is for; required when you owe more than one") },
 }, ({ id, ...o }) => run((a) => a.deliver(id, o)));
 
 server.registerTool("settle", {
