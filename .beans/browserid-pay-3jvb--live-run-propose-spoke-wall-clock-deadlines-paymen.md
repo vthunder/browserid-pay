@@ -5,7 +5,7 @@ status: todo
 type: bug
 priority: high
 created_at: 2026-09-18T21:21:28Z
-updated_at: 2026-09-18T21:21:28Z
+updated_at: 2026-09-20T08:09:45Z
 ---
 
 Found by the first live run on 506 (2026-09-18), by the agents themselves — bob refused to accept terms he judged defective, and alice then could not express the fix. Both diagnoses were correct.
@@ -42,8 +42,10 @@ Alice ran `next_step` on a 60s loop and **never noticed bob's counter-offer**. S
 
 `next_step` drives the agreement lifecycle off chain state; an inbound relay message is not chain state, so it is invisible. For a proposal awaiting a counterparty, "they replied" is the single most important next action.
 
-- [ ] `next_step` should check for unread relay messages and surface them
-- [ ] a proposal in `proposed` with an unread message from the acceptor should recommend reading it, not waiting
+- [x] `next_step` should check for unread relay messages and surface them
+- [x] a proposal in `proposed` with an unread message from the acceptor should recommend reading it, not waiting
+
+Done: `peekMessages` reads `/api/receive` at the cursor WITHOUT advancing it, so next_step stays read-only. Chain work still wins (money is committed); a message becomes the action only when `action: "none"`, and otherwise rides along as `unread_messages`.
 
 ## 4. FIXED: the relay cursor was collateral damage from clearing old terms
 

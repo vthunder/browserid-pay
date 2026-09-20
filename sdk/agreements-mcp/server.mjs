@@ -16,7 +16,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { DeviceAgent } from "@browserid-ng/agent";
-import { Agreements, DaemonChain, windowBlocks, forum, agreementRef, endorsesRef, DEFAULT_COMMUNITY } from "@browserid-ng/agreements";
+import { Agreements, DaemonChain, windowBlocks, forum, agreementRef, endorsesRef, DEFAULT_COMMUNITY, CHAIN_SCOPES } from "@browserid-ng/agreements";
 
 const IDENTITY = process.env.AGREEMENTS_IDENTITY || join(homedir(), ".browserid-wallet", "identity.json");
 const TERMS_DIR = process.env.AGREEMENTS_TERMS_DIR || join(homedir(), ".browserid-agreements");
@@ -148,7 +148,7 @@ const WORKFLOW = `Agreements on the browserid-pay ledger: propose → accept →
 How to work:
 - Record what the human wants with \`add_goal\` as soon as they say it, BEFORE proposing anything. A goal is local, persists across restarts, and is what lets you pick the thread back up on the next tick. Several run in parallel. An ERRAND — something you set out to get done — has a pipeline: sourcing (nobody to ask yet) → ready (counterparty and terms known) → running (an agreement exists) → done. When the human instead asks you to WATCH for work and take it on, register an INBOUND goal (\`kind: \"inbound\"\`) with \`accept_if\` and \`escalate_if\` in their words. It is a standing policy, not an errand: nothing to source, nothing to propose, never finished. Its criteria come back attached to every \`accept\` decision as \`policy\`, so judge the offer against them — and escalate rather than accept when it matches \`escalate_if\`. Do not force a standing policy into an errand by inventing a counterparty for it. Keep it current with \`update_goal\` the moment something is decided, rather than holding it in your head — the workflow reads the goal, not your memory.
 - Call \`next_step\` to learn the single next thing to do, then do that ONE thing and stop. Do not chain several steps in one go; the other party has to move in between, and approvals interrupt.
-- \`next_step\` is read-only and never consumes messages. When it answers \`check_messages\`, call that tool — the full terms an acceptor needs arrive off-chain, not on the ledger.
+- \`next_step\` is read-only and never consumes messages. It DOES look for waiting messages: when nothing on chain is actionable and a message is unread, it answers \`check_messages\`; when there is chain work to do it does that first and reports the unread count in \`unread_messages\`. Either way \`check_messages\` is what actually reads them — the full terms an acceptor needs arrive off-chain, not on the ledger.
 - \`action: "none"\` is a normal answer. It means wait; say so and stop.
 - A tool that needs the human returns an APPROVAL link. Show the human the link verbatim and stop. Calling the SAME tool again with the SAME arguments after they approve resumes it — it does not start over or mint a new agreement.
 - A delivery COMMITMENT is not a delivery. Posting one starts the recipient's response window: they accept (releasing the escrow), refuse with \`not_received\` if nothing arrived, or refuse with \`not_met\` if it did but is wrong. \`response_due_block\` is a BLOCK HEIGHT — the agreement's own deadline, pulled IN when the delivery was early — its purpose is to let a deliverer who finished early be paid early, not to give the recipient extra time. Saying nothing past it does NOT settle anything: the escrow stays locked, the obligation goes \`unanswered\`, and the only way out is the adjudicator. So answer in time — and if you delivered, actually SEND the content, because a commitment only proves it exists, never that they got it. The two refusals differ. \`not_received\` buys NO time: the deliverer may send again, but the clock does not move, so repeating it cannot stall. \`not_met\` admits the work arrived and argues about the work — and if the deliverer concedes by delivering again, the clock re-anchors to that new attempt, though never past the agreement's own deadline. Nothing in this protocol pays anyone for the other side going quiet.\n\nAnything that must count later goes through the evidence tools (\`handoff\`, \`acknowledge_receipt\`, \`deliver\`, \`respond\`). A relay message is not evidence.
@@ -341,7 +341,27 @@ server.registerTool("next_step", {
       then: "call the browserid wallet's `provision` tool, show the human the approval link it prints, and stop; once they approve, this workflow continues on the next pass",
     }, null, 2));
   }
-  return run((a) => a.nextStep());
+  return run(async (a) => {
+    const step = await a.nextStep();
+    // An inbound message is not chain state, so nextStep() cannot see it — and
+    // a proposal sitting in `proposed` with the counterparty's reply unread
+    // looked exactly like one waiting on someone else. Alice ran a 60s loop
+    // through bob's entire counter-offer without noticing it (3jvb §3).
+    // Peek WITHOUT advancing the cursor: this tool promises to be read-only,
+    // and check_messages is still what consumes.
+    const unread = await peekMessages(a).catch(() => null);
+    if (!unread?.length) return step;
+    const from = [...new Set(unread.map((m) => m.from))];
+    // A message never preempts work with money committed to it — it is added
+    // to that answer instead. It only becomes the action when nothing else is.
+    if (step.action !== "none") return { ...step, unread_messages: { count: unread.length, from } };
+    return {
+      action: "check_messages",
+      why: `${unread.length} unread message${unread.length === 1 ? "" : "s"} from ${from.join(", ")}`,
+      then: "read them, then call next_step again — a reply may be what unblocks this",
+      was_waiting: step.also_waiting ?? [],
+    };
+  });
 });
 
 server.registerTool("agreement_status", {
@@ -384,7 +404,11 @@ async function relayCall(a, route, body) {
     // One card: the relay grant plus the standing ledger-write grant if it is
     // not held yet (a first-time agent usually checks messages before it accepts).
     const grants = [{ audience: RELAY, scopes: ["message"] }];
-    if (!a.agent.warrantedAudiences().includes(a.repo)) grants.push({ audience: a.repo, scopes: ["action:post", "path:/agreements/**", `path:/${a.email}/**`] });
+    // Use the SDK's own scope list. Spelling them out here meant this copy
+    // still asked for `/<email>/**`, which the `/u/` namespace move retired —
+    // so an agent that checked messages before it held a ledger grant got a
+    // warrant that could not write its own attestations.
+    if (!a.agent.warrantedAudiences().includes(a.repo)) grants.push({ audience: a.repo, scopes: CHAIN_SCOPES(a.email) });
     await a.obtainWarrants(grants);
   }
   const presentation = await a.agent.assertionFor(RELAY);
@@ -461,6 +485,13 @@ server.registerTool("forum_read", {
     posts,
   };
 }));
+
+// Read-only view of what is waiting: the same fetch check_messages does, with
+// the cursor left alone. Used by next_step, which must not consume.
+async function peekMessages(a) {
+  const j = await relayCall(a, "/api/receive", { since: readCursor() });
+  return j.messages || [];
+}
 
 server.registerTool("check_messages", {
   title: "Check for messages from other agents",

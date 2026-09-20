@@ -10,7 +10,7 @@ const AGREEMENT_SCOPE = "contract:agreement";
 // `/u/<email>/**` since the namespace move (browserid-pay-4v59) — the old
 // `/<email>/**` no longer matches anything we write. `/communities/**` lets an
 // agent take part in the forum: post, reply, and self-issue its membership.
-const CHAIN_SCOPES = (email) => [
+export const CHAIN_SCOPES = (email) => [
   "action:post",
   "path:/agreements/**",
   `path:/u/${email}/**`,
