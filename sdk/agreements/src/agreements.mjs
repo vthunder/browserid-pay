@@ -872,7 +872,7 @@ export class Agreements {
     // 1. Agreements already running: real money is committed to these.
     for (const { id, st } of open) {
       const step = await this.#stepFor(id, st).catch((e) => ({ action: "none", why: `could not read ${id}: ${e.message}` }));
-      if (step.action !== "none") return { agreement: id, ...decorate(step), ...(waiting.length ? { also_waiting: waiting } : {}) };
+      if (step.action !== "none") return { agreement: id, ...decorate(step), ...(await this.#quiet(open)), ...(waiting.length ? { also_waiting: waiting } : {}) };
       waiting.push({ agreement: id, stage: st.stage, why: step.why });
     }
     // 2. Errands not yet attached to an agreement. A standing policy is never
@@ -881,10 +881,46 @@ export class Agreements {
     for (const g of this.listGoals()) {
       if (g.kind === "inbound" || g.state === "running" || g.agreement) continue;
       const step = this.#stepForGoal(g);
-      if (step.action !== "none") return { goal: g.id, ...step, ...(waiting.length ? { also_waiting: waiting } : {}) };
+      if (step.action !== "none") return { goal: g.id, ...step, ...(await this.#quiet(open)), ...(waiting.length ? { also_waiting: waiting } : {}) };
       waiting.push({ goal: g.id, state: g.state, why: step.why });
     }
-    return { action: "none", why: waiting.length ? "everything is waiting on someone else" : "no goals and no open agreements", ...(waiting.length ? { also_waiting: waiting } : {}) };
+    return { action: "none", why: waiting.length ? "everything is waiting on someone else" : "no goals and no open agreements", ...(await this.#quiet(open)), ...(waiting.length ? { also_waiting: waiting } : {}) };
+  }
+
+  /** `quiet_until_block` plus the head it is measured against, for an answer. */
+  async #quiet(open) {
+    const until = await this.quietUntilBlock(open).catch(() => null);
+    if (until == null) return {};
+    const head = await this.chain.head().catch(() => null);
+    return { quiet_until_block: until, ...(Number.isFinite(head) ? { head_block: head, blocks_of_room: Math.max(0, until - head) } : {}) };
+  }
+
+  /**
+   * The nearest block height at which something of mine needs attention:
+   * an obligation's deadline, a delivery's response window, a dispute's
+   * respond-by. `null` when nothing is pending at all.
+   *
+   * This is what lets an agent decide whether it can afford to go and do the
+   * work. Without it, "this render takes ten minutes" is a gamble against
+   * deadlines it cannot see — and it is also the right ceiling for how long
+   * to sleep: never past the next thing that matters.
+   */
+  async quietUntilBlock(open) {
+    const ids = open ?? (await this.mine().catch(() => []));
+    const blocks = [];
+    for (const entry of ids) {
+      const id = typeof entry === "string" ? entry : entry.id;
+      const st = typeof entry === "string" ? await this.status(id).catch(() => null) : entry.st;
+      if (!st || ["settled", "ruled"].includes(st.stage)) continue;
+      if (Number.isFinite(st.dispute?.respond_by_block)) blocks.push(st.dispute.respond_by_block);
+      if (Number.isFinite(st.proposal?.expires_block) && st.stage === "proposed") blocks.push(st.proposal.expires_block);
+      for (const o of st.obligations || []) {
+        if (["met", "unanswered"].includes(o.state)) continue;
+        if (Number.isFinite(o.response_due_block)) blocks.push(o.response_due_block);
+        if (Number.isFinite(o.effective_deadline_block)) blocks.push(o.effective_deadline_block);
+      }
+    }
+    return blocks.length ? Math.min(...blocks) : null;
   }
 
   /**

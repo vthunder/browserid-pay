@@ -2,7 +2,8 @@
 //!
 //! `POST /api/send    { presentation, to, body }` — deliver `body` to the
 //! identity `to`, from the caller's ACTING identity (the warrant grantee).
-//! `POST /api/receive { presentation, since? }` — the caller's messages
+//! `POST /api/receive { presentation, since?, wait? }` — the caller's messages;
+//! `wait` (seconds, capped at 30) holds the request open until one arrives
 //! (addressed to its acting identity), oldest first, after `since` (a message
 //! id). Messages are plain text, size-capped, and expire after a few days.
 //! Chat is not evidence: anything that must count later goes on the chain.
@@ -26,7 +27,9 @@ use config::Config;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 const MAX_BODY: usize = 16 * 1024;
 const TTL_SECS: i64 = 3 * 24 * 3600;
@@ -40,6 +43,25 @@ struct App {
     cfg: Arc<Config>,
     db: Arc<Mutex<Connection>>,
     verify: Arc<verify::Verify>,
+    /// One `Notify` per mailbox, so a waiting `receive` wakes the instant
+    /// something is delivered to it instead of on the next poll. Purely an
+    /// optimisation: every waiter re-queries the database and also wakes on a
+    /// timeout, so a missed notification costs latency, never a message.
+    waiters: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+}
+
+/// Longest a `receive` may be held open. Kept well under the usual 60s proxy
+/// idle timeout: a poll that dies in transit looks like a network error to
+/// the agent, which is worse than returning empty.
+const MAX_WAIT_SECS: u64 = 30;
+
+impl App {
+    fn mailbox(&self, who: &str) -> Arc<Notify> {
+        let mut w = self.waiters.lock().expect("waiters");
+        // Bound the map: mailboxes are created by anyone who calls receive.
+        if w.len() > 10_000 { w.clear(); }
+        Arc::clone(w.entry(who.to_string()).or_insert_with(|| Arc::new(Notify::new())))
+    }
 }
 
 pub fn schema(c: &Connection) -> anyhow::Result<()> {
@@ -141,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let conn = Connection::open(&cfg.database_path)?;
     schema(&conn)?;
-    let app = App { cfg: Arc::new(cfg.clone()), db: Arc::new(Mutex::new(conn)), verify: Arc::new(verify::Verify::new(&cfg)?) };
+    let app = App { cfg: Arc::new(cfg.clone()), db: Arc::new(Mutex::new(conn)), verify: Arc::new(verify::Verify::new(&cfg)?), waiters: Default::default() };
     let router = Router::new()
         .route("/", get(index))
         .route("/healthz", get(|| async { "ok" }))
@@ -164,7 +186,7 @@ async fn index(State(app): State<App>) -> Html<String> {
          <h1>relay.dsp.fyi</h1><p>A mailbox for agents. Messages are addressed by identity and authenticated with browserid \
          presentations for <code>{}</code> (scope <code>message</code>). Plain text, {} KB max, kept {} days. \
          Chat is not evidence — anything that must count later goes on the ledger.</p>\
-         <p><code>POST /api/send {{ presentation, to, body }}</code> · <code>POST /api/receive {{ presentation, since? }}</code></p>",
+         <p><code>POST /api/send {{ presentation, to, body }}</code> · <code>POST /api/receive {{ presentation, since?, wait? }}</code></p>",
         app.cfg.origin, MAX_BODY / 1024, TTL_SECS / 86400
     ))
 }
@@ -181,6 +203,10 @@ struct ReceiveBody {
     presentation: String,
     #[serde(default)]
     since: Option<i64>,
+    /// Seconds to hold the request open when there is nothing yet, capped at
+    /// `MAX_WAIT_SECS`. Absent or 0 keeps the old behaviour: answer at once.
+    #[serde(default)]
+    wait: Option<u64>,
 }
 
 fn unauthorized(e: String) -> Response {
@@ -203,7 +229,11 @@ async fn api_send(State(app): State<App>, Json(b): Json<SendBody>) -> Response {
     }
     let res = { let c = app.db.lock().expect("db"); send(&c, &v.grantee, &b.to, &b.body) };
     match res {
-        Ok(id) => Json(json!({ "id": id, "from": v.grantee, "to": norm(&b.to), "at": now() })).into_response(),
+        Ok(id) => {
+            // Wake anyone holding a receive on that mailbox.
+            app.mailbox(&norm(&b.to)).notify_waiters();
+            Json(json!({ "id": id, "from": v.grantee, "to": norm(&b.to), "at": now() })).into_response()
+        }
         Err(SendError::RateLimited { retry_after_secs }) => (
             StatusCode::TOO_MANY_REQUESTS,
             [(axum::http::header::RETRY_AFTER, retry_after_secs.to_string())],
@@ -221,7 +251,31 @@ async fn api_receive(State(app): State<App>, Json(b): Json<ReceiveBody>) -> Resp
     if !v.scopes.iter().any(|s| s == "message") {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "no_grant", "detail": "warrant lacks the message scope" }))).into_response();
     }
-    let res = { let c = app.db.lock().expect("db"); receive(&c, &v.grantee, b.since.unwrap_or(0)) };
+    let since = b.since.unwrap_or(0);
+    let read = || -> anyhow::Result<Vec<serde_json::Value>> {
+        let c = app.db.lock().expect("db");
+        receive(&c, &v.grantee, since)
+    };
+    let mut res = read();
+    // Long poll. Subscribe BEFORE the final read so a message delivered while
+    // we were querying still wakes us rather than being missed until timeout.
+    if let Ok(msgs) = &res {
+        let wait = b.wait.unwrap_or(0).min(MAX_WAIT_SECS);
+        if msgs.is_empty() && wait > 0 {
+            let notify = app.mailbox(&v.grantee);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
+            loop {
+                let listener = notify.notified();
+                res = read();
+                match &res {
+                    Ok(m) if !m.is_empty() => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+                if tokio::time::timeout_at(deadline, listener).await.is_err() { break; }
+            }
+        }
+    }
     match res {
         Ok(msgs) => Json(json!({ "me": v.grantee, "messages": msgs })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
@@ -231,6 +285,39 @@ async fn api_receive(State(app): State<App>, Json(b): Json<ReceiveBody>) -> Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The long poll's own loop, exercised against the notify + db without the
+    /// HTTP layer: a message that arrives WHILE we are waiting must wake us,
+    /// not leave us until the timeout.
+    #[tokio::test]
+    async fn receive_wakes_on_delivery_rather_than_timing_out() {
+        let db = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        { let c = db.lock().unwrap(); schema(&c).unwrap(); }
+        let notify = Arc::new(Notify::new());
+        let started = tokio::time::Instant::now();
+
+        let writer = { let db = Arc::clone(&db); let n = Arc::clone(&notify);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                { let c = db.lock().unwrap(); send(&c, "alice@x.test", "bob@y.test", "wake up").unwrap(); }
+                n.notify_waiters();
+            })
+        };
+
+        // The same shape as api_receive: subscribe, then read, then await.
+        let deadline = started + std::time::Duration::from_secs(MAX_WAIT_SECS);
+        let msgs = loop {
+            let listener = notify.notified();
+            let got = { let c = db.lock().unwrap(); receive(&c, "bob@y.test", 0).unwrap() };
+            if !got.is_empty() { break got; }
+            if tokio::time::timeout_at(deadline, listener).await.is_err() { break vec![]; }
+        };
+        writer.await.unwrap();
+
+        assert_eq!(msgs.len(), 1, "the waiter was woken by the send");
+        assert_eq!(msgs[0]["body"], "wake up");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "returned on delivery, not on the {MAX_WAIT_SECS}s timeout");
+    }
 
     #[test]
     fn send_receive_since_and_normalization() {

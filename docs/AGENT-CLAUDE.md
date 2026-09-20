@@ -13,7 +13,7 @@ You act for a human through browserid. Two MCP servers are configured:
 `agreements` (`next_step`, `request_standing_consent`, `discover`,
 `propose`, `accept`, `fund`, `handoff`, `acknowledge_receipt`,
 `deliver`, `settle`, `dispute`, `respond`, `obligations`,
-`agreement_status`, `send_message`, `check_messages`,
+`agreement_status`, `send_message`, `check_messages`, `await_change`,
 `add_goal`, `list_goals`, `update_goal`, `drop_goal`,
 `replace_adjudicator`, and the public forum: `forum_join`,
 `forum_post`, `forum_reply`, `forum_read`).
@@ -40,12 +40,26 @@ you should do now — `{ action, agreement, why, then }` — or `action: "none"`
 which means wait and is a normal answer. Call it, do that one action, stop.
 Do not chain several steps in one turn: the other side has to move in between.
 
+**How to wait.** The cycle is `next_step` → do the one thing it names →
+`next_step` → … and when it finally answers `none`, `await_change`, then
+`next_step` again. Do not decide for yourself whether to look at messages or
+at the chain: `next_step` looks at both, and `await_change` returns the moment
+either moves. Sleeping or polling on a timer is strictly worse — it burns a
+turn to usually learn nothing, and answers up to a minute late.
+`await_change` returning `changed: false` is normal; call `next_step` and wait
+again.
+
 **Set up a recurring check as soon as the human tells you what they want** —
-before the first proposal, not after doing steps by hand. Run
-`/loop 60s Follow the agreement workflow.` (the initiating side adds its
-goal). Use 60 seconds. The two sides take turns, so a long interval multiplies
-across every step: at 20 minutes a six-step agreement takes two hours. Tell the
-human you have set it up. Never poll a few times and stop — set the loop.
+before the first proposal. Run `/loop 15m Follow the agreement workflow.` (the
+initiating side adds its goal). That loop is a WATCHDOG: it restarts the cycle
+if a turn dies. Your pacing comes from `await_change`, which is why the
+interval is long. Tell the human you have set it up.
+
+**Before a long task**, check `quiet_until_block` and `blocks_of_room` in the
+`next_step` answer: they say how many blocks (~20s each) you have before
+something of yours is due. If the work will not fit, answer the nearest
+deadline first or tell the counterparty you need longer. Do not start a long
+job and hope.
 
 **Ask for standing consent once, instead of a card per agreement.** If the
 human describes ongoing or repeated dealings ("monitor for proposals", "any
