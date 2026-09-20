@@ -68,6 +68,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/providers/:kind", get(providers))
         .route("/v1/contribution", get(contribution))
         .route("/v1/referencing", get(referencing))
+        .route("/v1/inbox", get(inbox))
+        .route("/v1/forum", get(forum_space))
         .route("/v1/reputation", get(reputation))
         .route("/v1/reputation/key", get(reputation_key))
         .with_state(app)
@@ -92,13 +94,17 @@ pub async fn poll_once(chain: &dyn Chain, index: &Index) -> anyhow::Result<State
     // Everything carrying a `Related` header, for the reverse index. Read by
     // SCHEMA rather than path so this is not tied to the forum: posts are the
     // first things to reference agreements, not the only possible ones.
-    let mut referencing: Vec<Obj> = Vec::new();
+    // Forum objects are read ONCE and used twice: everything carrying a
+    // `Related` header feeds the reverse index, and everything feeds the post
+    // index that answers "is anyone talking to me, and is there work here?".
+    let mut forum: Vec<Obj> = Vec::new();
     for schema in ["post.v1", "comment.v1"] {
-        referencing.extend(chain.list_schema(schema).await?.into_iter().filter(|o| !o.related.is_empty()));
+        forum.extend(chain.list_schema(schema).await?);
     }
-    index.rebuild_with_refs(&agreements, &attestations, &providers, contribution, &referencing, &root)?;
+    let referencing: Vec<Obj> = forum.iter().filter(|o| !o.related.is_empty()).cloned().collect();
+    index.rebuild_all(&agreements, &attestations, &providers, contribution, &referencing, &forum, &root)?;
     tracing::info!(block = root.block, agreements = agreements.len(), attestations = attestations.len(),
-        providers = providers.len(), refs = referencing.len(), "indexed");
+        providers = providers.len(), refs = referencing.len(), posts = forum.len(), "indexed");
     Ok(root)
 }
 
@@ -182,6 +188,56 @@ struct RefQ {
 async fn referencing(State(app): State<App>, Query(q): Query<RefQ>) -> Response {
     match app.index.referencing(&q.r#ref, q.rel.as_deref(), q.verified.unwrap_or(false)) {
         Ok(v) => Json(envelope(&app, json!({ "ref": q.r#ref, "referencing": v }), json!([]))).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct InboxQ {
+    subject: Option<String>,
+    #[serde(default)]
+    since_block: u64,
+}
+
+/// Everything addressed to one identity: replies under anything it wrote, and
+/// objects whose `Related` header names it. `since_block` is what makes this
+/// pollable — an agent asks only for what is new, and the answer carries the
+/// head it is current as of, to pass back next time.
+async fn inbox(State(app): State<App>, Query(q): Query<InboxQ>) -> Response {
+    let Some(subject) = q.subject.filter(|s| !s.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "subject (an identity) is required" }))).into_response();
+    };
+    match app.index.inbox(&subject, q.since_block) {
+        Ok((replies, references)) => Json(envelope(&app, json!({
+            "subject": subject,
+            "since_block": q.since_block,
+            "replies": replies,
+            "references": references,
+        }), json!([]))).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ForumQ {
+    space: Option<String>,
+    #[serde(default)]
+    since_block: u64,
+    #[serde(default)]
+    open: bool,
+    /// Who is asking, so each row can say whether they already replied.
+    me: Option<String>,
+    limit: Option<u32>,
+}
+
+/// Discovery: posts in a space, newest first. `open=true` keeps only those
+/// nobody has answered — on `needs`, that is the work still going begging.
+async fn forum_space(State(app): State<App>, Query(q): Query<ForumQ>) -> Response {
+    let space = q.space.unwrap_or_else(|| "needs".into());
+    match app.index.space_posts(&space, q.since_block, q.open, q.me.as_deref().unwrap_or(""), q.limit.unwrap_or(50)) {
+        Ok(posts) => Json(envelope(&app, json!({
+            "space": space, "since_block": q.since_block, "open_only": q.open, "posts": posts,
+        }), json!([]))).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -285,7 +341,7 @@ mod tests {
     }
 
     fn obj(path: &str, id: &str, block: u64, schema: Option<&str>, v: Value) -> Obj {
-        Obj { path: path.into(), id: id.into(), creator: "e".into(), content_schema: schema.map(String::from), block, object_hash: format!("h{block}"), value: Some(v), payload_text: String::new(), confirmed: true, related: vec![] }
+        Obj { path: path.into(), id: id.into(), creator: "e".into(), content_schema: schema.map(String::from), block, object_hash: format!("h{block}"), value: Some(v), payload_text: String::new(), confirmed: true, related: vec![], owner_ref: None }
     }
 
     #[tokio::test]

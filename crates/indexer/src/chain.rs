@@ -14,6 +14,11 @@ pub struct Obj {
     pub id: String,
     #[serde(default)]
     pub creator: String,
+    /// Who the daemon attributes the object to, when that differs from the
+    /// submitting key: forum posts written by an agent carry the agent's
+    /// identity here. Prefer it over `creator`, which may be a raw pubkey.
+    #[serde(default)]
+    pub owner_ref: Option<String>,
     #[serde(default)]
     pub content_schema: Option<String>,
     pub block: u64,

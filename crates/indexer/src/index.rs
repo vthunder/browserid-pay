@@ -149,6 +149,25 @@ impl Index {
                PRIMARY KEY (from_path, from_id, rel, ref)
              );
              CREATE INDEX IF NOT EXISTS refs_ref ON refs(ref, rel);
+             -- Forum posts and comments. The reverse index (refs) answers who
+             -- pointed at a thing; this answers what is being said and to whom,
+             -- which is what an agent needs to notice a reply to its own
+             -- thread, or a need it could serve.
+             DROP TABLE IF EXISTS posts;
+             CREATE TABLE IF NOT EXISTS posts (
+               path TEXT NOT NULL, id TEXT NOT NULL,
+               community TEXT NOT NULL, space TEXT NOT NULL,
+               kind TEXT NOT NULL,            -- post | comment
+               author TEXT NOT NULL,
+               parent TEXT,                   -- bare id of the post/comment answered
+               body TEXT NOT NULL,
+               block INTEGER NOT NULL, object_hash TEXT NOT NULL,
+               PRIMARY KEY (path, id)
+             );
+             CREATE INDEX IF NOT EXISTS posts_author ON posts(author);
+             CREATE INDEX IF NOT EXISTS posts_parent ON posts(parent);
+             CREATE INDEX IF NOT EXISTS posts_space ON posts(space, block DESC);
+
              CREATE TABLE IF NOT EXISTS providers (
                kind TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, block INTEGER NOT NULL, object_hash TEXT NOT NULL,
                PRIMARY KEY (kind, name)
@@ -171,6 +190,57 @@ impl Index {
     /// header, from anywhere on the chain. Forum posts are the first of these,
     /// but nothing here knows what a post is — a reference is a reference.
     pub fn rebuild_with_refs(&self, agreements: &[Obj], attestations: &[Obj], providers: &[Obj], contribution: Option<&Obj>, referencing: &[Obj], root: &StateRoot) -> Result<()> {
+        self.rebuild_all(agreements, attestations, providers, contribution, referencing, &[], root)
+    }
+
+    pub fn rebuild_all(&self, agreements: &[Obj], attestations: &[Obj], providers: &[Obj], contribution: Option<&Obj>, referencing: &[Obj], posts: &[Obj], root: &StateRoot) -> Result<()> {
+        self.store_posts(posts)?;
+        self.rebuild_core(agreements, attestations, providers, contribution, referencing, root)
+    }
+
+    /// `/communities/<c>/spaces/<s>/` → (community, space). Anything else is
+    /// not a forum object and is skipped rather than guessed at.
+    fn community_space(path: &str) -> Option<(String, String)> {
+        let p: Vec<&str> = path.trim_matches('/').split('/').collect();
+        match p.as_slice() {
+            ["communities", c, "spaces", s] => Some((c.to_string(), s.to_string())),
+            _ => None,
+        }
+    }
+
+    fn store_posts(&self, posts: &[Obj]) -> Result<()> {
+        self.with(|c| {
+            let tx = c.transaction()?;
+            tx.execute_batch("DELETE FROM posts;")?;
+            for o in posts {
+                if o.id == "_config" { continue; }
+                let Some((community, space)) = Self::community_space(&o.path) else { continue };
+                let kind = match o.content_schema.as_deref() {
+                    Some("post.v1") => "post",
+                    Some("comment.v1") => "comment",
+                    _ => continue,
+                };
+                let v = o.value.clone().unwrap_or_default();
+                let body = v.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string();
+                // `parent` is spelled as a bare id by the agreements SDK and as
+                // a full URI by mingo's SPA; comment.v1 never pinned it down.
+                // Normalise to the bare id so a reply threads either way.
+                let parent = v.get("parent").and_then(|p| p.as_str())
+                    .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                    .filter(|p| !p.is_empty());
+                let author = norm(o.owner_ref.as_deref().unwrap_or(&o.creator));
+                tx.execute(
+                    "INSERT OR REPLACE INTO posts(path,id,community,space,kind,author,parent,body,block,object_hash)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    params![o.path, o.id, community, space, kind, author, parent, body, o.block as i64, o.object_hash],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    fn rebuild_core(&self, agreements: &[Obj], attestations: &[Obj], providers: &[Obj], contribution: Option<&Obj>, referencing: &[Obj], root: &StateRoot) -> Result<()> {
         // The head this rebuild is consistent with: `expires_block` is a block
         // height, so whether an offer has lapsed is decided by the chain, not
         // by this process's clock (browserid-pay-e1ou).
@@ -296,6 +366,65 @@ impl Index {
     /// Posts endorsing `identity`, by anyone. The endorsement itself is never
     /// "verified" — there is no agreement in the reference to check it against
     /// — so a consumer must weigh the ENDORSER, e.g. by their own settlements.
+    /// Forum objects addressed to `me`: replies under anything I wrote, and
+    /// (separately) objects whose `Related` header points at my identity.
+    /// `since_block` makes this pollable — an agent asks only for what is new.
+    pub fn inbox(&self, me: &str, since_block: u64) -> Result<(Vec<PostRow>, Vec<Backlink>)> {
+        let me = norm(me);
+        let replies = self.query_posts(
+            "SELECT p.path,p.id,p.community,p.space,p.kind,p.author,p.parent,p.body,p.block,p.object_hash
+               FROM posts p JOIN posts mine ON p.parent = mine.id
+              WHERE mine.author = ?1 AND p.author <> ?1 AND p.block > ?2
+              ORDER BY p.block DESC LIMIT 200",
+            params![me, since_block as i64], &me)?;
+        let refs = self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT from_path,from_id,rel,ref,author,block,verified FROM refs
+                  WHERE ref = ?1 AND author <> ?1 AND block > ?2 ORDER BY block DESC LIMIT 200")?;
+            let v = st.query_map(params![me, since_block as i64], |r| {
+                Ok(Backlink { from_path: r.get(0)?, from_id: r.get(1)?, rel: r.get(2)?, reference: r.get(3)?,
+                              author: r.get(4)?, block: r.get::<_, i64>(5)? as u64, verified: r.get(6)? })
+            })?.collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(v)
+        })?;
+        Ok((replies, refs))
+    }
+
+    /// Posts in a space, newest first — the discovery side. `open_only` keeps
+    /// just the ones nobody has answered.
+    pub fn space_posts(&self, space: &str, since_block: u64, open_only: bool, me: &str, limit: u32) -> Result<Vec<PostRow>> {
+        let me = norm(me);
+        let rows = self.query_posts(
+            "SELECT path,id,community,space,kind,author,parent,body,block,object_hash
+               FROM posts WHERE space = ?1 AND kind = 'post' AND block > ?2
+              ORDER BY block DESC LIMIT ?3",
+            params![space, since_block as i64, limit.min(200) as i64], &me)?;
+        Ok(if open_only { rows.into_iter().filter(|r| r.replies == 0).collect() } else { rows })
+    }
+
+    /// Rows plus the two things that decide whether to act: how many replies
+    /// each has, and whether this agent is already one of them.
+    fn query_posts(&self, sql: &str, p: impl rusqlite::Params, me: &str) -> Result<Vec<PostRow>> {
+        self.with(|c| {
+            let mut st = c.prepare(sql)?;
+            let mut rows = st.query_map(p, |r| {
+                Ok(PostRow {
+                    path: r.get(0)?, id: r.get(1)?, community: r.get(2)?, space: r.get(3)?, kind: r.get(4)?,
+                    author: r.get(5)?, parent: r.get(6)?, body: r.get(7)?,
+                    block: r.get::<_, i64>(8)? as u64, object_hash: r.get(9)?,
+                    replies: 0, answered_by_me: false,
+                })
+            })?.collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut count = c.prepare("SELECT COUNT(*), SUM(author = ?2) FROM posts WHERE parent = ?1")?;
+            for row in &mut rows {
+                let (n, mine): (i64, Option<i64>) = count.query_row(params![row.id, me], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                row.replies = n as u64;
+                row.answered_by_me = mine.unwrap_or(0) > 0;
+            }
+            Ok(rows)
+        })
+    }
+
     pub fn endorsements_of(&self, identity: &str) -> Result<Vec<Backlink>> {
         self.referencing(&norm(identity), Some("endorses"), false)
     }
@@ -417,6 +546,28 @@ pub fn agreement_id_of(reference: &str) -> Option<&str> {
     let rest = reference.strip_prefix("/agreements/")?;
     let id = rest.split('/').next()?;
     (!id.is_empty()).then_some(id)
+}
+
+/// One forum object, as an agent sees it: enough to decide whether to act
+/// without fetching the thread.
+#[derive(Debug, Clone, Serialize)]
+pub struct PostRow {
+    pub path: String,
+    pub id: String,
+    pub community: String,
+    pub space: String,
+    pub kind: String,
+    pub author: String,
+    pub parent: Option<String>,
+    pub body: String,
+    pub block: u64,
+    pub object_hash: String,
+    /// Replies to this object. 0 on a `needs` post means nobody has answered
+    /// yet — the single most useful thing for deciding where to bid.
+    pub replies: u64,
+    /// Whether the agent asking has already replied under it. Without this an
+    /// agent re-answers the same need on every pass.
+    pub answered_by_me: bool,
 }
 
 /// One row of the reverse index: an object that referenced something.
@@ -632,6 +783,73 @@ mod tests {
 
     use super::*;
 
+    /// A forum post or comment by `author`, as the daemon serves it.
+    fn forum_obj(space: &str, id: &str, block: u64, author: &str, body: &str, parent: Option<&str>) -> Obj {
+        let mut v = json!({ "body": body });
+        if let Some(p) = parent { v["parent"] = json!(p); }
+        let mut o = obj(&format!("/communities/agents/spaces/{space}/"), id, block, v);
+        o.content_schema = Some(if id.starts_with("c_") { "comment.v1" } else { "post.v1" }.into());
+        o.owner_ref = Some(author.into());
+        o
+    }
+
+    #[test]
+    fn inbox_finds_replies_to_me_and_ignores_my_own() {
+        let ix = Index::open(":memory:").unwrap();
+        let root = StateRoot { block: 100, state_root: "r".into() };
+        let posts = vec![
+            forum_obj("needs", "p_mine", 10, "carl@z.test", "I can do logos", None),
+            // A reply to me — the thing an agent must not miss.
+            forum_obj("needs", "c_reply", 20, "alice@x.test", "can you do three?", Some("p_mine")),
+            // My own reply under my own post is not news addressed to me.
+            forum_obj("needs", "c_self", 21, "carl@z.test", "yes", Some("p_mine")),
+            // Someone else's thread entirely.
+            forum_obj("needs", "p_other", 22, "bob@y.test", "unrelated", None),
+            // mingo spells `parent` as a full URI; it must still thread.
+            forum_obj("needs", "c_uri", 23, "alice@x.test", "and by friday?",
+                      Some("/communities/agents/spaces/needs/p_mine")),
+        ];
+        ix.rebuild_all(&[], &[], &[], None, &[], &posts, &root).unwrap();
+
+        let (replies, refs) = ix.inbox("carl@z.test", 0).unwrap();
+        let ids: Vec<&str> = replies.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["c_uri", "c_reply"], "both spellings of parent, newest first, mine excluded");
+        assert!(refs.is_empty());
+
+        // since_block is what makes it pollable.
+        let (fresh, _) = ix.inbox("carl@z.test", 22).unwrap();
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id, "c_uri");
+    }
+
+    #[test]
+    fn open_needs_are_the_ones_nobody_answered() {
+        let ix = Index::open(":memory:").unwrap();
+        let root = StateRoot { block: 100, state_root: "r".into() };
+        let posts = vec![
+            forum_obj("needs", "p_taken", 10, "alice@x.test", "need a logo", None),
+            forum_obj("needs", "c_a", 11, "bob@y.test", "I'll do it", Some("p_taken")),
+            forum_obj("needs", "p_open", 12, "alice@x.test", "need ten summaries", None),
+            forum_obj("needs", "p_carl_did", 13, "alice@x.test", "need an icon", None),
+            forum_obj("needs", "c_carl", 14, "carl@z.test", "on it", Some("p_carl_did")),
+            // A different space must not leak into the needs feed.
+            forum_obj("help", "p_help", 15, "bob@y.test", "how do warrants work?", None),
+        ];
+        ix.rebuild_all(&[], &[], &[], None, &[], &posts, &root).unwrap();
+
+        let open = ix.space_posts("needs", 0, true, "carl@z.test", 50).unwrap();
+        assert_eq!(open.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["p_open"],
+                   "only the need with no replies at all");
+
+        let all = ix.space_posts("needs", 0, false, "carl@z.test", 50).unwrap();
+        assert_eq!(all.len(), 3, "the help space is not in the needs feed");
+        let did = all.iter().find(|p| p.id == "p_carl_did").unwrap();
+        assert!(did.answered_by_me, "so carl does not answer the same need twice");
+        let taken = all.iter().find(|p| p.id == "p_taken").unwrap();
+        assert!(!taken.answered_by_me);
+        assert_eq!(taken.replies, 1);
+    }
+
     fn obj(path: &str, id: &str, block: u64, v: Value) -> Obj {
         Obj {
             path: path.into(),
@@ -644,6 +862,7 @@ mod tests {
             payload_text: String::new(),
             confirmed: true,
             related: vec![],
+            owner_ref: None,
         }
     }
 

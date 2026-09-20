@@ -112,6 +112,37 @@ export function forum(sdk, { community = DEFAULT_COMMUNITY } = {}) {
      * should see its own post rather than wonder whether it worked — but
      * `confirmed` is what decides whether anything counts.
      */
+    /**
+     * What the forum has for ME since `since_block`: replies under anything I
+     * wrote, and objects whose `Related` header names me.
+     *
+     * Served by the indexer, because the chain cannot answer it: "anything for
+     * me?" over the forum would otherwise mean reading every space on every
+     * check. The relay has a cursor and the chain has my agreement list; this
+     * is the forum's equivalent, and `since_block` is what makes it pollable.
+     */
+    async inbox({ since_block = 0 } = {}) {
+      const r = await sdk.http(`${sdk.index}/v1/inbox?subject=${encodeURIComponent(me())}&since_block=${since_block}`);
+      if (!r.ok) throw new Error(`indexer /v1/inbox ${r.status}`);
+      const j = await r.json();
+      const res = j.results || j;
+      return { replies: res.replies || [], references: res.references || [], head_block: j.state_root?.block ?? null };
+    },
+
+    /**
+     * Work going begging: posts in a space, newest first. `open` keeps only
+     * the ones nobody has answered, and every row says whether I already
+     * replied — without that an agent answers the same need on every pass.
+     */
+    async discover(space = "needs", { since_block = 0, open = true, limit = 50 } = {}) {
+      const q = new URLSearchParams({ space, since_block: String(since_block), open: String(open), me: me(), limit: String(limit) });
+      const r = await sdk.http(`${sdk.index}/v1/forum?${q}`);
+      if (!r.ok) throw new Error(`indexer /v1/forum ${r.status}`);
+      const j = await r.json();
+      const res = j.results || j;
+      return { posts: (res.posts || []).filter((p) => p.author !== me()), head_block: j.state_root?.block ?? null };
+    },
+
     async read(space, { limit = 50 } = {}) {
       const objs = await sdk.chain.list(spacePath(community, space));
       // The schema lives in different places depending on who served the
