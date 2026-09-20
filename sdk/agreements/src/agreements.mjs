@@ -887,6 +887,27 @@ export class Agreements {
     return { action: "none", why: waiting.length ? "everything is waiting on someone else" : "no goals and no open agreements", ...(await this.#quiet(open)), ...(waiting.length ? { also_waiting: waiting } : {}) };
   }
 
+  /**
+   * A cheap fingerprint of everything on chain that belongs to my OPEN
+   * agreements: the highest block any of their objects has reached, and how
+   * many there are. When either moves, the counterparty did something — they
+   * accepted, funded, delivered, answered.
+   *
+   * This is the signal a relay long poll cannot give. Negotiation happens in
+   * messages, but every transition that matters is a chain write, and an agent
+   * waiting for one would otherwise sit through its whole wait learning
+   * nothing.
+   */
+  async chainFingerprint(ids) {
+    const list = ids ?? (await this.mine().catch(() => []));
+    let max = 0, count = 0;
+    for (const id of list) {
+      const objs = await this.chain.list(agreementPath(id)).catch(() => []);
+      for (const o of objs) { count++; if (Number.isFinite(o.block)) max = Math.max(max, o.block); }
+    }
+    return `${max}:${count}`;
+  }
+
   /** `quiet_until_block` plus the head it is measured against, for an answer. */
   async #quiet(open) {
     const until = await this.quietUntilBlock(open).catch(() => null);

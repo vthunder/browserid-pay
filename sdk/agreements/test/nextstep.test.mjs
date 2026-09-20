@@ -403,3 +403,19 @@ test("a dispute the adjudicator never ruled on sends both parties to replace it"
     await servers.close();
   }
 });
+
+test("chainFingerprint changes when the counterparty writes, and not otherwise", async () => {
+  // The signal a relay long poll cannot give. Negotiation is messages, but
+  // every transition that matters — accept, fund, deliver, answer — is a chain
+  // write, and an agent waiting on one would otherwise sit out its whole wait.
+  const chain = new MemoryChain();
+  const agent = new FakeAgent("alice@x.test");
+  const sdk = new Agreements({ agent, chain, repo: "sbo+raw://avail:turing:506/", verify: fakeVerify, obtainWarrants: agent.obtainAll });
+  chain.put("/agreements/agr_x/", "proposal", { id: "agr_x", parties: { proposer: "alice@x.test", acceptor: "bob@y.test" } });
+
+  const before = await sdk.chainFingerprint(["agr_x"]);
+  assert.equal(await sdk.chainFingerprint(["agr_x"]), before, "a quiet chain is stable");
+
+  chain.put("/agreements/agr_x/", "acceptance", { id: "agr_x" }, "bob@y.test");
+  assert.notEqual(await sdk.chainFingerprint(["agr_x"]), before, "bob's acceptance moves it");
+});

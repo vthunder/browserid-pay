@@ -83,6 +83,31 @@ six-step agreement has an irreducible floor of a couple of minutes. The goal
 is to remove the MINUTES of dead air the 60s loop adds on top, not to make
 the chain faster.
 
+## The transport cap is not the agent's wait
+
+A held HTTP request has to stay under the proxy's idle timeout (30s here), but
+that is a property of the connection, not of how long the agent should wait.
+`await_change` takes a BUDGET (default 120s, up to 600) and spends it: it
+cycles relay long polls of ~20s and checks the chain between them, returning
+the moment anything moves.
+
+Without that separation the wait would end every 30s and the agent would have
+to decide, each time, whether to wait again — scheduling judgement of exactly
+the kind this model exists to remove.
+
+## Waiting on a chain write, not just a message
+
+A relay poll only ever wakes on a message. But negotiation is the part that
+happens in messages; every transition that MATTERS — accept, fund, deliver,
+answer — is a chain write. An agent waiting for the counterparty to fund would
+sit out its entire budget learning nothing, and only the watchdog would
+rescue it.
+
+So `await_change` also fingerprints the objects under its open agreements
+(highest block, object count). When that moves, the other side acted. The
+answer says which channel woke it — `reason: "message" | "chain" | "deadline"`
+— because "they replied" and "they funded" call for different next moves.
+
 ## Build order
 
 1. `await_change` + relay long poll (`wait` on `/api/receive`). Biggest

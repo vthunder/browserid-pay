@@ -158,7 +158,7 @@ Before proposing, you need: the counterparty, what they must deliver, the price,
 
 If the human describes ongoing or repeated dealings rather than one deal — "any agreement with bob", "up to $200 a month" — offer \`request_standing_consent\` before the first proposal. One card then covers every agreement that fits, and the ones after it need no approval. Say plainly how broad it is before they approve. A single agreement the standing grant will not cover still gets its own card, so a blanket grant does not have to be raised for one unusual deal.\n\nWhen \`next_step\` says \`accept\`, it hands you a \`review\` block: who proposed it, what \`i_must\` do, what you are paid, the adjudicator, the expiry. Decide whether you can actually do that work before accepting — accepting is binding and the escrow holds real money. If you are not sure, say what you are unsure about and ask the human instead of accepting. Never accept to be agreeable.
 
-How to wait — the cycle is \`next_step\` → do the one thing → \`next_step\` → … and when it finally answers \`none\`, \`await_change\`, then \`next_step\` again. Do NOT decide for yourself whether to look at messages or at the chain: \`next_step\` already looks at both, and \`await_change\` returns the moment either moves. Sleeping, or polling on a timer, is strictly worse — it burns a turn to usually learn nothing and answers up to a minute late. \`await_change\` coming back \`changed: false\` is normal: nothing happened in that window, so call \`next_step\` and wait again.
+How to wait — the cycle is \`next_step\` → do the one thing → \`next_step\` → … and when it finally answers \`none\`, \`await_change\`, then \`next_step\` again. Do NOT decide for yourself whether to look at messages or at the chain: \`next_step\` already looks at both, and \`await_change\` returns the moment either moves. Sleeping, or polling on a timer, is strictly worse — it burns a turn to usually learn nothing and answers up to a minute late. \`await_change\` watches BOTH channels: it long-polls the relay for messages AND checks whether the counterparty has written to one of your agreements, because a negotiation happens in messages but every transition that matters — accept, fund, deliver, answer — is a chain write. It returns \`reason: "message" | "chain" | "deadline"\` so you know which. Give it a real budget: the default 120 seconds covers several block times, and waiting longer in ONE call is cheaper than waking up repeatedly. \`changed: false\` is normal — nothing happened in that window, so call \`next_step\` and wait again.
 
 Set up a recurring check EARLY — as soon as the human has told you what they want, before the first proposal. In Claude Code that is \`/loop 15m Follow the agreement workflow.\` (the responding side needs no goal; the initiating side repeats its goal in the loop prompt). That loop is a WATCHDOG, not your pacing: it restarts the cycle if a turn dies. Pacing comes from \`await_change\`, which is why the interval is long. Tell the human you have set it up. Then stop and ask whenever you need an approval or a judgement that is theirs to make.
 
@@ -497,33 +497,53 @@ async function peekMessages(a) {
   return j.messages || [];
 }
 
+// The relay caps a single held request at 30s (proxy idle timeouts), but that
+// is a TRANSPORT limit and should not be the agent's wait. await_change spends
+// a budget: it cycles relay long polls, checking the chain between them, and
+// returns early the moment anything moves.
+const RELAY_POLL_SECS = 20;
+
 server.registerTool("await_change", {
   title: "Wait until something needs you",
-  description: "Block until something actually moves — a message arrives, the chain advances past a deadline you are waiting on, or the timeout lapses — then return. This is how you WAIT: call it when `next_step` says `none`, and call `next_step` again when it returns. It is far better than sleeping or polling on a timer, because it comes back the moment the other side acts instead of up to a minute later, and it costs one turn instead of one per poll. It never consumes messages and never writes. Returns `{ changed, why }`.",
+  description: "Block until something actually moves — a message arrives, the counterparty writes to one of your agreements, or the chain reaches a deadline of yours — then return. This is how you WAIT: call it when `next_step` says `none`, then call `next_step` again when it returns. Far better than sleeping or polling on a timer: it comes back the moment the other side acts, and costs one turn for the whole wait instead of one per check. Never consumes messages, never writes. Returns `{ changed, why }`.",
   inputSchema: {
-    seconds: z.number().int().min(1).max(30).optional().describe("how long to wait before giving up and returning (default 25, max 30). Returning with changed:false is normal — call next_step and wait again."),
+    seconds: z.number().int().min(5).max(600).optional().describe("how long to keep waiting before giving up and returning (default 120, max 600). Returning changed:false is normal — call next_step and wait again."),
   },
 }, ({ seconds }) => run(async (a) => {
-  const wait = Math.min(Math.max(seconds ?? 25, 1), 30);
-  const before = await a.chain.head().catch(() => null);
-  // The relay holds the request open on its side, so this costs one turn and
-  // returns the instant the counterparty sends — the whole point.
-  const j = await relayCall(a, "/api/receive", { since: readCursor(), wait });
-  const msgs = j.messages || [];
-  if (msgs.length) {
-    return { changed: true, why: `${msgs.length} message${msgs.length === 1 ? "" : "s"} from ${[...new Set(msgs.map((m) => m.from))].join(", ")}`, then: "call next_step" };
-  }
-  // No message, but the chain may have passed something we were waiting for.
-  const after = await a.chain.head().catch(() => null);
+  const budget = Math.min(Math.max(seconds ?? 120, 5), 600);
+  const until = Date.now() + budget * 1000;
+  const open = await a.mine().catch(() => []);
+  // Snapshot BEFORE waiting, so a write that lands during the first poll is
+  // still seen as a change rather than becoming the new baseline.
+  let fingerprint = await a.chainFingerprint(open).catch(() => null);
   const quiet = await a.quietUntilBlock().catch(() => null);
-  const passed = Number.isFinite(quiet) && Number.isFinite(after) && after >= quiet;
+  const startHead = await a.chain.head().catch(() => null);
+
+  while (Date.now() < until) {
+    const slice = Math.max(1, Math.min(RELAY_POLL_SECS, Math.ceil((until - Date.now()) / 1000)));
+    const j = await relayCall(a, "/api/receive", { since: readCursor(), wait: slice });
+    const msgs = j.messages || [];
+    if (msgs.length) {
+      return { changed: true, reason: "message", why: `${msgs.length} message${msgs.length === 1 ? "" : "s"} from ${[...new Set(msgs.map((m) => m.from))].join(", ")}`, then: "call next_step" };
+    }
+    // A chain write by the counterparty: the transition a message never carries.
+    const now = await a.chainFingerprint(open).catch(() => null);
+    if (now && fingerprint && now !== fingerprint) {
+      fingerprint = now;
+      return { changed: true, reason: "chain", why: "an agreement of yours has new objects on chain — the other side moved", then: "call next_step" };
+    }
+    const head = await a.chain.head().catch(() => null);
+    if (Number.isFinite(quiet) && Number.isFinite(head) && head >= quiet) {
+      return { changed: true, reason: "deadline", why: `the chain reached block ${head}, at or past ${quiet} where something of yours is due`, head_block: head, then: "call next_step" };
+    }
+  }
+  const head = await a.chain.head().catch(() => null);
   return {
-    changed: passed,
-    why: passed ? `the chain reached block ${after}, at or past ${quiet} where something of yours is due`
-      : `nothing moved in ${wait}s`,
-    head_block: after ?? undefined,
-    blocks_advanced: Number.isFinite(before) && Number.isFinite(after) ? after - before : undefined,
-    then: "call next_step",
+    changed: false,
+    why: `nothing moved in ${budget}s`,
+    head_block: head ?? undefined,
+    blocks_advanced: Number.isFinite(startHead) && Number.isFinite(head) ? head - startHead : undefined,
+    then: "call next_step, then wait again — this is the normal idle cycle",
   };
 }));
 

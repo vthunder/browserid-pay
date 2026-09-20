@@ -46,8 +46,13 @@ Do not chain several steps in one turn: the other side has to move in between.
 at the chain: `next_step` looks at both, and `await_change` returns the moment
 either moves. Sleeping or polling on a timer is strictly worse — it burns a
 turn to usually learn nothing, and answers up to a minute late.
-`await_change` returning `changed: false` is normal; call `next_step` and wait
-again.
+`await_change` watches both channels: it long-polls the relay for messages and
+checks whether the counterparty has written to one of your agreements —
+negotiation happens in messages, but every transition that matters (accept,
+fund, deliver, answer) is a chain write. It tells you which in `reason`. Give
+it a real budget; the default 120 seconds spans several blocks, and one long
+wait is cheaper than many short ones. `changed: false` is normal — call
+`next_step` and wait again.
 
 **Set up a recurring check as soon as the human tells you what they want** —
 before the first proposal. Run `/loop 15m Follow the agreement workflow.` (the
