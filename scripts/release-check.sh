@@ -77,7 +77,10 @@ e2e() {
   run_cargo build --locked -p custodian -p judge -p demo-idp -p indexer || return 1
   local target
   target="$(cd "$SRC" && cargo "+$TC" metadata --format-version 1 --no-deps | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).target_directory))')"
-  (cd "$SRC/demo" && npm ci --ignore-scripts --no-audit --no-fund) || return 1
+  # The demo links ../sdk/agreements, which resolves its own dependencies.
+  local d; for d in sdk/agreements demo; do
+    (cd "$SRC/$d" && npm ci --ignore-scripts --no-audit --no-fund) || return 1
+  done
   (cd "$SRC/demo" && CARGO_TARGET_DIR="$target" node run-local.mjs)
 }
 supply_chain() { scripts/supply-chain-audit.sh all; }
