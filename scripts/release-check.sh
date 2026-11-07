@@ -17,7 +17,7 @@
 # network namespace, which need Linux; CI runs both.
 #
 # Needs: rustup with the pinned toolchain (installed on demand), node + npm,
-# cargo-audit, gitleaks.
+# curl + jq (registry read), cargo-audit, gitleaks.
 set -uo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
@@ -54,19 +54,37 @@ step() {
   fi
 }
 
-# The rust version every Dockerfile pins (by digest), and the one CI pins.
+# The toolchain must be exactly the one the Dockerfiles' pinned rust image
+# carries: tag == the image's RUST_VERSION (read from the registry for
+# linux/amd64, no docker needed) == the version release-candidate.yml pins.
 TC=""
+image_rust_version() {
+  local ref="$1" repo dig tok m c A
+  repo="library/${ref%%:*}"; dig="${ref#*@}"
+  A="Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+  tok="$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repo:pull" | jq -r .token)" || return 1
+  m="$(curl -fsS -H "Authorization: Bearer $tok" -H "$A" "https://registry-1.docker.io/v2/$repo/manifests/$dig" \
+    | jq -r 'if .manifests then (.manifests[] | select(.platform.os=="linux" and .platform.architecture=="amd64") | .digest) else empty end')" || return 1
+  [ -n "$m" ] || m="$dig"
+  c="$(curl -fsS -H "Authorization: Bearer $tok" -H "$A" "https://registry-1.docker.io/v2/$repo/manifests/$m" | jq -r .config.digest)" || return 1
+  curl -fsSL -H "Authorization: Bearer $tok" "https://registry-1.docker.io/v2/$repo/blobs/$c" | jq -r '.config.Env[]' | sed -n 's/^RUST_VERSION=//p'
+}
 toolchain_pin() {
-  local vs n
-  vs="$(sed -nE 's/^FROM rust:([0-9.]+)-[a-z]+@sha256:[0-9a-f]{64} .*/\1/p' crates/*/Dockerfile | sort -u)"
+  local refs ref tag img ci n
+  refs="$(sed -nE 's/^FROM (rust:[^ ]+) AS builder.*/\1/p' crates/*/Dockerfile | sort -u)"
   n="$(cat crates/*/Dockerfile | grep -c '^FROM rust:')"
-  [ "$(cat crates/*/Dockerfile | grep -cE '^FROM rust:[0-9.]+-[a-z]+@sha256:[0-9a-f]{64} ')" = "$n" ] || { echo "every FROM rust: must be a version pinned by digest"; return 1; }
-  [ "$(echo "$vs" | wc -l | tr -d ' ')" = 1 ] || { echo "Dockerfiles disagree on the rust version: $vs"; return 1; }
-  grep -q "rust-toolchain@[0-9a-f]\{40\} # $vs\." .github/workflows/release-candidate.yml || { echo "release-candidate.yml pins a different toolchain than the Dockerfiles ($vs)"; return 1; }
-  rustup toolchain list | grep -qE "^$vs(\.[0-9]+)?-" || rustup toolchain install "$vs" --profile minimal
-  TC="$(rustup toolchain list | grep -oE "^$vs(\.[0-9]+)?-" | head -1 | sed 's/-$//')"
-  [ -n "$TC" ] || { echo "toolchain $vs not installed"; return 1; }
-  echo "pinned toolchain: $TC ($(cargo "+$TC" --version))"
+  [ "$(cat crates/*/Dockerfile | grep -cE '^FROM rust:[0-9]+\.[0-9]+\.[0-9]+-[a-z]+@sha256:[0-9a-f]{64} AS builder')" = "$n" ] || { echo "every FROM rust: must be rust:<x.y.z>-<suite>@sha256:<digest> AS builder"; return 1; }
+  [ "$(echo "$refs" | wc -l | tr -d ' ')" = 1 ] || { echo "Dockerfiles disagree on the rust image: $refs"; return 1; }
+  ref="$refs"
+  tag="$(sed -nE 's/^rust:([0-9.]+)-.*/\1/p' <<<"$ref")"
+  img="$(image_rust_version "$ref")" || { echo "could not read RUST_VERSION of $ref from the registry"; return 1; }
+  ci="$(grep -hoE 'dtolnay/rust-toolchain@[0-9a-f]{40} # [0-9.]+' .github/workflows/release-candidate.yml | awk '{print $3}' | sort -u)"
+  echo "Dockerfile tag $tag, image carries $img, release-candidate.yml pins $ci"
+  [ -n "$tag" ] && [ "$tag" = "$img" ] && [ "$img" = "$ci" ] || { echo "toolchain mismatch: tag $tag, image $img, CI $ci"; return 1; }
+  rustup toolchain list | grep -q "^$tag-" || rustup toolchain install "$tag" --profile minimal
+  TC="$tag"
+  [ "$(cargo "+$TC" --version | awk '{print $2}')" = "$tag" ] || { echo "toolchain $tag not usable"; return 1; }
+  echo "pinned toolchain: $(cargo "+$TC" --version)"
 }
 # Run in a subshell so that the main shell keeps TC.
 run_cargo() { (cd "$SRC" && cargo "+$TC" "$@"); }

@@ -40,14 +40,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The same toolchain as every Dockerfile's builder stage; checked below.
-      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
-      - name: toolchain pin agrees with every Dockerfile
+      - uses: dtolnay/rust-toolchain@633c1125191e55c620c8ae7d364073c0ead621c1 # 1.93.1
+      - name: toolchain is exactly the one the Dockerfiles' pinned image carries
         run: |
-          vs="$(sed -nE 's/^FROM rust:([0-9.]+)-[a-z]+@sha256:[0-9a-f]{64} .*/\1/p' crates/*/Dockerfile | sort -u)"
-          n="$(grep -c '^FROM rust:' crates/*/Dockerfile | awk -F: '{s+=$2} END {print s}')"
-          [ "$(grep -hE '^FROM rust:[0-9.]+-[a-z]+@sha256:[0-9a-f]{64} ' crates/*/Dockerfile | wc -l)" = "$n" ] || { echo "::error::every FROM rust: must be a version pinned by digest"; exit 1; }
-          [ "$(echo "$vs" | wc -l)" = 1 ] || { echo "::error::Dockerfiles disagree on the rust version: $vs"; exit 1; }
-          rustc --version | grep -q " $vs\." || { echo "::error::Dockerfiles build with rust $vs, this job with $(rustc --version)"; exit 1; }
+          refs="$(sed -nE 's/^FROM (rust:[^ ]+) AS builder.*/\1/p' crates/*/Dockerfile | sort -u)"
+          n="$(cat crates/*/Dockerfile | grep -c '^FROM rust:')"
+          [ "$(cat crates/*/Dockerfile | grep -cE '^FROM rust:[0-9]+\.[0-9]+\.[0-9]+-[a-z]+@sha256:[0-9a-f]{64} AS builder')" = "$n" ] \
+            || { echo "::error::every FROM rust: must be rust:<x.y.z>-<suite>@sha256:<digest> AS builder"; exit 1; }
+          [ "$(echo "$refs" | wc -l)" = 1 ] || { echo "::error::Dockerfiles disagree on the rust image: $refs"; exit 1; }
+          ref="$refs"
+          tag="$(sed -nE 's/^rust:([0-9.]+)-.*/\1/p' <<<"$ref")"
+          img="$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}' | jq -r '."linux/amd64".config.Env[]? // .config.Env[]?' | sed -n 's/^RUST_VERSION=//p')"
+          have="$(rustc --version | awk '{print $2}')"
+          echo "Dockerfile tag $tag, image carries $img, this job runs $have"
+          [ -n "$tag" ] && [ "$tag" = "$img" ] && [ "$img" = "$have" ] || { echo "::error::toolchain mismatch: tag $tag, image $img, CI $have"; exit 1; }
       - name: drop the local-development patch (as .dockerignore does)
         run: rm .cargo/config.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -67,7 +73,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
+      - uses: dtolnay/rust-toolchain@633c1125191e55c620c8ae7d364073c0ead621c1 # 1.93.1
       - name: drop the local-development patch (as .dockerignore does)
         run: rm .cargo/config.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -113,7 +119,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # gitleaks scans every commit
-      - uses: dtolnay/rust-toolchain@48b64ba94bc1a6fe819fd9afc0799a7647efdc65 # 1.93.0
+      - uses: dtolnay/rust-toolchain@633c1125191e55c620c8ae7d364073c0ead621c1 # 1.93.1
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: cargo-audit

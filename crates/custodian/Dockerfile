@@ -2,7 +2,7 @@
 # compiles. Context: repo root.
 # Toolchain and base images pinned by digest; .github/workflows/release-candidate.yml
 # tests with the same rust version and fails if the two disagree.
-FROM rust:1.93-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS builder
+FROM rust:1.93.1-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31 AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
