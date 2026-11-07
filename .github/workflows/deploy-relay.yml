@@ -30,6 +30,9 @@ env:
 
 jobs:
   build-and-deploy:
+    # Only the canonical repo deploys; the public staging mirror runs the
+    # same workflows and must never release anything.
+    if: github.repository == 'vthunder/browserid-pay'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
