@@ -1,0 +1,40 @@
+# cargo-audit configuration. Read by `cargo audit` from the workspace root;
+# run by scripts/supply-chain-audit.sh (CI: rc / audit; local: make
+# release-check). Excluded from Docker builds with the rest of .cargo/.
+#
+# Policy: every RUSTSEC *vulnerability* fails the gate unless listed here with
+# a reason and a review date. Unsound/unmaintained warnings are printed only.
+#
+# Everything below arrives through sbo-core (vthunder/sbo, pinned rev
+# fb19728, default-features = false), whose manifest still declares
+# reqwest 0.11 (rustls 0.21 stack) and hickory-resolver 0.24. Checked
+# 2026-11-07: sbo-core's sources never use reqwest at all, and hickory only
+# in its dns module; browserid-pay calls sbo_core::{crypto, wire, message,
+# presets, genesis_hash_from_wire}, none of which reach either crate. The
+# fix is upstream (drop reqwest, bump hickory in sbo) and then a rev bump
+# here; it is not a lockfile change. Review: 2027-02-01.
+[advisories]
+ignore = [
+    # h2 0.3.27 (reqwest 0.11 via sbo-core): unbounded empty DATA frames.
+    "RUSTSEC-2026-0258",
+    # rustls 0.21.12 (reqwest 0.11 via sbo-core): Debug impls expose TLS
+    # secrets; ServerHello downgrade.
+    "RUSTSEC-2026-0346",
+    "RUSTSEC-2026-0349",
+    # rustls-webpki 0.101.7 (rustls 0.21 via sbo-core): CRL parsing panic,
+    # name-constraint handling, distrusted intermediates.
+    "RUSTSEC-2026-0104",
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0382",
+    # webpki-roots 0.25.4 (reqwest 0.11 via sbo-core): distrusted emSign roots.
+    "RUSTSEC-2026-0381",
+    # hickory-proto 0.24.4 (sbo-core) and 0.25.2 (browserid-dnssec, same entry
+    # as browserid-ng's .cargo/audit.toml): O(n^2) name compression on encode,
+    # fixed only in 0.26.1, a major bump; the encode side is our own short
+    # queries.
+    "RUSTSEC-2026-0119",
+    # hickory-proto 0.25.2 (browserid-dnssec): NSEC3 closest-encloser loop; no
+    # patched release exists. Same entry as browserid-ng's .cargo/audit.toml.
+    "RUSTSEC-2026-0118",
+]

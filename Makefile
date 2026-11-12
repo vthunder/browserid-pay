@@ -6,6 +6,8 @@
 #                            (CI builds it; this is the manual release until the
 #                            browserid-pay-ci deploy key is authorized on the host)
 #   make dev-pay             run the custodian locally in dev mode on :3300
+#   make release-check       the local equivalent of the release-candidate CI
+#                            workflow, on the committed HEAD (scripts/release-check.sh)
 
 SHA  := $(shell git rev-parse HEAD)
 REG  := ghcr.io/vthunder/browserid-pay
@@ -13,7 +15,7 @@ HOST ?= dokku@sandmill.org
 SSH  := ssh -i $(HOME)/.ssh/mini-ops -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
 LT   := ssh localtest 'cd ~/src/browserid-pay &&
 
-.PHONY: build test release-pay release-index watch dev-pay demo-local
+.PHONY: build test release-pay release-index watch dev-pay demo-local release-check
 
 build:
 	$(LT) cargo build --workspace 2>&1 | sed "s/\x1b\[[0-9;]*m//g" | grep -E "^(error|warning)" -A5; true'
@@ -40,6 +42,10 @@ demo-local:
 dev-pay:
 	PAY_DEV=1 PAY_PORT=3300 ADMIN_TOKEN=dev DATABASE_PATH=/tmp/custodian-dev.db \
 	  $(LT) cargo run -p custodian'
+
+# Through ssh localtest (Gatekeeper), from this checkout wherever it is.
+release-check:
+	ssh localtest 'cd $(CURDIR) && scripts/release-check.sh' 2>&1 | sed "s/\x1b\[[0-9;]*m//g"; test $${PIPESTATUS[0]} -eq 0
 
 # ---- chain genesis (crates/genesis, deploy/GENESIS.md) -----------------------
 #   make genesis-build      build genesis.wire from ~/secure-backup/dsp-sys.key

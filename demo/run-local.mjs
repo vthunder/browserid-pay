@@ -271,9 +271,11 @@ async function main() {
 
   // ---- reputation ----------------------------------------------------------------
   step("reputation — the indexer's signed scorecard for bob");
-  const rep = await waitFor("bob's scorecard counting both agreements", async () => {
+  // The indexer polls the daemon every second, and contract 2 already counts
+  // once it is disputed: wait until its poll has also seen the ruling.
+  const rep = await waitFor("bob's scorecard counting both agreements, the ruling included", async () => {
     const c = await getJson(`${indexOrigin}/v1/reputation?subject=${encodeURIComponent(BOB_AGENT)}`);
-    return c.counts?.counted === 2 ? c : null;
+    return c.counts?.counted === 2 && c.inputs?.agreements?.some((i) => i.outcome?.startsWith("ruled:")) ? c : null;
   }, { tries: 60, ms: 500 });
   assert.equal(rep.formula, "browserid-pay-reputation-v1");
   assert.equal(rep.grantor, BOB, "bob's controlling account is read from his bundle");

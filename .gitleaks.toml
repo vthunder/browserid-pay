@@ -1,0 +1,15 @@
+# gitleaks configuration, run over the full history by
+# scripts/supply-chain-audit.sh secrets (CI: rc / audit).
+
+title = "browserid-pay"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed files that are not credentials"
+paths = [
+    # generic-api-key matches a run of crate names in a dependency list
+    # ("crypto_secretbox", "curve25519-dalek", ...). Reviewed 2026-11-07.
+    '''^Cargo\.lock$''',
+]
